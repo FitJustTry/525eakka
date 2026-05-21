@@ -4703,6 +4703,30 @@ let importRows    = [];
 let importStatus  = '';
 let importDone    = false;
 let importMappingMode = '';
+let importSortCol = null;   // key of column to sort by
+let importSortDir = 1;      // 1 = asc, -1 = desc
+
+function setImportSort(col) {
+  if (importSortCol === col) importSortDir *= -1;
+  else { importSortCol = col; importSortDir = 1; }
+  setTab('import');
+}
+
+function getSortedImportRows() {
+  if (!importSortCol) return importRows;
+  const col = importSortCol;
+  return [...importRows].sort((a, b) => {
+    let va = a[col], vb = b[col];
+    if (col === 'kva' || col === 'qty' || col === 'std_hrs_unit' || col === 'total_hrs' || col === 'effectiveKva') {
+      va = parseFloat(va) || 0; vb = parseFloat(vb) || 0;
+      return (va - vb) * importSortDir;
+    }
+    if (col === 'deadline') {
+      va = va || '9999'; vb = vb || '9999';
+    }
+    return String(va||'').localeCompare(String(vb||''), 'th') * importSortDir;
+  });
+}
 
 // Employee import
 let empImportRows   = [];
@@ -5454,40 +5478,6 @@ function renderImportMasterPlan() {
       const wcEntries  = Object.entries(wcMap).sort((a,b)=>b[1].hrs-a[1].hrs);
       const maxWcHrs   = wcEntries.length ? wcEntries[0][1].hrs : 1;
 
-      const rows_html = importRows.map((r,i)=>{
-        const today2 = new Date();
-        const dl     = r.deadline ? new Date(r.deadline) : null;
-        const days   = dl ? Math.round((dl-today2)/86400000) : null;
-        const isLate = days !== null && days < 0;
-        const isUrg  = days !== null && days >= 0 && days <= 7;
-        const catCol = r.category==='หลัก'?'var(--blue)':r.category==='Fast'?'var(--red)':'var(--green)';
-        const typeShort = r.decoded ? `<div style="font-size:9px;color:var(--txt3);margin-top:1px">${(r.decoded.type||'').replace('3Ph ','').replace('(High Loss)','HL').substring(0,18)}</div>` : '';
-        const hvShort   = r.decoded?.hv ? `<div style="font-size:9px;color:var(--blue);margin-top:1px">${r.decoded.hv.split('–')[0].trim()}</div>` : '';
-        return `<tr style="border-bottom:0.5px solid var(--bord);background:${isLate?'rgba(224,90,78,.03)':''}">
-          <td style="padding:5px 8px;text-align:center;font-size:10px;color:var(--txt3)">${i+1}</td>
-          <td style="padding:5px 8px"><span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${catCol}18;color:${catCol};font-weight:600">${r.category}</span></td>
-          <td style="padding:5px 8px;font-family:var(--mono);font-size:10px;color:var(--amber)">${r.sap_so||'—'}</td>
-          <td style="padding:5px 8px;font-size:11px;color:var(--txt2)">${r.customer||'—'}</td>
-          <td style="padding:5px 8px;text-align:center">
-            <span style="font-size:10px;font-weight:700;color:${r.effectiveKva>=3500?'var(--red)':r.effectiveKva>=1000?'var(--amber)':'var(--green)'}">${r.effectiveKva||r.kva}</span>
-            ${r.decoded&&r.effectiveKva!==r.kva?`<div style="font-size:8px;color:var(--txt3)">(Excel:${r.kva})</div>`:''}
-          </td>
-          <td style="padding:5px 8px;text-align:center;font-family:var(--mono);font-size:11px">${r.qty}</td>
-          <td style="padding:5px 8px">
-            <div style="font-family:var(--mono);font-size:10px;color:var(--blue)">${r.item5||'—'}</div>
-            ${typeShort}${hvShort}
-            ${r.decoded?.raw?.I?`<div style="font-size:9px;color:#6c3da8">Grp:${r.decoded.raw.I}</div>`:''}
-          </td>
-          <td style="padding:5px 8px;text-align:center;font-size:10px;font-family:var(--mono);color:var(--txt2)">${r.std_hrs_unit?r.std_hrs_unit.toFixed(1)+'h':'—'}</td>
-          <td style="padding:5px 8px;text-align:center;font-size:10px;font-family:var(--mono);font-weight:700;color:${(r.total_hrs||0)>=80?'var(--red)':(r.total_hrs||0)>=30?'var(--amber)':'var(--txt)'}">${r.total_hrs?(r.total_hrs.toFixed(1)+'h'):'—'}</td>
-          <td style="padding:5px 8px;text-align:center;font-size:10px">
-            <div style="color:${isLate?'var(--red)':isUrg?'var(--amber)':'var(--txt2)'};font-weight:${isLate||isUrg?700:400}">${r.deadline||'—'}</div>
-            ${isLate?`<div style="font-size:9px;color:var(--red)">เกิน ${Math.abs(days)}d</div>`:isUrg?`<div style="font-size:9px;color:var(--amber)">อีก ${days}d</div>`:''}
-          </td>
-          <td style="padding:5px 8px;font-size:10px;color:var(--txt3);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.comment||'—'}</td>
-        </tr>`;
-      }).join('');
-
       return `
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px">
       <div class="mc"><div class="mc-label">Orders ที่พบ</div><div class="mc-val" style="color:var(--green)">${importRows.length}</div></div>
@@ -5537,20 +5527,64 @@ function renderImportMasterPlan() {
     <table style="width:100%;border-collapse:collapse;font-size:11px">
       <thead style="position:sticky;top:0;z-index:1">
         <tr style="border-bottom:1px solid var(--bord2)">
-          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:36px">#</th>
-          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:54px">หมวด</th>
-          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;min-width:96px">SAP SO</th>
-          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;min-width:90px">ลูกค้า</th>
-          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:56px">kVA</th>
-          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:36px">จำนวน</th>
-          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;min-width:130px">Item Code · ประเภท</th>
-          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:60px">STD/ตัว</th>
-          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:68px">รวม hrs</th>
-          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:86px">Deadline</th>
-          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600">Comment</th>
+          ${(()=>{
+            const thStyle = (align,w) => `padding:7px 8px;text-align:${align};background:var(--bg3);font-size:10px;font-weight:600;cursor:pointer;user-select:none;white-space:nowrap;${w?`width:${w};`:''}`;
+            const ind = col => importSortCol===col ? (importSortDir>0?' ▲':' ▼') : ' ⇅';
+            const th = (col, label, align, w) => {
+              const active = importSortCol===col;
+              return `<th onclick="setImportSort('${col}')" style="${thStyle(align,w)}color:${active?'var(--amber)':'var(--txt3)'};background:${active?'rgba(192,120,0,.08)':'var(--bg3)'}">
+                ${label}<span style="opacity:${active?1:.4};font-size:9px">${ind(col)}</span></th>`;
+            };
+            return `<th style="${thStyle('center','36px')}color:var(--txt3)">#</th>`
+              + th('category','หมวด','left','54px')
+              + th('sap_so','SAP SO','left','96px')
+              + th('customer','ลูกค้า','left','90px')
+              + th('effectiveKva','kVA','center','56px')
+              + th('qty','จำนวน','center','36px')
+              + th('item5','Item Code · ประเภท','left','130px')
+              + th('std_hrs_unit','STD/ตัว','center','60px')
+              + th('total_hrs','รวม hrs','center','68px')
+              + th('deadline','Deadline','center','86px')
+              + th('comment','Comment','left','');
+          })()}
         </tr>
       </thead>
-      <tbody>${rows_html}</tbody>
+      <tbody>${(()=>{
+        const sorted = getSortedImportRows();
+        const today2 = new Date();
+        return sorted.map((r,i)=>{
+          const dl     = r.deadline ? new Date(r.deadline) : null;
+          const days   = dl ? Math.round((dl-today2)/86400000) : null;
+          const isLate = days !== null && days < 0;
+          const isUrg  = days !== null && days >= 0 && days <= 7;
+          const catCol = r.category==='หลัก'?'var(--blue)':r.category==='Fast'?'var(--red)':'var(--green)';
+          const typeShort = r.decoded ? `<div style="font-size:9px;color:var(--txt3);margin-top:1px">${(r.decoded.type||'').replace('3Ph ','').replace('(High Loss)','HL').substring(0,18)}</div>` : '';
+          const hvShort   = r.decoded?.hv ? `<div style="font-size:9px;color:var(--blue);margin-top:1px">${r.decoded.hv.split('–')[0].trim()}</div>` : '';
+          return `<tr style="border-bottom:0.5px solid var(--bord);background:${isLate?'rgba(224,90,78,.03)':''}">
+            <td style="padding:5px 8px;text-align:center;font-size:10px;color:var(--txt3)">${i+1}</td>
+            <td style="padding:5px 8px"><span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${catCol}18;color:${catCol};font-weight:600">${r.category}</span></td>
+            <td style="padding:5px 8px;font-family:var(--mono);font-size:10px;color:var(--amber)">${r.sap_so||'—'}</td>
+            <td style="padding:5px 8px;font-size:11px;color:var(--txt2)">${r.customer||'—'}</td>
+            <td style="padding:5px 8px;text-align:center">
+              <span style="font-size:10px;font-weight:700;color:${r.effectiveKva>=3500?'var(--red)':r.effectiveKva>=1000?'var(--amber)':'var(--green)'}">${r.effectiveKva||r.kva}</span>
+              ${r.decoded&&r.effectiveKva!==r.kva?`<div style="font-size:8px;color:var(--txt3)">(Excel:${r.kva})</div>`:''}
+            </td>
+            <td style="padding:5px 8px;text-align:center;font-family:var(--mono);font-size:11px">${r.qty}</td>
+            <td style="padding:5px 8px">
+              <div style="font-family:var(--mono);font-size:10px;color:var(--blue)">${r.item5||'—'}</div>
+              ${typeShort}${hvShort}
+              ${r.decoded?.raw?.I?`<div style="font-size:9px;color:#6c3da8">Grp:${r.decoded.raw.I}</div>`:''}
+            </td>
+            <td style="padding:5px 8px;text-align:center;font-size:10px;font-family:var(--mono);color:var(--txt2)">${r.std_hrs_unit?r.std_hrs_unit.toFixed(1)+'h':'—'}</td>
+            <td style="padding:5px 8px;text-align:center;font-size:10px;font-family:var(--mono);font-weight:700;color:${(r.total_hrs||0)>=80?'var(--red)':(r.total_hrs||0)>=30?'var(--amber)':'var(--txt)'}">${r.total_hrs?(r.total_hrs.toFixed(1)+'h'):'—'}</td>
+            <td style="padding:5px 8px;text-align:center;font-size:10px">
+              <div style="color:${isLate?'var(--red)':isUrg?'var(--amber)':'var(--txt2)'};font-weight:${isLate||isUrg?700:400}">${r.deadline||'—'}</div>
+              ${isLate?`<div style="font-size:9px;color:var(--red)">เกิน ${Math.abs(days)}d</div>`:isUrg?`<div style="font-size:9px;color:var(--amber)">อีก ${days}d</div>`:''}
+            </td>
+            <td style="padding:5px 8px;font-size:10px;color:var(--txt3);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.comment||'—'}</td>
+          </tr>`;
+        }).join('');
+      })()}</tbody>
     </table>
     </div>`;
     })() : ''}
