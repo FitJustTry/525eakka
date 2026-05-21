@@ -5091,6 +5091,241 @@ function loadCatToSystem() {
   setTab('import');
 }
 
+// ── SAP Production Order Import ───────────────────────────────
+let sapImportRows   = [];   // raw operation rows
+let sapImportStatus = '';
+let sapImportDone   = false;
+
+const SAP_COLS = [
+  { key:'id',            labels:['id'] },
+  { key:'orderNumber',   labels:['ordernumber','order'] },
+  { key:'plant',         labels:['productionplant','plant'] },
+  { key:'salesOrder',    labels:['salesorder','sapso','so'] },
+  { key:'materialOrder', labels:['materialorder','material'] },
+  { key:'materialDesc',  labels:['materialdescription','materialdesc','desc'] },
+  { key:'routingNo',     labels:['routingno','routing'] },
+  { key:'reservationNo', labels:['reservationnumber','reservation'] },
+  { key:'qty',           labels:['targetquantity','qty','quantity'] },
+  { key:'unit',          labels:['unitorder','unit'] },
+  { key:'orderType',     labels:['ordertype','type'] },
+  { key:'startDate',     labels:['basicstartdate','startdate','start'] },
+  { key:'finishDate',    labels:['basicfinishdate','finishdate','finish','deadline'] },
+  { key:'timeStamp',     labels:['timestamp','time'] },
+  { key:'counter',       labels:['counter'] },
+  { key:'opNumber',      labels:['operationnumber','opnumber','op'] },
+  { key:'opName',        labels:['ltxa1','opname','operationname','operation'] },
+  { key:'wc',            labels:['workcenter','wc'] },
+  { key:'std3',          labels:['stdactivitytype3','std3','activity3'] },
+  { key:'std4',          labels:['stdactivitytype4','std4','activity4'] },
+  { key:'std5',          labels:['stdactivitytype5','std5','activity5'] },
+  { key:'std6',          labels:['stdactivitytype6','std6','activity6'] },
+  { key:'createdAt',     labels:['สร้างเมื่อ','createdat','created'] },
+  { key:'confirmStart',  labels:['confirm_start','confirmstart'] },
+  { key:'confirmEnd',    labels:['confirm_end','confirmend'] },
+  { key:'isConfirm',     labels:['is_confirm','isconfirm','confirm'] },
+];
+
+function handleSapFile(file) {
+  if (!file) return;
+  sapImportStatus = '⏳ กำลังอ่านไฟล์...';
+  sapImportRows = []; sapImportDone = false;
+  setTab('import');
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const XLSX = window.XLSX;
+      if (!XLSX) { sapImportStatus='❌ SheetJS ยังไม่พร้อม'; setTab('import'); return; }
+      const wb  = XLSX.read(e.target.result, {type:'array', cellDates:true});
+      const ws  = wb.Sheets[wb.SheetNames[0]];
+      const raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+      if (!raw.length) { sapImportStatus='⚠ ไฟล์ว่าง'; setTab('import'); return; }
+
+      const nm = v => String(v||'').toLowerCase().replace(/[\s_\-\.]+/g,'');
+
+      // Find header row — look for a row containing 'ordernumber' or 'workcenter'
+      let headerRow = null, dataStart = 0;
+      for (let i=0; i<Math.min(raw.length,10); i++) {
+        const normed = (raw[i]||[]).map(nm);
+        if (normed.some(h=>h.includes('ordernumber')||h.includes('workcenter')||h.includes('salesorder'))) {
+          headerRow = raw[i]; dataStart = i+1; break;
+        }
+      }
+      if (!headerRow) { headerRow = raw[0]; dataStart = 1; }
+
+      // Build column index map
+      const colIdx = {};
+      SAP_COLS.forEach(({key, labels}) => {
+        const idx = headerRow.findIndex(h => labels.some(l => nm(h).includes(l)));
+        colIdx[key] = idx >= 0 ? idx : -1;
+      });
+
+      const fmtD = v => {
+        if (!v) return '';
+        if (v instanceof Date) return v.toISOString().slice(0,10);
+        const s = String(v);
+        if (s.match(/^\d{4}-\d{2}-\d{2}/)) return s.slice(0,10);
+        if (s.includes('/')) {
+          const p = s.split('/');
+          if (p.length===3) return `${p[2].length===4?p[2]:'20'+p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
+        }
+        return s;
+      };
+      const g = (row, key) => {
+        const i = colIdx[key];
+        return i >= 0 && row[i] != null ? String(row[i]).replace(/\.0$/,'').trim() : '';
+      };
+
+      const rows = [];
+      for (const row of raw.slice(dataStart)) {
+        if (!row || row.every(v=>v===null||String(v).trim()==='')) continue;
+        const orderNum = g(row,'orderNumber');
+        if (!orderNum) continue;
+        rows.push({
+          id:           g(row,'id'),
+          orderNumber:  orderNum,
+          plant:        g(row,'plant'),
+          salesOrder:   g(row,'salesOrder'),
+          materialOrder:g(row,'materialOrder'),
+          materialDesc: g(row,'materialDesc'),
+          routingNo:    g(row,'routingNo'),
+          reservationNo:g(row,'reservationNo'),
+          qty:          g(row,'qty'),
+          unit:         g(row,'unit'),
+          orderType:    g(row,'orderType'),
+          startDate:    fmtD(row[colIdx['startDate']]),
+          finishDate:   fmtD(row[colIdx['finishDate']]),
+          timeStamp:    g(row,'timeStamp'),
+          counter:      g(row,'counter'),
+          opNumber:     g(row,'opNumber'),
+          opName:       g(row,'opName'),
+          wc:           g(row,'wc'),
+          std3:         parseFloat(g(row,'std3'))||0,
+          std4:         parseFloat(g(row,'std4'))||0,
+          std5:         parseFloat(g(row,'std5'))||0,
+          std6:         parseFloat(g(row,'std6'))||0,
+          createdAt:    g(row,'createdAt'),
+          confirmStart: fmtD(row[colIdx['confirmStart']]),
+          confirmEnd:   fmtD(row[colIdx['confirmEnd']]),
+          isConfirm:    g(row,'isConfirm'),
+        });
+      }
+
+      sapImportRows   = rows;
+      const orders    = [...new Set(rows.map(r=>r.orderNumber))];
+      const confirmed = rows.filter(r=>r.isConfirm&&r.isConfirm!=='0'&&r.isConfirm.toLowerCase()!=='false'&&r.isConfirm!=='').length;
+      sapImportStatus = rows.length
+        ? `✅ พบ ${rows.length} operations · ${orders.length} orders · confirm แล้ว ${confirmed} ops`
+        : '⚠ ไม่พบข้อมูล — ตรวจสอบว่าไฟล์มีคอลัมน์ OrderNumber หรือ WorkCenter';
+      sapImportDone = false;
+      setTab('import');
+    } catch(err) { sapImportStatus=`❌ ${err.message}`; setTab('import'); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function renderImportSap() {
+  const sc = sapImportStatus.startsWith('✅')||sapImportStatus.startsWith('🎉') ? 'var(--green)'
+           : sapImportStatus.startsWith('❌') ? 'var(--red)' : 'var(--blue)';
+  const sb = sapImportStatus.startsWith('✅')||sapImportStatus.startsWith('🎉') ? 'rgba(76,175,125,.1)'
+           : sapImportStatus.startsWith('❌') ? 'rgba(224,90,78,.1)' : 'rgba(91,142,240,.1)';
+  const sd = sapImportStatus.startsWith('✅')||sapImportStatus.startsWith('🎉') ? 'rgba(76,175,125,.3)'
+           : sapImportStatus.startsWith('❌') ? 'rgba(224,90,78,.3)' : 'rgba(91,142,240,.3)';
+
+  const orders    = [...new Set(sapImportRows.map(r=>r.orderNumber))];
+  const wcs       = [...new Set(sapImportRows.map(r=>r.wc).filter(Boolean))];
+  const confirmed = sapImportRows.filter(r=>r.isConfirm&&r.isConfirm!=='0'&&r.isConfirm.toLowerCase()!=='false'&&r.isConfirm!=='').length;
+  const pending   = sapImportRows.length - confirmed;
+
+  return `<div>
+    <div style="font-size:15px;font-weight:600;margin-bottom:4px">📋 SAP Production Order Import</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:14px">
+      อัปโหลด Excel จาก SAP — รองรับ columns: OrderNumber · SalesOrder · MaterialOrder · WorkCenter · STDActivityType · Confirm
+    </div>
+
+    <div id="sap-drop-zone"
+      style="border:2px dashed var(--bord2);border-radius:12px;padding:28px;text-align:center;margin-bottom:14px;cursor:pointer;background:var(--bg3)"
+      onclick="document.getElementById('sap-file-input').click()"
+      ondragover="event.preventDefault();this.style.borderColor='var(--purple)'"
+      ondragleave="this.style.borderColor='var(--bord2)'"
+      ondrop="event.preventDefault();this.style.borderColor='var(--bord2)';handleSapFile(event.dataTransfer.files[0])">
+      <div style="font-size:28px;margin-bottom:8px">📋</div>
+      <div style="font-size:13px;font-weight:600;color:var(--txt2)">คลิกหรือลากวาง SAP Excel</div>
+      <div style="font-size:11px;color:var(--txt3);margin-top:4px">รองรับ .xlsx / .xls — ตรวจหา header อัตโนมัติ</div>
+      <input type="file" id="sap-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleSapFile(this.files[0])">
+    </div>
+
+    ${sapImportStatus ? `<div style="padding:10px 14px;border-radius:8px;font-size:13px;font-weight:500;margin-bottom:12px;background:${sb};color:${sc};border:1px solid ${sd}">${sapImportStatus}</div>` : ''}
+
+    ${sapImportRows.length>0 ? `
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px">
+      <div class="mc"><div class="mc-label">Operations</div><div class="mc-val" style="color:var(--blue)">${sapImportRows.length}</div></div>
+      <div class="mc"><div class="mc-label">Orders</div><div class="mc-val" style="color:var(--green)">${orders.length}</div></div>
+      <div class="mc"><div class="mc-label">Work Centers</div><div class="mc-val">${wcs.length}</div></div>
+      <div class="mc"><div class="mc-label">✅ Confirmed</div><div class="mc-val" style="color:var(--green)">${confirmed}</div></div>
+      <div class="mc"><div class="mc-label">⏳ Pending</div><div class="mc-val" style="color:${pending>0?'var(--amber)':'var(--txt2)'}">${pending}</div></div>
+    </div>
+
+    <div style="overflow-x:auto;border-radius:10px;border:1px solid var(--bord);max-height:520px;overflow-y:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:10px;min-width:1400px">
+      <thead style="position:sticky;top:0;z-index:2">
+        <tr style="background:var(--bg3);border-bottom:1px solid var(--bord2)">
+          ${['ID','Order No','Plant','Sales Order','Material','Description','Routing','Reservation','Qty','Unit','Type','Start Date','Finish Date','Timestamp','Counter','Op No','Op Name (Ltxa1)','Work Center','STD Act.3','STD Act.4','STD Act.5','STD Act.6','สร้างเมื่อ','Confirm Start','Confirm End','Confirmed']
+            .map(h=>`<th style="padding:6px 8px;text-align:left;color:var(--txt3);font-size:9px;font-weight:700;white-space:nowrap">${h}</th>`).join('')}
+        </tr>
+      </thead>
+      <tbody>
+        ${sapImportRows.map((r,i)=>{
+          const isConf = r.isConfirm && r.isConfirm!=='0' && r.isConfirm.toLowerCase()!=='false' && r.isConfirm!=='';
+          const bg = isConf ? 'rgba(76,175,125,.06)' : (i%2 ? 'var(--bg3)' : '');
+          const stdTotal = r.std3+r.std4+r.std5+r.std6;
+          return `<tr style="border-bottom:0.5px solid var(--bord);background:${bg}">
+            <td style="padding:4px 8px;color:var(--txt3)">${r.id}</td>
+            <td style="padding:4px 8px;font-family:var(--mono);font-weight:700;color:var(--amber);white-space:nowrap">${r.orderNumber}</td>
+            <td style="padding:4px 8px;color:var(--txt2)">${r.plant}</td>
+            <td style="padding:4px 8px;font-family:var(--mono);color:var(--blue)">${r.salesOrder}</td>
+            <td style="padding:4px 8px;font-family:var(--mono);font-size:9px;color:var(--txt2)">${r.materialOrder}</td>
+            <td style="padding:4px 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.materialDesc}">${r.materialDesc}</td>
+            <td style="padding:4px 8px;font-family:var(--mono);font-size:9px;color:var(--txt3)">${r.routingNo}</td>
+            <td style="padding:4px 8px;font-family:var(--mono);font-size:9px;color:var(--txt3)">${r.reservationNo}</td>
+            <td style="padding:4px 8px;text-align:center;font-weight:700">${r.qty}</td>
+            <td style="padding:4px 8px;color:var(--txt3);font-size:9px">${r.unit}</td>
+            <td style="padding:4px 8px;font-size:9px"><span style="padding:1px 5px;border-radius:3px;background:var(--bg4);font-size:8px">${r.orderType}</span></td>
+            <td style="padding:4px 8px;font-family:var(--mono);font-size:9px;white-space:nowrap">${r.startDate||'—'}</td>
+            <td style="padding:4px 8px;font-family:var(--mono);font-size:9px;white-space:nowrap;color:${r.finishDate?'var(--red)':'var(--txt3)'}">${r.finishDate||'—'}</td>
+            <td style="padding:4px 8px;font-size:9px;color:var(--txt3);white-space:nowrap">${r.timeStamp||'—'}</td>
+            <td style="padding:4px 8px;text-align:center;font-size:9px;color:var(--txt3)">${r.counter}</td>
+            <td style="padding:4px 8px;text-align:center;font-family:var(--mono);font-weight:700;color:var(--purple)">${r.opNumber}</td>
+            <td style="padding:4px 8px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.opName}">${r.opName}</td>
+            <td style="padding:4px 8px;font-family:var(--mono);font-weight:700;color:var(--blue)">${r.wc}</td>
+            <td style="padding:4px 8px;text-align:right;font-family:var(--mono);color:${r.std3>0?'var(--amber)':'var(--txt3)'}">${r.std3||''}</td>
+            <td style="padding:4px 8px;text-align:right;font-family:var(--mono);color:${r.std4>0?'var(--amber)':'var(--txt3)'}">${r.std4||''}</td>
+            <td style="padding:4px 8px;text-align:right;font-family:var(--mono);color:${r.std5>0?'var(--amber)':'var(--txt3)'}">${r.std5||''}</td>
+            <td style="padding:4px 8px;text-align:right;font-family:var(--mono);color:${r.std6>0?'var(--amber)':'var(--txt3)'}">${r.std6||''}</td>
+            <td style="padding:4px 8px;font-size:9px;color:var(--txt3);white-space:nowrap">${r.createdAt||'—'}</td>
+            <td style="padding:4px 8px;font-family:var(--mono);font-size:9px;white-space:nowrap;color:var(--green)">${r.confirmStart||'—'}</td>
+            <td style="padding:4px 8px;font-family:var(--mono);font-size:9px;white-space:nowrap;color:var(--green)">${r.confirmEnd||'—'}</td>
+            <td style="padding:4px 8px;text-align:center">
+              ${isConf
+                ? `<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:var(--green);color:#fff;font-size:11px;line-height:18px;text-align:center">✓</span>`
+                : `<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:var(--bg4);color:var(--txt3);font-size:10px;line-height:18px;text-align:center">○</span>`}
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    </div>` : ''}
+
+    <!-- Column guide -->
+    <div class="card" style="margin-top:14px;background:rgba(108,61,168,.04);border-color:rgba(108,61,168,.2)">
+      <div class="card-title" style="color:var(--purple)">Columns ที่รองรับ (26 columns)</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;font-size:9px;font-family:var(--mono)">
+        ${['ID','OrderNumber','ProductionPlant','SalesOrder','MaterialOrder','MaterialDescription','RoutingNo','ReservationNumber','TargetQuantity','UnitOrder','OrderType','BasicStartDate','BasicFinishDate','TimeStamp','Counter','OperationNumber','Ltxa1','WorkCenter','STDActivityType3','STDActivityType4','STDActivityType5','STDActivityType6','สร้างเมื่อ','Confirm_Start','Confirm_End','Is_Confirm']
+          .map(c=>`<span style="padding:2px 7px;background:var(--bg3);border-radius:4px;color:var(--purple)">${c}</span>`).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderImport() {
   const typeBtn = (key, icon, label) => {
     const active = importType === key;
@@ -5106,10 +5341,12 @@ function renderImport() {
       ${typeBtn('masterplan','📥','Master Plan')}
       ${typeBtn('employees','👥','Import พนักงาน')}
       ${typeBtn('catalog','📚','Import Catalog')}
+      ${typeBtn('sap','📋','SAP Orders')}
     </div>
     ${importType==='masterplan' ? renderImportMasterPlan() : ''}
     ${importType==='employees'  ? renderImportEmployees()  : ''}
     ${importType==='catalog'    ? renderImportCatalog()    : ''}
+    ${importType==='sap'        ? renderImportSap()        : ''}
   </div>`;
 }
 
