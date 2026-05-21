@@ -4900,44 +4900,89 @@ function handleEmpFile(file) {
       const XLSX = window.XLSX;
       if (!XLSX) { empImportStatus='❌ SheetJS ยังไม่พร้อม'; setTab('import'); return; }
       const wb  = XLSX.read(e.target.result, {type:'array'});
-      const ws  = wb.Sheets[wb.SheetNames[0]];
+      const sheetName = wb.SheetNames[0];
+      const ws  = wb.Sheets[sheetName];
       const raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
 
-      // Auto-detect header row (must have WC + name columns)
-      let headerRow = null, dataStart = 0;
-      for (let i=0; i<Math.min(raw.length,15); i++) {
-        const norm = (raw[i]||[]).map(v=>String(v||'').toLowerCase().replace(/[\s_-]/g,''));
-        if (norm.some(h=>h.includes('wc')||h.includes('workcenter'))
-          &&norm.some(h=>h.includes('name')||h.includes('emp')||h.includes('ชื่อ'))) {
-          headerRow = raw[i]; dataStart = i+1; break;
+      const nm = v => String(v||'').toLowerCase().replace(/[\s_\-\.\/()]+/g,'');
+
+      // Header detection — 4 strategies from strict to loose
+      const WC_KEYS   = ['wc','workcenter','หน่วยงาน','หน่วย','workctr','costcenter','แผนก','work'];
+      const NAME_KEYS = ['name','ชื่อ','fullname','empname','ชื่อสกุล','ชื่อนามสกุล','employee'];
+      const ID_KEYS   = ['id','empid','รหัส','personnel','empno','employeeid','no','ลำดับ'];
+      const DEPT_KEYS = ['dept','department','แผนก','division','ฝ่าย'];
+
+      let headerRow = null, dataStart = 0, detectNote = '';
+
+      // Strategy 1: row has WC + Name keywords
+      for (let i=0; i<Math.min(raw.length,30); i++) {
+        const normed = (raw[i]||[]).map(nm);
+        if (normed.some(h=>WC_KEYS.some(k=>h.includes(k))) && normed.some(h=>NAME_KEYS.some(k=>h.includes(k)))) {
+          headerRow = raw[i]; dataStart = i+1; detectNote='(ตรวจพบ header อัตโนมัติ)'; break;
         }
       }
-      const findCol = (keys) => {
-        if (!headerRow) return -1;
-        return headerRow.findIndex(h=>keys.some(k=>String(h||'').toLowerCase().replace(/[\s_-]/g,'').includes(k)));
+      // Strategy 2: row has Name + ID keywords (no WC — will fallback to col 0)
+      if (!headerRow) {
+        for (let i=0; i<Math.min(raw.length,30); i++) {
+          const normed = (raw[i]||[]).map(nm);
+          if (normed.some(h=>NAME_KEYS.some(k=>h.includes(k))) && normed.some(h=>ID_KEYS.some(k=>h.includes(k)))) {
+            headerRow = raw[i]; dataStart = i+1; detectNote='(พบ Name+ID — WC ใช้ column แรก)'; break;
+          }
+        }
+      }
+      // Strategy 3: row has at least 3 non-empty strings (first such row = header)
+      if (!headerRow) {
+        for (let i=0; i<Math.min(raw.length,10); i++) {
+          const row = raw[i]||[];
+          const strs = row.filter(v=>v!==null&&String(v).trim()!=='');
+          if (strs.length >= 3 && strs.every(v=>isNaN(parseFloat(v)))) {
+            headerRow = raw[i]; dataStart = i+1; detectNote='(ใช้ row แรกที่มีข้อความ 3+ column)'; break;
+          }
+        }
+      }
+      // Strategy 4: treat row 0 as header
+      if (!headerRow && raw.length > 0) {
+        headerRow = raw[0]; dataStart = 1; detectNote='(ใช้ row 1 เป็น header)';
+      }
+
+      const findCol = (keys, fallback) => {
+        if (!headerRow) return fallback;
+        const idx = headerRow.findIndex(h => keys.some(k => nm(h).includes(k)));
+        return idx >= 0 ? idx : fallback;
       };
-      const iWC   = findCol(['wc','workcenter','work']) !== -1 ? findCol(['wc','workcenter','work']) : 0;
-      const iId   = findCol(['id','empid','รหัส','personnel'])  !== -1 ? findCol(['id','empid','รหัส','personnel']) : 1;
-      const iName = findCol(['name','ชื่อ','fullname'])         !== -1 ? findCol(['name','ชื่อ','fullname']) : 2;
-      const iDept = findCol(['dept','department','แผนก'])       !== -1 ? findCol(['dept','department','แผนก']) : 3;
+
+      const iWC   = findCol(WC_KEYS, 0);
+      const iId   = findCol(ID_KEYS, 1);
+      const iName = findCol(NAME_KEYS, 2);
+      const iDept = findCol(DEPT_KEYS, -1);
+
+      // Build readable mapping note
+      const colLabel = i => i >= 0 ? (headerRow?.[i] ? `"${headerRow[i]}"[${i+1}]` : `col${i+1}`) : '—';
+      const mappingNote = `WC=${colLabel(iWC)} · Name=${colLabel(iName)} · ID=${colLabel(iId)}${iDept>=0?` · Dept=${colLabel(iDept)}`:''}`;
 
       const rows = [];
-      for (const row of (headerRow ? raw.slice(dataStart) : raw)) {
-        if (!row) continue;
+      const dataSlice = headerRow ? raw.slice(dataStart) : raw;
+      for (const row of dataSlice) {
+        if (!row || row.every(v=>v===null||String(v).trim()==='')) continue;
         const wc   = String(row[iWC]  ||'').trim().toUpperCase();
         const name = String(row[iName]||'').trim();
         if (!wc || !name) continue;
         rows.push({
           wc,
-          empId: String(row[iId]||'').replace(/\.0$/,'').trim(),
+          empId:   String(row[iId]  ||'').replace(/\.0$/,'').trim(),
           empName: name,
-          dept: String(row[iDept]||'').trim() || detectDeptFromWC(wc),
+          dept:    iDept>=0 ? (String(row[iDept]||'').trim()||detectDeptFromWC(wc)) : detectDeptFromWC(wc),
         });
       }
+
       empImportRows   = rows;
-      empImportStatus = rows.length
-        ? `✅ พบ ${rows.length} คน — ${[...new Set(rows.map(r=>r.wc))].length} WCs — ตรวจสอบแล้วกด "โหลดเข้าระบบ"`
-        : '⚠ ไม่พบข้อมูล — ตรวจสอบ header: WC, Employee Name, Employee ID';
+      if (rows.length) {
+        const wcCount = [...new Set(rows.map(r=>r.wc))].length;
+        empImportStatus = `✅ พบ ${rows.length} คน จาก ${wcCount} WCs ${detectNote}\n📋 Column: ${mappingNote}`;
+      } else {
+        const preview = headerRow ? `Header ที่พบ: [${(headerRow||[]).filter(Boolean).slice(0,6).join(', ')}]` : 'ไม่พบ header';
+        empImportStatus = `⚠ ไม่พบข้อมูลพนักงาน ${detectNote}\n${preview}\n💡 ต้องมีคอลัมน์ WC/หน่วยงาน และ ชื่อ/Name อย่างน้อย 1 คน`;
+      }
       empImportDone = false;
       setTab('import');
     } catch(err) { empImportStatus=`❌ ${err.message}`; setTab('import'); }
@@ -5251,7 +5296,7 @@ function renderImportEmployees() {
       <input type="file" id="emp-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleEmpFile(this.files[0])">
     </div>
 
-    ${empImportStatus ? `<div style="padding:10px 14px;border-radius:8px;font-size:13px;font-weight:500;margin-bottom:12px;background:${statusBg};color:${statusCol};border:1px solid ${statusBd}">${empImportStatus}</div>` : ''}
+    ${empImportStatus ? `<div style="padding:10px 14px;border-radius:8px;font-size:13px;font-weight:500;margin-bottom:12px;background:${statusBg};color:${statusCol};border:1px solid ${statusBd};white-space:pre-line">${empImportStatus}</div>` : ''}
 
     ${empImportRows.length>0 ? `
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
@@ -5301,15 +5346,22 @@ function renderImportEmployees() {
     <div class="card" style="margin-top:14px;background:rgba(91,142,240,.04);border-color:rgba(91,142,240,.2)">
       <div class="card-title" style="color:var(--blue)">รูปแบบ Excel ที่รองรับ</div>
       <div style="font-size:12px;color:var(--txt2);line-height:1.9">
-        <div>ต้องมีคอลัมน์ (ชื่อหัวไม่ต้องตรงทั้งหมด — ระบบ fuzzy match):</div>
-        <div style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:4px">
-          ${[['WC / Work Center','รหัส Work Center เช่น EE3102, MP5101'],['Employee ID / รหัสพนักงาน','รหัส SAP เช่น 10001'],['Employee Name / ชื่อ','ชื่อ-นามสกุล'],['Department / แผนก','รหัสแผนก เช่น 31, 32 (ระบบ auto-detect ได้)']].map(([k,v])=>`
-          <div style="padding:5px 8px;background:var(--bg3);border-radius:5px">
-            <div style="font-weight:600;color:var(--txt);font-size:10px">${k}</div>
-            <div style="color:var(--txt3);font-size:9px">${v}</div>
+        <div style="margin-bottom:8px">ชื่อหัวคอลัมน์ที่ระบบรู้จัก (ไม่ต้องตรงทุกตัวอักษร):</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          ${[
+            ['WC / Work Center','wc, workcenter, หน่วยงาน, หน่วย, แผนก, costcenter','ต้องมี — เช่น EE3102, MP5101'],
+            ['Employee Name / ชื่อ','name, ชื่อ, fullname, empname, ชื่อสกุล, employee','ต้องมี — ชื่อ-นามสกุล'],
+            ['Employee ID / รหัส','id, empid, รหัส, personnel, empno, employeeid','optional — รหัส SAP เช่น 10001'],
+            ['Department / แผนก','dept, department, แผนก, division, ฝ่าย','optional — ระบบ auto-detect ได้จาก WC']
+          ].map(([label,keys,hint])=>`
+          <div style="padding:6px 9px;background:var(--bg3);border-radius:6px">
+            <div style="font-weight:700;color:var(--txt);font-size:10px;margin-bottom:2px">${label}</div>
+            <div style="font-family:var(--mono);color:var(--blue);font-size:9px;margin-bottom:2px">${keys}</div>
+            <div style="color:var(--txt3);font-size:9px">${hint}</div>
           </div>`).join('')}
         </div>
-        <div style="margin-top:8px;padding:6px 10px;background:rgba(224,156,42,.08);border-radius:6px;border-left:3px solid var(--amber);font-size:11px">
+        <div style="margin-top:10px;padding:7px 10px;background:rgba(192,120,0,.07);border-radius:6px;border-left:3px solid var(--amber);font-size:11px;line-height:1.6">
+          💡 ถ้า import ไม่ได้ ให้ดูบรรทัด <strong>"Column:"</strong> ในกล่องสถานะ — แสดงว่าระบบ map คอลัมน์อะไรไว้ที่ไหน<br>
           ⚠ การ import จะอัปเดตข้อมูลใน browser เท่านั้น (ยังไม่ sync กับ backend DB ในเวอร์ชันนี้)
         </div>
       </div>
