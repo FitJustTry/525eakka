@@ -4647,10 +4647,23 @@ function renderOrders() {
 }
 
 // ── Import Master Plan Excel ──────────────────────────────────
-let importRows    = [];   // parsed rows waiting for preview
+let importType    = 'masterplan'; // 'masterplan' | 'employees' | 'catalog'
+
+// Master Plan import
+let importRows    = [];
 let importStatus  = '';
 let importDone    = false;
 let importMappingMode = '';
+
+// Employee import
+let empImportRows   = [];
+let empImportStatus = '';
+let empImportDone   = false;
+
+// Catalog import
+let catImportRows   = [];
+let catImportStatus = '';
+let catImportDone   = false;
 
 function kvaToTemplate(kva) {
   if (kva <= 75)   return 'tr.50kVA';
@@ -4857,15 +4870,208 @@ function loadImportToSystem() {
   setTab('import');
 }
 
-function renderImport() {
-  const today = new Date().toLocaleDateString('th-TH',{year:'numeric',month:'long',day:'numeric'});
-  const maxDeadline = importRows.length ? importRows.filter(r=>r.deadline).sort((a,b)=>a.deadline>b.deadline?1:-1).pop()?.deadline : null;
-  const lateCount   = importRows.filter(r=>{
-    if (!r.deadline) return false;
-    return new Date(r.deadline) < new Date();
-  }).length;
+// ── Employee Import ─────────────────────────────────────────
+function detectDeptFromWC(wc) {
+  if (/^EE31/.test(wc)) return '31';
+  if (/^EE32/.test(wc)) return '32';
+  if (/^EE33/.test(wc)) return '33';
+  if (/^EE34/.test(wc)) return '34';
+  if (/^EE35/.test(wc)) return '35';
+  if (/^EE36/.test(wc)) return '36';
+  if (/^EE37/.test(wc)) return '37';
+  if (/^EE4/.test(wc))  return '42';
+  if (/^MP51/.test(wc)) return '51';
+  if (/^MP52/.test(wc)) return '52';
+  if (/^MP53/.test(wc)) return '53';
+  if (/^MP54/.test(wc)) return '54';
+  if (/^MP56/.test(wc)) return '56';
+  if (/^PT/.test(wc))   return '37';
+  return '';
+}
 
+function handleEmpFile(file) {
+  if (!file) return;
+  empImportStatus = '⏳ กำลังอ่านไฟล์...';
+  empImportRows = []; empImportDone = false;
+  setTab('import');
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const XLSX = window.XLSX;
+      if (!XLSX) { empImportStatus='❌ SheetJS ยังไม่พร้อม'; setTab('import'); return; }
+      const wb  = XLSX.read(e.target.result, {type:'array'});
+      const ws  = wb.Sheets[wb.SheetNames[0]];
+      const raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+
+      // Auto-detect header row (must have WC + name columns)
+      let headerRow = null, dataStart = 0;
+      for (let i=0; i<Math.min(raw.length,15); i++) {
+        const norm = (raw[i]||[]).map(v=>String(v||'').toLowerCase().replace(/[\s_-]/g,''));
+        if (norm.some(h=>h.includes('wc')||h.includes('workcenter'))
+          &&norm.some(h=>h.includes('name')||h.includes('emp')||h.includes('ชื่อ'))) {
+          headerRow = raw[i]; dataStart = i+1; break;
+        }
+      }
+      const findCol = (keys) => {
+        if (!headerRow) return -1;
+        return headerRow.findIndex(h=>keys.some(k=>String(h||'').toLowerCase().replace(/[\s_-]/g,'').includes(k)));
+      };
+      const iWC   = findCol(['wc','workcenter','work']) !== -1 ? findCol(['wc','workcenter','work']) : 0;
+      const iId   = findCol(['id','empid','รหัส','personnel'])  !== -1 ? findCol(['id','empid','รหัส','personnel']) : 1;
+      const iName = findCol(['name','ชื่อ','fullname'])         !== -1 ? findCol(['name','ชื่อ','fullname']) : 2;
+      const iDept = findCol(['dept','department','แผนก'])       !== -1 ? findCol(['dept','department','แผนก']) : 3;
+
+      const rows = [];
+      for (const row of (headerRow ? raw.slice(dataStart) : raw)) {
+        if (!row) continue;
+        const wc   = String(row[iWC]  ||'').trim().toUpperCase();
+        const name = String(row[iName]||'').trim();
+        if (!wc || !name) continue;
+        rows.push({
+          wc,
+          empId: String(row[iId]||'').replace(/\.0$/,'').trim(),
+          empName: name,
+          dept: String(row[iDept]||'').trim() || detectDeptFromWC(wc),
+        });
+      }
+      empImportRows   = rows;
+      empImportStatus = rows.length
+        ? `✅ พบ ${rows.length} คน — ${[...new Set(rows.map(r=>r.wc))].length} WCs — ตรวจสอบแล้วกด "โหลดเข้าระบบ"`
+        : '⚠ ไม่พบข้อมูล — ตรวจสอบ header: WC, Employee Name, Employee ID';
+      empImportDone = false;
+      setTab('import');
+    } catch(err) { empImportStatus=`❌ ${err.message}`; setTab('import'); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function loadEmpToSystem() {
+  if (!empImportRows.length) return;
+  const wcSet = [...new Set(empImportRows.map(r=>r.wc))];
+  if (!window.confirm(`โหลด ${empImportRows.length} คน จาก ${wcSet.length} WCs เข้าระบบ?\n\nจะแทนที่ข้อมูลพนักงานที่มีอยู่ทั้งหมด (${Object.values(EMP_DIR).reduce((s,d)=>s+d.employees.length,0)} คน)`)) return;
+
+  // Build new EMP_DIR (group by WC)
+  const newDir = {};
+  for (const r of empImportRows) {
+    if (!newDir[r.wc]) newDir[r.wc] = { dept: r.dept, employees: [] };
+    newDir[r.wc].employees.push({ name: r.empName, id: r.empId });
+    if (r.dept && !newDir[r.wc].dept) newDir[r.wc].dept = r.dept;
+  }
+  // Replace EMP_DIR in-place (it's a const object)
+  Object.keys(EMP_DIR).forEach(k => delete EMP_DIR[k]);
+  Object.assign(EMP_DIR, newDir);
+
+  invalidateLoadCache();
+  empImportDone   = true;
+  empImportStatus = `🎉 โหลดสำเร็จ! ${empImportRows.length} คน จาก ${wcSet.length} WCs เข้าระบบแล้ว`;
+  setTab('import');
+}
+
+// ── Catalog Import ───────────────────────────────────────────
+function handleCatFile(file) {
+  if (!file) return;
+  catImportStatus = '⏳ กำลังอ่านไฟล์...';
+  catImportRows = []; catImportDone = false;
+  setTab('import');
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const XLSX = window.XLSX;
+      if (!XLSX) { catImportStatus='❌ SheetJS ยังไม่พร้อม'; setTab('import'); return; }
+      const wb  = XLSX.read(e.target.result, {type:'array'});
+      const ws  = wb.Sheets[wb.SheetNames[0]];
+      const raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+
+      let headerRow = null, dataStart = 0;
+      for (let i=0; i<Math.min(raw.length,15); i++) {
+        const norm = (raw[i]||[]).map(v=>String(v||'').toLowerCase().replace(/[\s_-]/g,''));
+        if (norm.some(h=>h.includes('kva')) && norm.some(h=>h.includes('std')||h.includes('volt')||h.includes('type'))) {
+          headerRow = raw[i]; dataStart = i+1; break;
+        }
+      }
+      const findCol = (keys) => {
+        if (!headerRow) return -1;
+        return headerRow.findIndex(h=>keys.some(k=>String(h||'').toLowerCase().replace(/[\s_-]/g,'').includes(k)));
+      };
+      const iId     = findCol(['id','no','รหัส'])         !== -1 ? findCol(['id','no','รหัส'])         : 0;
+      const iKva    = findCol(['kva'])                     !== -1 ? findCol(['kva'])                     : 1;
+      const iPhase  = findCol(['phase','เฟส'])            !== -1 ? findCol(['phase','เฟส'])            : 2;
+      const iVec    = findCol(['vector','vec','group'])    !== -1 ? findCol(['vector','vec','group'])    : 3;
+      const iVolt   = findCol(['volt','แรงดัน'])           !== -1 ? findCol(['volt','แรงดัน'])           : 4;
+      const iType   = findCol(['type','ชนิด'])            !== -1 ? findCol(['type','ชนิด'])            : 5;
+      const iStd    = findCol(['std','hrs','ชั่วโมง'])    !== -1 ? findCol(['std','hrs','ชั่วโมง'])    : 6;
+      const iOrders = findCol(['order','qty','จำนวน'])    !== -1 ? findCol(['order','qty','จำนวน'])    : 7;
+      const iTmpl   = findCol(['template','product','tmpl'])!== -1 ? findCol(['template','product','tmpl']): 8;
+      const iDesc   = findCol(['desc','remark','detail'])  !== -1 ? findCol(['desc','remark','detail'])  : 9;
+
+      const rows = []; let idx = 1;
+      for (const row of (headerRow ? raw.slice(dataStart) : raw)) {
+        if (!row) continue;
+        const kva = parseFloat(row[iKva]);
+        if (!kva || kva <= 0) continue;
+        const tmpl = String(row[iTmpl]||'').trim() || kvaToTemplate(kva);
+        rows.push({
+          id:       String(row[iId]||'').trim() || `C${String(idx).padStart(3,'0')}`,
+          kva,
+          phase:    String(row[iPhase]||'3ph').trim().toLowerCase(),
+          vector:   String(row[iVec]  ||'').trim(),
+          voltage:  String(row[iVolt] ||'').trim(),
+          type:     String(row[iType] ||'Oil-Immersed').trim(),
+          std:      parseFloat(row[iStd])    || (PRODUCTS[tmpl]?.std_hrs || 0),
+          orders:   parseInt(row[iOrders])   || 0,
+          template: tmpl,
+          desc:     String(row[iDesc]||'').trim(),
+        });
+        idx++;
+      }
+      catImportRows   = rows;
+      catImportStatus = rows.length
+        ? `✅ พบ ${rows.length} รุ่น — kVA ${Math.min(...rows.map(r=>r.kva))}–${Math.max(...rows.map(r=>r.kva))} — ตรวจสอบแล้วกด "โหลดเข้าระบบ"`
+        : '⚠ ไม่พบข้อมูล — ตรวจสอบ header: kVA, Voltage, STD';
+      catImportDone = false;
+      setTab('import');
+    } catch(err) { catImportStatus=`❌ ${err.message}`; setTab('import'); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function loadCatToSystem() {
+  if (!catImportRows.length) return;
+  if (!window.confirm(`โหลด ${catImportRows.length} รุ่น เข้า Catalog?\n\nจะแทนที่ Catalog ที่มีอยู่ทั้งหมด (${CATALOG.length} รุ่น)`)) return;
+  CATALOG.length = 0;
+  catImportRows.forEach(r => CATALOG.push(r));
+  invalidateLoadCache();
+  catImportDone   = true;
+  catImportStatus = `🎉 โหลดสำเร็จ! ${catImportRows.length} รุ่น เข้า Catalog แล้ว`;
+  setTab('import');
+}
+
+function renderImport() {
+  const typeBtn = (key, icon, label) => {
+    const active = importType === key;
+    return `<button onclick="importType='${key}';setTab('import')"
+      style="padding:8px 18px;font-size:12px;font-weight:${active?700:500};border-radius:8px;cursor:pointer;
+        background:${active?'var(--amber)':'var(--bg3)'};color:${active?'#fff':'var(--txt2)'};
+        border:1px solid ${active?'var(--amber)':'var(--bord2)'};transition:all .15s">
+      ${icon} ${label}
+    </button>`;
+  };
   return `<div class="panel" style="max-width:100%">
+    <div style="display:flex;gap:6px;margin-bottom:16px;align-items:center;flex-wrap:wrap">
+      ${typeBtn('masterplan','📥','Master Plan')}
+      ${typeBtn('employees','👥','Import พนักงาน')}
+      ${typeBtn('catalog','📚','Import Catalog')}
+    </div>
+    ${importType==='masterplan' ? renderImportMasterPlan() : ''}
+    ${importType==='employees'  ? renderImportEmployees()  : ''}
+    ${importType==='catalog'    ? renderImportCatalog()    : ''}
+  </div>`;
+}
+
+function renderImportMasterPlan() {
+  const maxDeadline = importRows.length ? importRows.filter(r=>r.deadline).sort((a,b)=>a.deadline>b.deadline?1:-1).pop()?.deadline : null;
+  const lateCount   = importRows.filter(r=>r.deadline && new Date(r.deadline)<new Date()).length;
+  return `<div>
     <div style="font-size:15px;font-weight:600;margin-bottom:4px">📥 Import Master Plan Excel</div>
     <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">
       อัปโหลดไฟล์ Excel แผนลงคอยล์ (sheet AAA) — ระบบจะแปลงเป็น orders อัตโนมัติ
@@ -5012,6 +5218,195 @@ function renderImport() {
         <div><strong>4.</strong> กด <strong>"โหลดเข้าระบบ"</strong> — ระบบจะอัปเดต Load Board, Gantt, Simulate ทันที</div>
         <div style="margin-top:6px;padding:6px 10px;background:rgba(224,156,42,.08);border-radius:6px;border-left:3px solid var(--amber)">
           <strong>Column mapping:</strong> ระบบอ่านจากชื่อหัวคอลัมน์ก่อน ถ้าไม่พบจะใช้ค่าเดิม วันที่[A] · ลำดับ[B] · หมวด[C] · SAP SO[D] · KVA[H] · ลูกค้า[J] · จำนวน[L] · DUE SO[Q] · กำหนดส่งสโตร์[P]
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Employee Import render ────────────────────────────────────
+function renderImportEmployees() {
+  const wcGroups = {};
+  empImportRows.forEach(r => { wcGroups[r.wc] = (wcGroups[r.wc]||0)+1; });
+  const wcList = Object.entries(wcGroups).sort((a,b)=>a[0].localeCompare(b[0]));
+  const statusCol = empImportStatus.startsWith('✅')||empImportStatus.startsWith('🎉')?'var(--green)':empImportStatus.startsWith('❌')?'var(--red)':'var(--blue)';
+  const statusBg  = empImportStatus.startsWith('✅')||empImportStatus.startsWith('🎉')?'rgba(76,175,125,.1)':empImportStatus.startsWith('❌')?'rgba(224,90,78,.1)':'rgba(91,142,240,.1)';
+  const statusBd  = empImportStatus.startsWith('✅')||empImportStatus.startsWith('🎉')?'rgba(76,175,125,.3)':empImportStatus.startsWith('❌')?'rgba(224,90,78,.3)':'rgba(91,142,240,.3)';
+
+  return `<div>
+    <div style="font-size:15px;font-weight:600;margin-bottom:4px">👥 Import พนักงาน จาก Excel</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:14px">
+      อัปโหลดไฟล์ Excel ที่มีคอลัมน์: <strong>WC · Employee ID · Employee Name · Department</strong>
+    </div>
+
+    <div id="emp-drop-zone"
+      style="border:2px dashed var(--bord2);border-radius:12px;padding:28px;text-align:center;margin-bottom:14px;cursor:pointer;background:var(--bg3)"
+      onclick="document.getElementById('emp-file-input').click()"
+      ondragover="event.preventDefault();this.style.borderColor='var(--green)'"
+      ondragleave="this.style.borderColor='var(--bord2)'"
+      ondrop="event.preventDefault();this.style.borderColor='var(--bord2)';handleEmpFile(event.dataTransfer.files[0])">
+      <div style="font-size:28px;margin-bottom:8px">👥</div>
+      <div style="font-size:13px;font-weight:600;color:var(--txt2)">คลิกหรือลากวาง Excel พนักงาน</div>
+      <div style="font-size:11px;color:var(--txt3);margin-top:4px">รองรับ .xlsx / .xls — ระบบหาหัวคอลัมน์อัตโนมัติ</div>
+      <input type="file" id="emp-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleEmpFile(this.files[0])">
+    </div>
+
+    ${empImportStatus ? `<div style="padding:10px 14px;border-radius:8px;font-size:13px;font-weight:500;margin-bottom:12px;background:${statusBg};color:${statusCol};border:1px solid ${statusBd}">${empImportStatus}</div>` : ''}
+
+    ${empImportRows.length>0 ? `
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
+      <div class="mc"><div class="mc-label">คนทั้งหมด</div><div class="mc-val" style="color:var(--green)">${empImportRows.length}</div></div>
+      <div class="mc"><div class="mc-label">Work Centers</div><div class="mc-val">${wcList.length}</div></div>
+      <div class="mc"><div class="mc-label">Dept ที่พบ</div><div class="mc-val">${[...new Set(empImportRows.map(r=>r.dept).filter(Boolean))].length}</div></div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+      <button onclick="loadEmpToSystem()" style="background:var(--green);color:#fff;border:none;padding:10px 22px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">
+        ✅ โหลด ${empImportRows.length} คน เข้าระบบ
+      </button>
+      ${empImportDone?`<button onclick="setTab('employees')" style="background:var(--amber);color:#fff;border:none;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">👥 ดูหน้าพนักงาน →</button>`:''}
+      <span style="font-size:11px;color:var(--txt3)">⚠ จะแทนที่ข้อมูลพนักงานที่มีอยู่ทั้งหมด</span>
+    </div>
+
+    <!-- Preview by WC -->
+    <div style="overflow-x:auto;border-radius:10px;border:1px solid var(--bord);max-height:380px;overflow-y:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead style="position:sticky;top:0;z-index:1">
+        <tr style="background:var(--bg3);border-bottom:1px solid var(--bord2)">
+          <th style="padding:7px 10px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600;width:100px">WC</th>
+          <th style="padding:7px 10px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600">ชื่อ WC</th>
+          <th style="padding:7px 10px;text-align:center;color:var(--txt3);font-size:10px;font-weight:600;width:60px">แผนก</th>
+          <th style="padding:7px 10px;text-align:center;color:var(--txt3);font-size:10px;font-weight:600;width:60px">จำนวน</th>
+          <th style="padding:7px 10px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600">พนักงาน</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${wcList.map(([wc,cnt],i)=>{
+          const employees = empImportRows.filter(r=>r.wc===wc);
+          const dept = employees[0]?.dept || '';
+          const wcName = WC_CONFIG[wc]?.name || '—';
+          return `<tr style="border-bottom:0.5px solid var(--bord);${i%2?'background:var(--bg3)':''}">
+            <td style="padding:5px 10px;font-family:var(--mono);font-size:10px;font-weight:700;color:var(--amber)">${wc}</td>
+            <td style="padding:5px 10px;font-size:11px;color:var(--txt2)">${wcName}</td>
+            <td style="padding:5px 10px;text-align:center;font-size:10px;color:var(--txt3)">${dept}</td>
+            <td style="padding:5px 10px;text-align:center;font-family:var(--mono);font-size:11px;font-weight:700;color:var(--green)">${cnt}</td>
+            <td style="padding:5px 10px;font-size:10px;color:var(--txt2)">${employees.slice(0,5).map(e=>`${e.empName}${e.empId?` (${e.empId})`:''}`).join(' · ')}${cnt>5?` + ${cnt-5} คน…`:''}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    </div>` : ''}
+
+    <!-- Column guide -->
+    <div class="card" style="margin-top:14px;background:rgba(91,142,240,.04);border-color:rgba(91,142,240,.2)">
+      <div class="card-title" style="color:var(--blue)">รูปแบบ Excel ที่รองรับ</div>
+      <div style="font-size:12px;color:var(--txt2);line-height:1.9">
+        <div>ต้องมีคอลัมน์ (ชื่อหัวไม่ต้องตรงทั้งหมด — ระบบ fuzzy match):</div>
+        <div style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:4px">
+          ${[['WC / Work Center','รหัส Work Center เช่น EE3102, MP5101'],['Employee ID / รหัสพนักงาน','รหัส SAP เช่น 10001'],['Employee Name / ชื่อ','ชื่อ-นามสกุล'],['Department / แผนก','รหัสแผนก เช่น 31, 32 (ระบบ auto-detect ได้)']].map(([k,v])=>`
+          <div style="padding:5px 8px;background:var(--bg3);border-radius:5px">
+            <div style="font-weight:600;color:var(--txt);font-size:10px">${k}</div>
+            <div style="color:var(--txt3);font-size:9px">${v}</div>
+          </div>`).join('')}
+        </div>
+        <div style="margin-top:8px;padding:6px 10px;background:rgba(224,156,42,.08);border-radius:6px;border-left:3px solid var(--amber);font-size:11px">
+          ⚠ การ import จะอัปเดตข้อมูลใน browser เท่านั้น (ยังไม่ sync กับ backend DB ในเวอร์ชันนี้)
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Catalog Import render ─────────────────────────────────────
+function renderImportCatalog() {
+  const statusCol = catImportStatus.startsWith('✅')||catImportStatus.startsWith('🎉')?'var(--green)':catImportStatus.startsWith('❌')?'var(--red)':'var(--blue)';
+  const statusBg  = catImportStatus.startsWith('✅')||catImportStatus.startsWith('🎉')?'rgba(76,175,125,.1)':catImportStatus.startsWith('❌')?'rgba(224,90,78,.1)':'rgba(91,142,240,.1)';
+  const statusBd  = catImportStatus.startsWith('✅')||catImportStatus.startsWith('🎉')?'rgba(76,175,125,.3)':catImportStatus.startsWith('❌')?'rgba(224,90,78,.3)':'rgba(91,142,240,.3)';
+
+  return `<div>
+    <div style="font-size:15px;font-weight:600;margin-bottom:4px">📚 Import Transformer Catalog จาก Excel</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:14px">
+      อัปโหลดไฟล์ Excel ที่มีคอลัมน์: <strong>ID · kVA · Phase · Vector · Voltage · Type · STD hrs · Orders · Template · Description</strong>
+    </div>
+
+    <div id="cat-drop-zone"
+      style="border:2px dashed var(--bord2);border-radius:12px;padding:28px;text-align:center;margin-bottom:14px;cursor:pointer;background:var(--bg3)"
+      onclick="document.getElementById('cat-file-input').click()"
+      ondragover="event.preventDefault();this.style.borderColor='var(--amber)'"
+      ondragleave="this.style.borderColor='var(--bord2)'"
+      ondrop="event.preventDefault();this.style.borderColor='var(--bord2)';handleCatFile(event.dataTransfer.files[0])">
+      <div style="font-size:28px;margin-bottom:8px">📚</div>
+      <div style="font-size:13px;font-weight:600;color:var(--txt2)">คลิกหรือลากวาง Excel Catalog</div>
+      <div style="font-size:11px;color:var(--txt3);margin-top:4px">รองรับ .xlsx / .xls — ระบบหาหัวคอลัมน์อัตโนมัติ</div>
+      <input type="file" id="cat-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleCatFile(this.files[0])">
+    </div>
+
+    ${catImportStatus ? `<div style="padding:10px 14px;border-radius:8px;font-size:13px;font-weight:500;margin-bottom:12px;background:${statusBg};color:${statusCol};border:1px solid ${statusBd}">${catImportStatus}</div>` : ''}
+
+    ${catImportRows.length>0 ? `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
+      <div class="mc"><div class="mc-label">รุ่นที่พบ</div><div class="mc-val" style="color:var(--green)">${catImportRows.length}</div></div>
+      <div class="mc"><div class="mc-label">kVA ต่ำสุด</div><div class="mc-val">${Math.min(...catImportRows.map(r=>r.kva))}</div></div>
+      <div class="mc"><div class="mc-label">kVA สูงสุด</div><div class="mc-val" style="color:var(--red)">${Math.max(...catImportRows.map(r=>r.kva))}</div></div>
+      <div class="mc"><div class="mc-label">STD hrs เฉลี่ย</div><div class="mc-val">${(catImportRows.reduce((s,r)=>s+r.std,0)/catImportRows.length).toFixed(1)}h</div></div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+      <button onclick="loadCatToSystem()" style="background:var(--amber);color:#fff;border:none;padding:10px 22px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">
+        ✅ โหลด ${catImportRows.length} รุ่น เข้า Catalog
+      </button>
+      ${catImportDone?`<button onclick="setTab('catalog')" style="background:var(--green);color:#fff;border:none;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📚 ดู Catalog →</button>`:''}
+      <span style="font-size:11px;color:var(--txt3)">⚠ จะแทนที่ Catalog ที่มีอยู่ (${CATALOG.length} รุ่น)</span>
+    </div>
+
+    <!-- Preview table -->
+    <div style="overflow-x:auto;border-radius:10px;border:1px solid var(--bord);max-height:380px;overflow-y:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead style="position:sticky;top:0;z-index:1">
+        <tr style="background:var(--bg3);border-bottom:1px solid var(--bord2)">
+          <th style="padding:7px 8px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600;width:54px">ID</th>
+          <th style="padding:7px 8px;text-align:center;color:var(--txt3);font-size:10px;font-weight:600;width:56px">kVA</th>
+          <th style="padding:7px 8px;text-align:center;color:var(--txt3);font-size:10px;font-weight:600;width:44px">Phase</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600;width:66px">Vector</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600;min-width:110px">Voltage</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600;min-width:100px">Type</th>
+          <th style="padding:7px 8px;text-align:center;color:var(--txt3);font-size:10px;font-weight:600;width:56px">STD hrs</th>
+          <th style="padding:7px 8px;text-align:center;color:var(--txt3);font-size:10px;font-weight:600;width:52px">Orders</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600;min-width:100px">Template</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600">Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${catImportRows.map((r,i)=>`<tr style="border-bottom:0.5px solid var(--bord);${i%2?'background:var(--bg3)':''}">
+          <td style="padding:5px 8px;font-family:var(--mono);font-size:10px;color:var(--txt3)">${r.id}</td>
+          <td style="padding:5px 8px;text-align:center;font-weight:700;color:${r.kva>=3500?'var(--red)':r.kva>=1000?'var(--amber)':'var(--green)'}">${r.kva}</td>
+          <td style="padding:5px 8px;text-align:center;font-size:10px;color:var(--txt2)">${r.phase}</td>
+          <td style="padding:5px 8px;font-family:var(--mono);font-size:10px;color:var(--txt2)">${r.vector||'—'}</td>
+          <td style="padding:5px 8px;font-family:var(--mono);font-size:10px;color:var(--blue)">${r.voltage||'—'}</td>
+          <td style="padding:5px 8px;font-size:10px;color:var(--txt2)">${r.type}</td>
+          <td style="padding:5px 8px;text-align:center;font-family:var(--mono);font-size:10px;font-weight:700;color:var(--amber)">${r.std}</td>
+          <td style="padding:5px 8px;text-align:center;font-family:var(--mono);font-size:10px">${r.orders}</td>
+          <td style="padding:5px 8px;font-size:10px;color:var(--txt2)">${r.template}</td>
+          <td style="padding:5px 8px;font-size:10px;color:var(--txt3)">${r.desc||'—'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>` : ''}
+
+    <!-- Column guide -->
+    <div class="card" style="margin-top:14px;background:rgba(91,142,240,.04);border-color:rgba(91,142,240,.2)">
+      <div class="card-title" style="color:var(--blue)">รูปแบบ Excel ที่รองรับ</div>
+      <div style="font-size:12px;color:var(--txt2);line-height:1.9">
+        <div style="margin-bottom:8px">คอลัมน์ที่ระบบรองรับ (ชื่อ fuzzy match — ไม่ต้องเขียนตรงทุกตัวอักษร):</div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px">
+          ${[['kVA','ขนาด kVA'],['Phase','1ph/3ph'],['Vector','Dyn11 ฯลฯ'],['Voltage','เช่น 22000/416'],['Type','Oil-Immersed ฯลฯ'],['STD/hrs','ชั่วโมง STD'],['Orders','ยอดขาย 1ปี'],['Template','tr.50kVA ฯลฯ'],['Description','คำอธิบาย'],['ID','รหัสรุ่น (auto)']].map(([k,v])=>`
+          <div style="padding:4px 7px;background:var(--bg3);border-radius:5px">
+            <div style="font-weight:600;color:var(--amber);font-size:10px">${k}</div>
+            <div style="color:var(--txt3);font-size:9px">${v}</div>
+          </div>`).join('')}
+        </div>
+        <div style="margin-top:8px;padding:6px 10px;background:rgba(224,156,42,.08);border-radius:6px;border-left:3px solid var(--amber);font-size:11px">
+          ⚠ การ import จะอัปเดต Catalog ใน browser เท่านั้น ถ้า backend มี <code>/api/snapshot PUT</code> สามารถ sync ด้วย products ได้ (ยังไม่ implement)
         </div>
       </div>
     </div>
