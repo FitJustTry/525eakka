@@ -93,17 +93,24 @@ async function initDB() {
       comment TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS item_codes (
+      code TEXT PRIMARY KEY,
+      description TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 }
 
 async function getSnapshot() {
-  const [wcRows, prodRows, olRows, holRows, fholRows, ordRows] = await Promise.all([
+  const [wcRows, prodRows, olRows, holRows, fholRows, ordRows, icRows] = await Promise.all([
     pool.query('SELECT wc_id, data FROM wc_config'),
     pool.query('SELECT product_id, data FROM products'),
     pool.query('SELECT wc_id, hours FROM open_load'),
     pool.query('SELECT date, name FROM holidays'),
     pool.query('SELECT date, name FROM factory_holidays'),
     pool.query('SELECT * FROM accepted_orders ORDER BY created_at'),
+    pool.query('SELECT code, description, category FROM item_codes ORDER BY code'),
   ]);
 
   const wc_config = {};
@@ -123,7 +130,10 @@ async function getSnapshot() {
 
   const accepted_orders = ordRows.rows.map(rowToOrder);
 
-  return { wc_config, products, open_load, holidays, factory_holidays, accepted_orders };
+  const item_codes = {};
+  icRows.rows.forEach(r => { item_codes[r.code] = { description: r.description, category: r.category }; });
+
+  return { wc_config, products, open_load, holidays, factory_holidays, accepted_orders, item_codes };
 }
 
 const app = express();
@@ -441,6 +451,36 @@ app.delete('/api/orders/:id', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Item Codes ─────────────────────────────────────────────────
+app.get('/api/item-codes', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT code, description, category FROM item_codes ORDER BY code');
+    const result = {};
+    rows.forEach(r => { result[r.code] = { description: r.description, category: r.category }; });
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/item-codes/:code', async (req, res) => {
+  try {
+    const { description = '', category = '' } = req.body;
+    await pool.query(
+      `INSERT INTO item_codes (code, description, category, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (code) DO UPDATE SET description=EXCLUDED.description, category=EXCLUDED.category, updated_at=NOW()`,
+      [req.params.code, description, category]
+    );
+    res.json({ code: req.params.code, description, category });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/item-codes/:code', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM item_codes WHERE code = $1', [req.params.code]);
+    res.status(204).send();
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/seed', async (req, res) => {

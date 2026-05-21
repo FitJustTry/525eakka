@@ -245,6 +245,10 @@ html.theme-warm .dec-reject{background:#feeeec;border-color:rgba(160,48,32,.3)}
     <button class="nav-tab" onclick="setTab('dept')">🏭 EE แผนก</button>
     <button class="nav-tab" onclick="setTab('load')">📊 Load Board</button>
     <button class="nav-tab" onclick="setTab('gantt')">📈 Gantt Chart</button>
+    <button class="nav-tab" onclick="setTab('plan')">📋 แผนผลิต</button>
+    <button class="nav-tab" onclick="setTab('capacity')">⚡ Capacity</button>
+    <button class="nav-tab" onclick="setTab('itemdecode')">🔑 Item Code</button>
+    <button class="nav-tab" onclick="setTab('transcode')">🔢 EN-T-001</button>
     <button class="nav-tab" onclick="setTab('calendar')">📅 ปฏิทิน</button>
     <button class="nav-tab" onclick="setTab('settings')">⚙ ตั้งค่า WC</button>
     <button class="nav-tab" onclick="exportPDF()" style="border:1px solid rgba(91,142,240,.3);color:var(--blue)">📄 Export PDF</button>
@@ -614,6 +618,7 @@ async function loadAllFromBackend() {
   if (snap.open_load && Object.keys(snap.open_load).length) Object.assign(OPEN_LOAD, snap.open_load);
   if (snap.holidays && Object.keys(snap.holidays).length) Object.assign(HOLIDAYS, snap.holidays);
   if (snap.factory_holidays) FACTORY_HOLIDAYS = snap.factory_holidays;
+  if (snap.item_codes) ITEM_CODES = snap.item_codes;
   if (Array.isArray(snap.accepted_orders)) ACCEPTED = snap.accepted_orders.map(normalizeBackendOrder);
   nextId = ACCEPTED.length + 1;
   invalidateLoadCache();
@@ -1338,6 +1343,7 @@ let HOLIDAYS = {
 
 // วันหยุดพิเศษโรงงาน (เพิ่มเองได้)
 let FACTORY_HOLIDAYS = {};
+let ITEM_CODES = {}; // code → { description, category }
 
 function isHoliday(d) {
   const key = toKey(d);
@@ -1374,6 +1380,195 @@ function getAvgDailyHrs(wc) {
 const TH_MONTHS = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน',
                    'กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
 const TH_DAYS = ['อา','จ','อ','พ','พฤ','ศ','ส'];
+
+// ── Item Code Decoder ─────────────────────────────────────────
+let itemDecodeSearch = '';
+let itemDecodeEditCode = null; // code currently being edited inline
+let itemDecodeAddMode = false; // showing add form
+
+async function saveItemCode(code, description, category) {
+  ITEM_CODES[code] = { description, category };
+  await apiCall(`/api/item-codes/${encodeURIComponent(code)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ description, category }),
+  });
+  itemDecodeEditCode = null;
+  itemDecodeAddMode = false;
+  setTab('itemdecode');
+}
+
+async function deleteItemCode(code) {
+  if (!confirm(`ลบ Item Code "${code}" ออกจากระบบ?`)) return;
+  delete ITEM_CODES[code];
+  await apiCall(`/api/item-codes/${encodeURIComponent(code)}`, { method: 'DELETE' });
+  setTab('itemdecode');
+}
+
+function renderItemDecoder() {
+  // Collect codes: stored + seen in ACCEPTED orders (item_code field)
+  const knownCodes = new Set(Object.keys(ITEM_CODES));
+  const seenInOrders = {};
+  ACCEPTED.forEach(o => {
+    if (o.item_code) {
+      seenInOrders[o.item_code] = (seenInOrders[o.item_code] || 0) + 1;
+      knownCodes.add(o.item_code);
+    }
+  });
+
+  // Filter
+  const q = itemDecodeSearch.toLowerCase();
+  const allCodes = [...knownCodes].sort();
+  const filtered = q
+    ? allCodes.filter(c => c.toLowerCase().includes(q) || (ITEM_CODES[c]?.description || '').toLowerCase().includes(q) || (ITEM_CODES[c]?.category || '').toLowerCase().includes(q))
+    : allCodes;
+
+  const registeredCount = Object.keys(ITEM_CODES).length;
+  const unregisteredCodes = allCodes.filter(c => !ITEM_CODES[c]);
+
+  const catColors = { 'หลัก':'var(--blue)', 'Fast':'var(--red)', 'เสริม':'var(--green)', '':'var(--txt3)' };
+
+  const rowHtml = (code) => {
+    const ic = ITEM_CODES[code];
+    const usedCount = seenInOrders[code] || 0;
+    const isEditing = itemDecodeEditCode === code;
+    const isNew = !ic;
+
+    if (isEditing) {
+      return `<tr style="border-bottom:0.5px solid var(--bord);background:rgba(91,142,240,.06)">
+        <td style="padding:6px 8px;font-family:var(--mono);font-size:11px;font-weight:700;color:var(--amber)">${code}</td>
+        <td style="padding:6px 8px" colspan="2">
+          <input id="ic-desc-${code}" type="text" value="${(ic?.description||'').replace(/"/g,'&quot;')}"
+            placeholder="คำอธิบาย Item Code..."
+            style="width:100%;max-width:320px;font-size:12px;padding:5px 8px;border-radius:6px;border:1px solid var(--blue);background:var(--bg);color:var(--txt);outline:none">
+        </td>
+        <td style="padding:6px 8px">
+          <select id="ic-cat-${code}" style="font-size:11px;padding:4px 8px;border-radius:6px;border:1px solid var(--bord2);background:var(--bg3);color:var(--txt)">
+            <option value="" ${!ic?.category?'selected':''}>—</option>
+            <option value="Fast" ${ic?.category==='Fast'?'selected':''}>Fast</option>
+            <option value="หลัก" ${ic?.category==='หลัก'?'selected':''}>หลัก</option>
+            <option value="เสริม" ${ic?.category==='เสริม'?'selected':''}>เสริม</option>
+          </select>
+        </td>
+        <td style="padding:6px 8px;text-align:center;font-size:10px;color:var(--txt3)">${usedCount > 0 ? usedCount + ' orders' : '—'}</td>
+        <td style="padding:6px 10px;white-space:nowrap">
+          <button onclick="saveItemCode('${code}', document.getElementById('ic-desc-${code}').value, document.getElementById('ic-cat-${code}').value)"
+            style="font-size:10px;padding:3px 10px;border-radius:5px;border:none;background:var(--green);color:#fff;cursor:pointer;font-weight:700;margin-right:4px">บันทึก</button>
+          <button onclick="itemDecodeEditCode=null;setTab('itemdecode')"
+            style="font-size:10px;padding:3px 8px;border-radius:5px;border:1px solid var(--bord2);background:var(--bg3);color:var(--txt2);cursor:pointer">ยกเลิก</button>
+        </td>
+      </tr>`;
+    }
+
+    const catCol = catColors[ic?.category||''] || 'var(--txt3)';
+    return `<tr style="border-bottom:0.5px solid var(--bord);${isNew?'background:rgba(224,156,42,.04)':''}">
+      <td style="padding:6px 8px;font-family:var(--mono);font-size:11px;font-weight:700;color:var(--amber)">${code}</td>
+      <td style="padding:6px 8px;font-size:11px;color:${ic?.description?'var(--txt)':'var(--txt3)'};font-style:${ic?.description?'normal':'italic'}">
+        ${ic?.description || (isNew ? '<span style="color:var(--amber);font-size:10px">⚠ ยังไม่มีคำอธิบาย</span>' : '—')}
+      </td>
+      <td style="padding:6px 8px;text-align:center">
+        ${ic?.category ? `<span style="font-size:9px;padding:2px 7px;border-radius:4px;background:${catCol}18;color:${catCol};font-weight:700">${ic.category}</span>` : '<span style="color:var(--bord2);font-size:10px">—</span>'}
+      </td>
+      <td style="padding:6px 8px;text-align:center;font-size:10px;color:${usedCount>0?'var(--txt2)':'var(--bord2)'};font-family:var(--mono)">
+        ${usedCount > 0 ? usedCount : '—'}
+      </td>
+      <td style="padding:6px 10px;white-space:nowrap">
+        <button onclick="itemDecodeEditCode='${code}';setTab('itemdecode')"
+          style="font-size:10px;padding:3px 9px;border-radius:5px;border:1px solid var(--bord2);background:var(--bg3);color:var(--txt2);cursor:pointer;margin-right:4px">✏ แก้ไข</button>
+        ${ic ? `<button onclick="deleteItemCode('${code}')"
+          style="font-size:10px;padding:3px 8px;border-radius:5px;border:1px solid rgba(224,90,78,.3);background:rgba(224,90,78,.06);color:var(--red);cursor:pointer">✕</button>` : ''}
+      </td>
+    </tr>`;
+  };
+
+  // Add form row
+  const addFormHtml = itemDecodeAddMode ? `
+    <tr style="border-bottom:0.5px solid var(--bord);background:rgba(76,175,125,.06)">
+      <td style="padding:6px 8px">
+        <input id="ic-add-code" type="text" placeholder="EN-T-001" autofocus
+          style="width:120px;font-family:var(--mono);font-size:11px;font-weight:700;padding:5px 8px;border-radius:6px;border:1px solid var(--green);background:var(--bg);color:var(--amber);outline:none">
+      </td>
+      <td style="padding:6px 8px" colspan="2">
+        <input id="ic-add-desc" type="text" placeholder="คำอธิบาย เช่น หม้อแปลงกำลัง 1 เฟส 50kVA"
+          style="width:100%;max-width:320px;font-size:12px;padding:5px 8px;border-radius:6px;border:1px solid var(--green);background:var(--bg);color:var(--txt);outline:none">
+      </td>
+      <td style="padding:6px 8px">
+        <select id="ic-add-cat" style="font-size:11px;padding:4px 8px;border-radius:6px;border:1px solid var(--bord2);background:var(--bg3);color:var(--txt)">
+          <option value="">—</option>
+          <option value="Fast">Fast</option>
+          <option value="หลัก">หลัก</option>
+          <option value="เสริม">เสริม</option>
+        </select>
+      </td>
+      <td></td>
+      <td style="padding:6px 10px;white-space:nowrap">
+        <button onclick="(()=>{const c=document.getElementById('ic-add-code').value.trim();if(!c)return;saveItemCode(c,document.getElementById('ic-add-desc').value,document.getElementById('ic-add-cat').value);})()"
+          style="font-size:10px;padding:3px 10px;border-radius:5px;border:none;background:var(--green);color:#fff;cursor:pointer;font-weight:700;margin-right:4px">+ เพิ่ม</button>
+        <button onclick="itemDecodeAddMode=false;setTab('itemdecode')"
+          style="font-size:10px;padding:3px 8px;border-radius:5px;border:1px solid var(--bord2);background:var(--bg3);color:var(--txt2);cursor:pointer">ยกเลิก</button>
+      </td>
+    </tr>` : '';
+
+  return `<div class="panel" style="max-width:100%">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:15px;font-weight:600">🔑 Item Code Decoder</div>
+        <div style="font-size:12px;color:var(--txt2);margin-top:2px">แปลง Item Code จาก Excel เป็นคำอธิบาย · ใช้เสริมข้อมูลในหน้า Import</div>
+      </div>
+      <button onclick="itemDecodeAddMode=true;itemDecodeEditCode=null;setTab('itemdecode')"
+        style="font-size:12px;padding:7px 16px;border-radius:8px;border:none;background:var(--green);color:#fff;font-weight:700;cursor:pointer">
+        + เพิ่ม Item Code
+      </button>
+    </div>
+
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+      <div class="mc"><div class="mc-label">รหัสทั้งหมด</div><div class="mc-val">${allCodes.length}</div></div>
+      <div class="mc"><div class="mc-label">ลงทะเบียนแล้ว</div><div class="mc-val" style="color:var(--green)">${registeredCount}</div></div>
+      <div class="mc"><div class="mc-label">ยังไม่มีคำอธิบาย</div><div class="mc-val" style="color:${unregisteredCodes.length>0?'var(--amber)':'var(--green)'}">${unregisteredCodes.length}</div></div>
+      <div class="mc"><div class="mc-label">พบใน Orders</div><div class="mc-val">${Object.keys(seenInOrders).length}</div></div>
+    </div>
+
+    <!-- Search -->
+    <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center">
+      <input type="text" placeholder="ค้นหา Code หรือ คำอธิบาย..." value="${itemDecodeSearch}"
+        oninput="itemDecodeSearch=this.value;setTab('itemdecode')"
+        style="font-size:12px;padding:7px 12px;border-radius:8px;border:1px solid var(--bord2);background:var(--bg3);color:var(--txt);outline:none;width:280px">
+      ${itemDecodeSearch ? `<button onclick="itemDecodeSearch='';setTab('itemdecode')" style="font-size:11px;padding:5px 10px;border-radius:6px;border:1px solid var(--bord2);background:var(--bg3);color:var(--txt2);cursor:pointer">✕ ล้าง</button>` : ''}
+      <span style="font-size:11px;color:var(--txt3);margin-left:auto">แสดง ${filtered.length} รหัส</span>
+    </div>
+
+    <!-- Table -->
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto;max-height:600px;overflow-y:auto">
+        <table style="border-collapse:collapse;width:100%;font-size:11px">
+          <thead style="position:sticky;top:0;z-index:2">
+            <tr style="background:var(--bg3);border-bottom:1px solid var(--bord2)">
+              <th style="padding:8px 8px;text-align:left;color:var(--txt3);font-weight:600;font-size:10px;min-width:110px">Item Code</th>
+              <th style="padding:8px 8px;text-align:left;color:var(--txt3);font-weight:600;font-size:10px;min-width:200px">คำอธิบาย</th>
+              <th style="padding:8px 8px;text-align:center;color:var(--txt3);font-weight:600;font-size:10px;width:80px">หมวด</th>
+              <th style="padding:8px 8px;text-align:center;color:var(--txt3);font-weight:600;font-size:10px;width:80px">ใช้ใน Orders</th>
+              <th style="padding:8px 10px;text-align:left;color:var(--txt3);font-weight:600;font-size:10px;width:140px">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${addFormHtml}
+            ${filtered.length === 0 && !itemDecodeAddMode
+              ? `<tr><td colspan="5" style="padding:32px;text-align:center;color:var(--txt3);font-size:13px">
+                  ${q ? `ไม่พบ Item Code ที่ตรงกับ "${q}"` : 'ยังไม่มี Item Code ในระบบ — กด "+ เพิ่ม Item Code" เพื่อเริ่มต้น'}
+                </td></tr>`
+              : filtered.map(rowHtml).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    ${unregisteredCodes.length > 0 ? `
+    <div style="margin-top:10px;padding:10px 14px;border-radius:8px;background:rgba(224,156,42,.07);border:1px solid rgba(224,156,42,.2);font-size:12px">
+      <span style="color:var(--amber);font-weight:700">⚠ รหัสที่พบใน Orders แต่ยังไม่มีคำอธิบาย:</span>
+      <span style="color:var(--txt2);margin-left:8px">${unregisteredCodes.join(' · ')}</span>
+    </div>` : ''}
+  </div>`;
+}
 
 let calViewYear  = new Date().getFullYear();
 let calViewMonth = new Date().getMonth(); // 0-indexed
@@ -1933,8 +2128,21 @@ function scheduleOrders() {
   // WC next-free timestamp (ms)
   const wcFree = {};
 
+  // Sort by plan_date → deadline → category priority (Fast first)
+  const catPrio = { 'Fast': 0, 'หลัก': 1, 'เสริม': 2 };
+  const toSchedule = [...ACCEPTED].sort((a, b) => {
+    const pdA = a.plan_date || a.deadline;
+    const pdB = b.plan_date || b.deadline;
+    if (pdA < pdB) return -1;
+    if (pdA > pdB) return 1;
+    const ca = catPrio[a.category] ?? 1;
+    const cb = catPrio[b.category] ?? 1;
+    if (ca !== cb) return ca - cb;
+    return (a.deadline || '') < (b.deadline || '') ? -1 : 1;
+  });
+
   // Result per order
-  const scheduled = ACCEPTED.map((order, oi) => {
+  const scheduled = toSchedule.map((order, oi) => {
     const product = PRODUCTS[order.product];
     if (!product) return null;
 
@@ -1977,11 +2185,12 @@ function scheduleOrders() {
         const avail = getDayCapacityHours(op.wc, cur);
         if (avail > 0) {
           const used = Math.min(hrsLeft, avail);
-          const shiftHours = getDayShiftHours(op.wc, cur);
-          const elapsedHours = Math.min(shiftHours, Math.ceil(used / Math.max(1, cfg.workers || 1)));
           hrsLeft -= used;
           endDate = new Date(cur);
-          endDate.setHours(8 + elapsedHours, 0, 0, 0);
+          // Clock hours consumed = person-hours ÷ workers (exact, no ceil)
+          const shiftHours = getDayShiftHours(op.wc, cur);
+          const clockHrs   = avail > 0 ? shiftHours * used / avail : shiftHours;
+          endDate.setHours(8 + clockHrs, 0, 0, 0);
         }
         if (hrsLeft > 0) cur.setDate(cur.getDate() + 1);
         guard++;
@@ -2045,6 +2254,301 @@ function nextWorkDay(d) {
   next.setDate(next.getDate() + 1);
   while (!isWorkDay(next)) next.setDate(next.getDate() + 1);
   return next;
+}
+
+// ── Production Plan ──────────────────────────────────────────────────────────
+function renderPlan() {
+  if (ACCEPTED.length === 0) {
+    return `<div class="panel" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:12px;color:var(--txt3)">
+      <div style="font-size:48px">📋</div>
+      <div style="font-size:14px">ยังไม่มี Order ในระบบ</div>
+      <button class="btn-primary" onclick="setTab('simulate')">ไปรับ Order →</button>
+    </div>`;
+  }
+
+  const { orders } = scheduleOrders();
+  if (!orders.length) {
+    return `<div class="panel"><div style="padding:2rem;color:var(--txt3)">ไม่มีข้อมูล routing สำหรับ orders ที่เลือก</div></div>`;
+  }
+
+  // Department → WC grouping
+  const DEPTS = [
+    { key:'core',  label:'แกนเหล็ก',      col:'#c07800', wcs:['EE3102','EE3104','EE3105','EE3106','EE3107'] },
+    { key:'coil',  label:'พันคอยล์',      col:'#1a7a4a', wcs:['EE3201','EE3202','EE3203'] },
+    { key:'ins',   label:'ฉนวน/ชิ้นส่วน', col:'#2a8898', wcs:['EE3601','EE3505','EE3504','EE3501','EE3503'] },
+    { key:'asm',   label:'ประกอบ',         col:'#1a5fc0', wcs:['EE3301','EE3302','EE3303'] },
+    { key:'fit',   label:'ติดอุปกรณ์',    col:'#6c3da8', wcs:['EE3401','EE3402','EE3403'] },
+    { key:'test',  label:'QC/Test',        col:'#c0392b', wcs:['EE4201','EE4202','EE4204'] },
+    { key:'tank',  label:'ตัวถัง',         col:'#8b5e3c', wcs:['MP5101','MP5102','MP5103','MP5202','MP5304','MP5601','MP5602','MP5603'] },
+    { key:'paint', label:'งานสี',          col:'#9a5c38', wcs:['MP5401','MP5402','MP5403','MP5404'] },
+    { key:'power', label:'Power TR',       col:'#b03020', wcs:['PT3701'] },
+  ];
+  const WC_DEPT = {};
+  DEPTS.forEach(d => d.wcs.forEach(w => WC_DEPT[w] = d.key));
+
+  // Only show depts that appear in scheduled ops
+  const usedDeptKeys = new Set();
+  orders.forEach(o => o.ops.forEach(op => { if (WC_DEPT[op.wc]) usedDeptKeys.add(WC_DEPT[op.wc]); }));
+  const activeDepts = DEPTS.filter(d => usedDeptKeys.has(d.key));
+
+  // Per-order dept aggregation: hours + date range
+  const orderDeptData = orders.map(order => {
+    const dm = {};
+    order.ops.forEach(op => {
+      const dk = WC_DEPT[op.wc];
+      if (!dk) return;
+      if (!dm[dk]) dm[dk] = { hrs: 0, start: op.startDate, end: op.endDate };
+      dm[dk].hrs += op.effHrs;
+      if (op.startDate < dm[dk].start) dm[dk].start = op.startDate;
+      if (op.endDate   > dm[dk].end)   dm[dk].end   = op.endDate;
+    });
+    return dm;
+  });
+
+  // Daily load: day → dept → { scheduledHrs, capacityHrs, orderIds }
+  const dailyLoad = {};
+  function getDeptDayCap(deptKey, date) {
+    const dept = DEPTS.find(d => d.key === deptKey);
+    return dept ? dept.wcs.reduce((s, wc) => s + getDayCapacityHours(wc, date), 0) : 0;
+  }
+
+  orders.forEach(order => {
+    order.ops.forEach(op => {
+      const dk = WC_DEPT[op.wc];
+      if (!dk) return;
+      let hrsLeft = op.effHrs;
+      const cur = new Date(op.startDate); cur.setHours(0,0,0,0);
+      const end = new Date(op.endDate);   end.setHours(23,59,59,0);
+      while (hrsLeft > 0.01 && cur <= end) {
+        if (isWorkDay(cur)) {
+          const dayKey = cur.toISOString().slice(0,10);
+          const wcCap  = getDayCapacityHours(op.wc, cur);
+          const used   = Math.min(hrsLeft, wcCap);
+          if (used > 0) {
+            if (!dailyLoad[dayKey]) dailyLoad[dayKey] = {};
+            if (!dailyLoad[dayKey][dk]) {
+              dailyLoad[dayKey][dk] = { scheduledHrs: 0, capacityHrs: getDeptDayCap(dk, cur), orderIds: new Set() };
+            }
+            dailyLoad[dayKey][dk].scheduledHrs += used;
+            dailyLoad[dayKey][dk].orderIds.add(order.id);
+            hrsLeft -= used;
+          }
+        }
+        cur.setDate(cur.getDate() + 1);
+      }
+    });
+  });
+
+  const sortedDays = Object.keys(dailyLoad).sort();
+
+  // Helpers
+  const fmtS = d => {
+    if (!d) return '—';
+    const dt = d instanceof Date ? d : new Date(d + 'T00:00:00');
+    return dt.toLocaleDateString('th-TH', { day:'numeric', month:'short' });
+  };
+  const fmtDayLabel = s => {
+    const dt = new Date(s + 'T00:00:00');
+    return dt.toLocaleDateString('th-TH', { weekday:'short', day:'numeric', month:'short' });
+  };
+
+  const loadCell = (load) => {
+    if (!load || load.scheduledHrs < 0.1) return `<td style="padding:4px 5px;text-align:center;color:var(--bord2);font-size:10px">—</td>`;
+    const pct = load.capacityHrs > 0 ? Math.round(load.scheduledHrs / load.capacityHrs * 100) : 0;
+    const bg  = pct >= 100 ? 'rgba(224,90,78,.2)' : pct >= 80 ? 'rgba(224,156,42,.15)' : pct >= 40 ? 'rgba(91,142,240,.1)' : 'rgba(76,175,125,.08)';
+    const col = pct >= 100 ? 'var(--red)' : pct >= 80 ? 'var(--amber)' : 'var(--txt2)';
+    const tip = [...load.orderIds].join(', ');
+    return `<td style="padding:4px 5px;text-align:center;background:${bg}" title="${tip}">
+      <div style="font-family:var(--mono);font-size:10px;font-weight:700;color:${col}">${pct}%</div>
+      <div style="font-size:9px;color:var(--txt3)">${load.scheduledHrs.toFixed(0)}/${load.capacityHrs.toFixed(0)}h</div>
+    </td>`;
+  };
+
+  // KPIs
+  const onTime  = orders.filter(o => !o.isLate).length;
+  const late    = orders.filter(o =>  o.isLate).length;
+  const maxEnd  = new Date(Math.max(...orders.map(o => o.orderEnd.getTime())));
+  const totalEffHrs = orders.reduce((s,o) => s + o.ops.reduce((ss,op) => ss+op.effHrs, 0), 0);
+
+  // Group by item code (product key from ACCEPTED)
+  const itemGroups = {};
+  orders.forEach((order, i) => {
+    const src = ACCEPTED.find(a => a.id === order.id);
+    const itemCode = src?.product || order.product;
+    const dm = orderDeptData[i];
+    if (!itemGroups[itemCode]) {
+      itemGroups[itemCode] = {
+        itemCode,
+        label: PRODUCTS[itemCode]?.label?.split('—')[0]?.trim() || itemCode,
+        kva: PRODUCTS[itemCode]?.kva || 0,
+        stdHrs: PRODUCTS[itemCode]?.std_hrs || 0,
+        orderCount: 0,
+        totalQty: 0,
+        deptHrs: {},
+        totalHrs: 0,
+      };
+    }
+    const g = itemGroups[itemCode];
+    g.orderCount++;
+    g.totalQty += order.qty;
+    activeDepts.forEach(d => {
+      if (!g.deptHrs[d.key]) g.deptHrs[d.key] = 0;
+      if (dm[d.key]) g.deptHrs[d.key] += dm[d.key].hrs;
+    });
+    g.totalHrs += order.ops.reduce((s, op) => s + op.effHrs, 0);
+  });
+  const itemRows = Object.values(itemGroups).sort((a, b) => b.kva - a.kva);
+
+  return `<div class="panel" style="max-width:100%">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:15px;font-weight:600">📋 แผนผลิต — Production Schedule</div>
+        <div style="font-size:12px;color:var(--txt2);margin-top:2px">คำนวณจาก Routing + Capacity + วันหยุด · เรียงตาม plan_date → deadline</div>
+      </div>
+    </div>
+
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+      <div class="mc"><div class="mc-label">Orders ทั้งหมด</div><div class="mc-val">${orders.length}</div></div>
+      <div class="mc"><div class="mc-label">ทันกำหนด</div><div class="mc-val" style="color:var(--green)">${onTime}</div><div class="mc-sub">จาก ${orders.length} orders</div></div>
+      <div class="mc"><div class="mc-label">เกิน Deadline</div><div class="mc-val" style="color:${late>0?'var(--red)':'var(--green)'}">${late}</div></div>
+      <div class="mc"><div class="mc-label">แผนเสร็จทั้งหมด</div><div class="mc-val" style="font-size:13px">${fmtS(maxEnd)}</div><div class="mc-sub">${totalEffHrs.toFixed(0)} eff.hrs รวม</div></div>
+    </div>
+
+    <!-- Item Code summary table -->
+    <div class="card" style="margin-bottom:12px;padding:12px">
+      <div class="card-title">⏱ ชั่วโมงผลิตตาม Item Code — เวลาที่ใช้แต่ละแผนก</div>
+      <div style="overflow-x:auto">
+        <table style="border-collapse:collapse;font-size:11px;white-space:nowrap;width:100%">
+          <thead>
+            <tr style="background:var(--bg3);border-bottom:1px solid var(--bord2)">
+              <th style="text-align:left;padding:6px 8px;color:var(--txt3);font-weight:600;font-size:10px;min-width:110px">Item Code</th>
+              <th style="text-align:center;padding:6px 6px;color:var(--txt3);font-weight:600;font-size:10px">Orders</th>
+              <th style="text-align:center;padding:6px 6px;color:var(--txt3);font-weight:600;font-size:10px">Qty รวม</th>
+              <th style="text-align:center;padding:6px 6px;color:var(--txt3);font-weight:600;font-size:10px">Std (h/unit)</th>
+              ${activeDepts.map(d=>`<th style="text-align:center;padding:6px 5px;color:${d.col};font-weight:700;font-size:10px;min-width:72px;border-left:1px solid var(--bord)">${d.label}</th>`).join('')}
+              <th style="text-align:center;padding:6px 8px;color:var(--amber);font-weight:700;font-size:10px;border-left:1px solid var(--bord2)">รวม (h)</th>
+              <th style="text-align:center;padding:6px 6px;color:var(--txt3);font-weight:600;font-size:10px">h/unit</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemRows.map(g => `<tr style="border-bottom:0.5px solid var(--bord)">
+              <td style="padding:5px 8px">
+                <div style="font-family:var(--mono);font-size:10px;font-weight:700;color:var(--txt)">${g.itemCode}</div>
+                <div style="font-size:9px;color:var(--txt3)">${g.label}</div>
+              </td>
+              <td style="padding:5px 6px;text-align:center;font-size:10px;color:var(--txt2)">${g.orderCount}</td>
+              <td style="padding:5px 6px;text-align:center;font-family:var(--mono);font-size:11px;font-weight:700">${g.totalQty}</td>
+              <td style="padding:5px 6px;text-align:center;font-size:10px;color:var(--txt3)">${g.stdHrs.toFixed(1)}</td>
+              ${activeDepts.map(d => {
+                const h = g.deptHrs[d.key] || 0;
+                if (h < 0.05) return `<td style="padding:5px 5px;text-align:center;color:var(--bord2);border-left:1px solid var(--bord)">—</td>`;
+                const pctOfTotal = g.totalHrs > 0 ? h / g.totalHrs : 0;
+                const barW = Math.round(pctOfTotal * 60);
+                return `<td style="padding:5px 5px;text-align:center;border-left:1px solid var(--bord)" title="${d.label}: ${h.toFixed(1)}h (${Math.round(pctOfTotal*100)}% ของ order นี้)">
+                  <div style="font-family:var(--mono);font-size:10px;font-weight:700;color:${d.col}">${h.toFixed(1)}h</div>
+                  <div style="height:3px;background:var(--bg3);border-radius:2px;margin-top:2px"><div style="width:${barW}px;max-width:100%;height:3px;background:${d.col};border-radius:2px;opacity:.7"></div></div>
+                </td>`;
+              }).join('')}
+              <td style="padding:5px 8px;text-align:center;font-family:var(--mono);font-size:11px;font-weight:700;color:var(--amber);border-left:1px solid var(--bord2)">${g.totalHrs.toFixed(1)}</td>
+              <td style="padding:5px 6px;text-align:center;font-size:10px;color:var(--txt3)">${g.totalQty > 0 ? (g.totalHrs/g.totalQty).toFixed(1) : '—'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Order × Department table -->
+    <div class="card" style="margin-bottom:12px;padding:12px">
+      <div class="card-title">ชั่วโมงผลิตต่อ Order × แผนก</div>
+      <div style="overflow-x:auto">
+        <table style="border-collapse:collapse;font-size:11px;white-space:nowrap;width:100%">
+          <thead>
+            <tr style="background:var(--bg3);border-bottom:1px solid var(--bord2)">
+              <th style="text-align:left;padding:6px 8px;color:var(--txt3);font-weight:600;font-size:10px">Order</th>
+              <th style="text-align:left;padding:6px 8px;color:var(--txt3);font-weight:600;font-size:10px">ลูกค้า / สินค้า</th>
+              <th style="text-align:center;padding:6px 6px;color:var(--txt3);font-weight:600;font-size:10px">Qty</th>
+              <th style="text-align:center;padding:6px 6px;color:var(--txt3);font-weight:600;font-size:10px">Plan Date</th>
+              <th style="text-align:center;padding:6px 6px;color:var(--txt3);font-weight:600;font-size:10px">Deadline</th>
+              ${activeDepts.map(d=>`<th style="text-align:center;padding:6px 5px;color:${d.col};font-weight:700;font-size:10px;min-width:82px;border-left:1px solid var(--bord)">${d.label}</th>`).join('')}
+              <th style="text-align:center;padding:6px 8px;color:var(--amber);font-weight:700;font-size:10px;border-left:1px solid var(--bord2)">รวม (h)</th>
+              <th style="text-align:center;padding:6px 8px;color:var(--txt3);font-weight:600;font-size:10px">เสร็จ</th>
+              <th style="text-align:center;padding:6px 8px;color:var(--txt3);font-weight:600;font-size:10px">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${orders.map((order, i) => {
+              const dm = orderDeptData[i];
+              const totalHrs = order.ops.reduce((s,op)=>s+op.effHrs, 0);
+              const src = ACCEPTED.find(a => a.id === order.id);
+              return `<tr style="border-bottom:0.5px solid var(--bord);${order.isLate?'background:rgba(224,90,78,.04)':''}">
+                <td style="padding:5px 8px;font-family:var(--mono);font-size:10px;font-weight:700;color:var(--amber)">${order.id}</td>
+                <td style="padding:5px 8px;max-width:140px">
+                  <div style="font-size:11px;color:var(--txt);overflow:hidden;text-overflow:ellipsis">${order.customer}</div>
+                  <div style="font-size:9px;color:var(--txt3)">${order.kva}kVA · ${order.product.replace(/tr\.|tank\./,'')}</div>
+                </td>
+                <td style="padding:5px 6px;text-align:center;font-family:var(--mono);font-size:10px">${order.qty}</td>
+                <td style="padding:5px 6px;text-align:center;font-size:10px;color:var(--txt2)">${fmtS(src?.plan_date)}</td>
+                <td style="padding:5px 6px;text-align:center;font-size:10px;color:${order.isLate?'var(--red)':'var(--txt2);font-weight:600'}">${fmtS(order.deadline)}</td>
+                ${activeDepts.map(d => {
+                  const dd = dm[d.key];
+                  if (!dd || dd.hrs < 0.05) return `<td style="padding:5px 5px;text-align:center;color:var(--bord2);border-left:1px solid var(--bord)">—</td>`;
+                  return `<td style="padding:5px 5px;text-align:center;border-left:1px solid var(--bord)">
+                    <div style="font-family:var(--mono);font-size:10px;font-weight:700;color:${d.col}">${dd.hrs.toFixed(1)}h</div>
+                    <div style="font-size:9px;color:var(--txt3)">${fmtS(dd.start)}–${fmtS(dd.end)}</div>
+                  </td>`;
+                }).join('')}
+                <td style="padding:5px 8px;text-align:center;font-family:var(--mono);font-size:11px;font-weight:700;color:var(--amber);border-left:1px solid var(--bord2)">${totalHrs.toFixed(1)}</td>
+                <td style="padding:5px 8px;text-align:center;font-size:10px;font-weight:600;color:${order.isLate?'var(--red)':'var(--green)'}">${fmtS(order.orderEnd)}</td>
+                <td style="padding:5px 8px;text-align:center">
+                  ${order.isLate
+                    ? `<span style="font-size:9px;padding:2px 6px;border-radius:4px;background:rgba(224,90,78,.12);color:var(--red);font-weight:700">เกิน ${order.lateDays}วัน</span>`
+                    : `<span style="font-size:9px;padding:2px 6px;border-radius:4px;background:rgba(26,122,74,.1);color:var(--green);font-weight:700">ทัน</span>`}
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Daily load table -->
+    <div class="card" style="padding:12px">
+      <div class="card-title">ภาระงานรายวัน — Capacity แต่ละวันต่อแผนก</div>
+      <div style="overflow-x:auto">
+        <table style="border-collapse:collapse;font-size:11px;width:100%">
+          <thead>
+            <tr style="background:var(--bg3);border-bottom:1px solid var(--bord2)">
+              <th style="text-align:left;padding:6px 8px;color:var(--txt3);font-weight:600;font-size:10px;min-width:100px">วัน</th>
+              ${activeDepts.map(d=>`<th style="text-align:center;padding:6px 5px;color:${d.col};font-weight:700;font-size:10px;min-width:80px">${d.label}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${sortedDays.map(day => {
+              const dl = dailyLoad[day];
+              const dt = new Date(day + 'T00:00:00');
+              const isSat = dt.getDay() === 6;
+              const hol = HOLIDAYS[day] || FACTORY_HOLIDAYS[day];
+              return `<tr style="border-bottom:0.5px solid var(--bord);${isSat?'background:rgba(224,156,42,.04)':''}${hol?'background:rgba(224,90,78,.04)':''}">
+                <td style="padding:5px 8px;white-space:nowrap">
+                  <div style="font-size:10px;font-weight:600;color:var(--txt)">${fmtDayLabel(day)}</div>
+                  ${hol  ? `<div style="font-size:9px;color:var(--red)">${hol}</div>` : ''}
+                  ${isSat&&!hol ? `<div style="font-size:9px;color:var(--amber)">เสาร์</div>` : ''}
+                </td>
+                ${activeDepts.map(d => loadCell(dl?.[d.key])).join('')}
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:12px;font-size:10px;color:var(--txt3);flex-wrap:wrap">
+        <span><span style="display:inline-block;width:10px;height:7px;border-radius:2px;background:rgba(224,90,78,.2);margin-right:3px"></span>≥100% เกิน capacity</span>
+        <span><span style="display:inline-block;width:10px;height:7px;border-radius:2px;background:rgba(224,156,42,.15);margin-right:3px"></span>80–99% ระวัง</span>
+        <span><span style="display:inline-block;width:10px;height:7px;border-radius:2px;background:rgba(91,142,240,.1);margin-right:3px"></span>40–79% ปกติ</span>
+        <span><span style="display:inline-block;width:10px;height:7px;border-radius:2px;background:rgba(76,175,125,.08);margin-right:3px"></span>&lt;40% ว่าง · hover เพื่อดู Orders</span>
+      </div>
+    </div>
+  </div>`;
 }
 
 // ── Gantt view state
@@ -3326,6 +3830,537 @@ function renderItemDecoderResult(code) {
   </div>`;
 }
 
+// ── Transformer Item Code Full Page (EN-T-001) ───────────────
+function buildTransCode(e) {
+  const cf = encodeKva(e.kva);
+  if (!cf) return null;
+  return `${e.A}${e.B}${cf}${e.GH}${e.I}${e.run||'001'}`;
+}
+
+function renderTransCode() {
+  if (!window._tcEnc) window._tcEnc = {A:'5',B:'1',kva:100,GH:'22',I:'A',run:'001'};
+  const e = window._tcEnc;
+  const encCode = buildTransCode(e) || '—';
+  const decIn = (window._tcDecInput||'').toUpperCase();
+  const decResult = decIn.length>=8 ? renderItemDecoderResult(decIn) :
+    '<div style="font-size:12px;color:var(--txt3);padding:8px 0">กรอก Item Code เพื่อถอดรหัสอัตโนมัติ</div>';
+
+  const kvaList = [50,100,160,250,315,400,500,630,800,1000,1250,1600,2000,2500,3150,4000,5000,6300,7500,10000,12500,16000];
+  const segs = [
+    {chars:'A',    color:'#c0392b', label:'A (1)',    desc:'หมวดสินค้า',           eg:'5=Finished · 4=90%'},
+    {chars:'B',    color:'#c07800', label:'B (1)',    desc:'ประเภทหม้อแปลง',       eg:'1=3Ph Conservator · 3=Full Oil · 9=1Ph'},
+    {chars:'CDEF', color:'#1a7a4a', label:'CDEF (4)', desc:'ขนาด kVA (Encoded)',   eg:'3100=100kVA · 4100=1,000kVA'},
+    {chars:'GH',   color:'#1a5fc0', label:'GH (2)',   desc:'แรงดัน HV',            eg:'22=22kV · 33=33kV · 11=11kV'},
+    {chars:'I',    color:'#6c3da8', label:'I (1)',    desc:'กลุ่มมาตรฐาน/วัสดุ',  eg:'A=Ekarat Foil · E=PEA · I=MEA'},
+    {chars:'J(KLM)',color:'#7a6040',label:'J(KLM)',   desc:'หมายเลขวิ่ง',          eg:'001–999 · S001=Special Add-on'},
+  ];
+
+  const exCodes = ['51410022A1','53415022S001','52310019E1','51210022I2','54100022A001','53630033K1'];
+  const kvaRef  = kvaList.map(k=>{const cf=encodeKva(k);return cf?{kva:k,code:cf}:null}).filter(Boolean);
+
+  return `<div class="panel" style="max-width:100%;padding-bottom:2rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div>
+        <div style="font-size:17px;font-weight:700">🔢 Transformer Item Code — EN-T-001</div>
+        <div style="font-size:12px;color:var(--txt2);margin-top:2px">ถอดรหัส / สร้างรหัส / ตาราง Reference สำหรับ Item Code หม้อแปลงไฟฟ้า Ekarat</div>
+      </div>
+    </div>
+
+    <!-- Structure diagram -->
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-title">โครงสร้างรหัส — AB · CDEF · GH · I · J(KLM)</div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+        ${segs.map((s,i)=>`${i>0?'<div style="color:var(--txt3);font-size:20px;padding-bottom:28px;line-height:1">·</div>':''}
+          <div style="display:flex;flex-direction:column;align-items:center;min-width:64px">
+            <div style="font-family:var(--mono);font-size:18px;font-weight:800;color:${s.color};padding:7px 12px;border-radius:8px;background:${s.color}14;border:2px solid ${s.color}40;letter-spacing:.14em;text-align:center;width:100%">${s.chars}</div>
+            <div style="font-size:9px;color:${s.color};font-weight:700;margin-top:3px">${s.label}</div>
+            <div style="font-size:9px;color:var(--txt2);text-align:center;max-width:80px;line-height:1.3;margin-top:1px">${s.desc}</div>
+          </div>`).join('')}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
+        ${segs.map(s=>`<div style="padding:6px 10px;border-radius:6px;border-left:3px solid ${s.color};background:${s.color}08">
+          <div style="font-size:9px;color:${s.color};font-weight:700;margin-bottom:2px">${s.label}</div>
+          <div style="font-size:10px;color:var(--txt2);line-height:1.5">${s.eg}</div>
+        </div>`).join('')}
+      </div>
+    </div>
+
+    <!-- Decoder + Encoder -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+
+      <!-- Decoder -->
+      <div class="card">
+        <div class="card-title">🔍 Decoder — ถอดรหัส</div>
+        <input type="text" maxlength="14" placeholder="เช่น 51410022A1"
+          value="${decIn}"
+          oninput="window._tcDecInput=this.value.toUpperCase();setTab('transcode')"
+          style="width:100%;font-family:var(--mono);font-size:16px;letter-spacing:.14em;text-transform:uppercase;padding:9px 14px;border-radius:8px;border:1px solid var(--bord2);background:var(--bg3);color:var(--txt);outline:none;margin-bottom:8px">
+        <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px">
+          ${exCodes.map(ex=>`<button class="btn-sm btn-ghost" onclick="window._tcDecInput='${ex}';setTab('transcode')" style="font-family:var(--mono);font-size:10px">${ex}</button>`).join('')}
+        </div>
+        <div>${decResult}</div>
+      </div>
+
+      <!-- Encoder -->
+      <div class="card">
+        <div class="card-title">⚙ Encoder — สร้างรหัส</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+          <div>
+            <div style="font-size:10px;color:#c0392b;font-weight:600;margin-bottom:4px">A — หมวดสินค้า</div>
+            <select onchange="window._tcEnc.A=this.value;setTab('transcode')"
+              style="width:100%;font-size:11px;padding:6px 10px;border-radius:7px;border:1.5px solid #c0392b40;background:var(--bg3);color:var(--txt);outline:none">
+              <option value="5" ${e.A==='5'?'selected':''}>5 — Finished Goods</option>
+              <option value="4" ${e.A==='4'?'selected':''}>4 — 90% Semi-Finished</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px;color:#c07800;font-weight:600;margin-bottom:4px">B — ประเภทหม้อแปลง</div>
+            <select onchange="window._tcEnc.B=this.value;setTab('transcode')"
+              style="width:100%;font-size:11px;padding:6px 10px;border-radius:7px;border:1.5px solid #c0780040;background:var(--bg3);color:var(--txt);outline:none">
+              ${Object.entries(IC_TYPE).map(([k,v])=>`<option value="${k}" ${e.B===k?'selected':''}>${k} — ${v}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px;color:#1a7a4a;font-weight:600;margin-bottom:4px">CDEF — ขนาด kVA</div>
+            <select onchange="window._tcEnc.kva=+this.value;setTab('transcode')"
+              style="width:100%;font-size:11px;padding:6px 10px;border-radius:7px;border:1.5px solid #1a7a4a40;background:var(--bg3);color:var(--txt);outline:none">
+              ${kvaList.map(k=>`<option value="${k}" ${e.kva==k?'selected':''}>${k.toLocaleString()} kVA → ${encodeKva(k)||'?'}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px;color:#1a5fc0;font-weight:600;margin-bottom:4px">GH — แรงดัน HV</div>
+            <select onchange="window._tcEnc.GH=this.value;setTab('transcode')"
+              style="width:100%;font-size:11px;padding:6px 10px;border-radius:7px;border:1.5px solid #1a5fc040;background:var(--bg3);color:var(--txt);outline:none">
+              ${Object.entries(IC_GH).map(([k,v])=>`<option value="${k}" ${e.GH===k?'selected':''}>${k} — ${v}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px;color:#6c3da8;font-weight:600;margin-bottom:4px">I — กลุ่มมาตรฐาน</div>
+            <select onchange="window._tcEnc.I=this.value;setTab('transcode')"
+              style="width:100%;font-size:11px;padding:6px 10px;border-radius:7px;border:1.5px solid #6c3da840;background:var(--bg3);color:var(--txt);outline:none">
+              ${Object.entries(IC_GRP).map(([k,v])=>`<option value="${k}" ${e.I===k?'selected':''}>${k} — ${v}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px;color:#7a6040;font-weight:600;margin-bottom:4px">J(KLM) — Running No.</div>
+            <input type="text" maxlength="4" value="${e.run}"
+              oninput="window._tcEnc.run=this.value;setTab('transcode')"
+              placeholder="001"
+              style="width:100%;font-family:var(--mono);font-size:13px;padding:6px 10px;border-radius:7px;border:1.5px solid #7a604040;background:var(--bg3);color:var(--txt);outline:none">
+          </div>
+        </div>
+        <div style="padding:14px 16px;background:rgba(192,120,0,.07);border-radius:10px;border:1.5px solid rgba(192,120,0,.25);text-align:center;margin-bottom:10px">
+          <div style="font-size:10px;color:var(--txt3);margin-bottom:4px;letter-spacing:.06em">ITEM CODE ที่สร้าง</div>
+          <div style="font-family:var(--mono);font-size:26px;font-weight:800;color:var(--amber);letter-spacing:.18em">${encCode}</div>
+          <div style="font-size:10px;color:var(--txt2);margin-top:4px">${encCode!=='—'?`${e.kva.toLocaleString()} kVA · ${IC_TYPE[e.B]||e.B} · HV ${IC_GH[e.GH]||e.GH} · ${IC_GRP[e.I]||e.I}`:''}</div>
+        </div>
+        <button onclick="var c='${encCode}';if(c!=='—'&&navigator.clipboard)navigator.clipboard.writeText(c).then(()=>{var b=this,t=b.textContent;b.textContent='✓ Copied!';setTimeout(()=>b.textContent=t,1500)})"
+          class="btn-primary" style="width:100%;font-size:13px">📋 Copy รหัส</button>
+      </div>
+    </div>
+
+    <!-- Reference Tables -->
+    <div style="font-size:13px;font-weight:700;color:var(--txt2);margin-bottom:10px;letter-spacing:.04em">📑 Reference Tables</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+
+      <!-- Digit B -->
+      <div class="card">
+        <div class="card-title" style="color:#c07800">Digit B — ประเภทหม้อแปลง (${Object.keys(IC_TYPE).length} รหัส)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="background:var(--bg3)">
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--bord);color:var(--txt3);width:36px">Code</th>
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--bord);color:var(--txt3)">ประเภท</th>
+          </tr></thead>
+          <tbody>${Object.entries(IC_TYPE).map(([k,v],i)=>`<tr style="${i%2?'background:var(--bg3)':''}">
+            <td style="padding:5px 8px;font-family:var(--mono);font-weight:700;color:#c07800;border-bottom:1px solid var(--bord)">${k}</td>
+            <td style="padding:5px 8px;color:var(--txt2);border-bottom:1px solid var(--bord)">${v}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+
+      <!-- Digit GH -->
+      <div class="card">
+        <div class="card-title" style="color:#1a5fc0">Digit GH — แรงดัน HV (${Object.keys(IC_GH).length} รหัส)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="background:var(--bg3)">
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--bord);color:var(--txt3);width:36px">GH</th>
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--bord);color:var(--txt3)">แรงดัน</th>
+          </tr></thead>
+          <tbody>${Object.entries(IC_GH).map(([k,v],i)=>`<tr style="${i%2?'background:var(--bg3)':''}">
+            <td style="padding:5px 8px;font-family:var(--mono);font-weight:700;color:#1a5fc0;border-bottom:1px solid var(--bord)">${k}</td>
+            <td style="padding:5px 8px;color:var(--txt2);border-bottom:1px solid var(--bord)">${v}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+
+      <!-- Digit I -->
+      <div class="card">
+        <div class="card-title" style="color:#6c3da8">Digit I — กลุ่มมาตรฐาน / วัสดุ (${Object.keys(IC_GRP).length} รหัส)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="background:var(--bg3)">
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--bord);color:var(--txt3);width:36px">I</th>
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--bord);color:var(--txt3)">กลุ่ม</th>
+          </tr></thead>
+          <tbody>${Object.entries(IC_GRP).map(([k,v],i)=>`<tr style="${i%2?'background:var(--bg3)':''}">
+            <td style="padding:5px 8px;font-family:var(--mono);font-weight:700;color:#6c3da8;border-bottom:1px solid var(--bord)">${k}</td>
+            <td style="padding:5px 8px;color:var(--txt2);border-bottom:1px solid var(--bord)">${v}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+
+      <!-- Digit CDEF -->
+      <div class="card">
+        <div class="card-title" style="color:#1a7a4a">Digit CDEF — kVA → รหัส (สูตร: DEF × 10^C ÷ 1000 = kVA)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="background:var(--bg3)">
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--bord);color:var(--txt3)">kVA</th>
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--bord);color:var(--txt3)">CDEF</th>
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--bord);color:var(--txt3)">C</th>
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid var(--bord);color:var(--txt3)">DEF</th>
+          </tr></thead>
+          <tbody>${kvaRef.map(({kva,code},i)=>`<tr style="${i%2?'background:var(--bg3)':''}">
+            <td style="padding:5px 8px;font-weight:700;color:var(--txt);border-bottom:1px solid var(--bord)">${kva.toLocaleString()}</td>
+            <td style="padding:5px 8px;font-family:var(--mono);font-weight:700;color:#1a7a4a;border-bottom:1px solid var(--bord)">${code}</td>
+            <td style="padding:5px 8px;font-family:var(--mono);color:var(--txt2);border-bottom:1px solid var(--bord)">${code[0]}</td>
+            <td style="padding:5px 8px;font-family:var(--mono);color:var(--txt2);border-bottom:1px solid var(--bord)">${code.slice(1)}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+        <div style="margin-top:8px;padding:8px 10px;background:var(--bg3);border-radius:6px;font-size:10px;color:var(--txt2);line-height:1.8">
+          ตัวอย่าง: CDEF=<strong>4100</strong> → C=4, DEF=100 → 100 × 10⁴ ÷ 1000 = <strong>1,000 kVA</strong><br>
+          ตัวอย่าง: CDEF=<strong>3630</strong> → C=3, DEF=630 → 630 × 10³ ÷ 1000 = <strong>630 kVA</strong>
+        </div>
+      </div>
+
+    </div>
+  </div>`;
+}
+
+// ── Capacity Plan ────────────────────────────────────────────
+let capWeekOffset = 0;
+let capDayDetail  = null;
+
+// Hours needed per WC per plan_date (effective, adjusted for efficiency)
+function calcDailyDemand(orders) {
+  const demand = {};
+  for (const o of orders) {
+    const date = o.plan_date;
+    if (!date) continue;
+    const prod = PRODUCTS[o.product];
+    if (!prod?.ops) continue;
+    const qty = o.qty || 1;
+    if (!demand[date]) demand[date] = {};
+    for (const op of prod.ops) {
+      const eff = (WC_CONFIG[op.wc]?.eff || 90) / 100;
+      demand[date][op.wc] = (demand[date][op.wc] || 0) + (op.hrs * qty / eff);
+    }
+  }
+  return demand;
+}
+
+// Normal / OT / max capacity for one WC on one date
+function getDayCapacity(wc, dateStr) {
+  const cfg = WC_CONFIG[wc] || {workers:3, hrs:8, ot:4, sat_hrs:4, sat_ot:0};
+  const dt  = new Date(dateStr + 'T00:00:00');
+  const dow = dt.getDay(); // 0=Sun
+  if (dow === 0) return {normal:0, ot_cap:0, max:0, workers:cfg.workers, stdHrs:0, otHrs:0, isClosed:true, isSat:false};
+  const isSat  = dow === 6;
+  const stdHrs = isSat ? (cfg.sat_hrs||4) : (cfg.hrs||8);
+  const otHrs  = isSat ? (cfg.sat_ot||0) : (cfg.ot||4);
+  const normal = cfg.workers * stdHrs;
+  const ot_cap = cfg.workers * otHrs;
+  return {normal, ot_cap, max:normal+ot_cap, workers:cfg.workers, stdHrs, otHrs, isSat, isClosed:false};
+}
+
+function capMondayOfWeek(offset) {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const dow   = today.getDay() || 7;
+  const mon   = new Date(today);
+  mon.setDate(today.getDate() - (dow - 1) + offset * 7);
+  return mon;
+}
+function capDateStr(dt) { return dt.toISOString().slice(0,10); }
+
+function renderCapacityPlan() {
+  const orders   = ACCEPTED.filter(o => o.plan_date);
+  const demand   = calcDailyDemand(orders);
+  const todayStr = capDateStr(new Date());
+
+  // Week: Mon – Sat
+  const monday   = capMondayOfWeek(capWeekOffset);
+  const weekDays = Array.from({length:6}, (_,i) => { const d=new Date(monday); d.setDate(monday.getDate()+i); return d; });
+  const wkStrs   = weekDays.map(capDateStr);
+  const DOW_TH   = ['จ','อ','พ','พฤ','ศ','ส'];
+  const MONTH_TH = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+  const fmtDay   = d => `${d.getDate()} ${MONTH_TH[d.getMonth()]}`;
+  const weekLabel = `${fmtDay(weekDays[0])} – ${fmtDay(weekDays[5])} ${weekDays[0].getFullYear()+543}`;
+
+  // All WCs that have demand this week
+  const activeWCs = new Set();
+  wkStrs.forEach(ds => { if (demand[ds]) Object.keys(demand[ds]).forEach(w=>activeWCs.add(w)); });
+  const wcList = [...activeWCs].sort();
+
+  // Build per-WC row data
+  let wkTotalDemand=0, wkTotalNormal=0, wkOTCount=0, wkOverCount=0;
+
+  const wcRows = wcList.map(wc => {
+    const cfg  = WC_CONFIG[wc] || {workers:3, name:wc, hrs:8, ot:4, sat_hrs:4, sat_ot:0};
+    const cells = wkStrs.map(ds => {
+      const dem = demand[ds]?.[wc] || 0;
+      const cap = getDayCapacity(wc, ds);
+      if (cap.isClosed) return {dem:0, cap, status:'closed'};
+      const pct    = cap.normal>0 ? dem/cap.normal*100 : 0;
+      const status = pct<=0?'empty':pct<=80?'ok':pct<=100?'warn':pct<=130?'ot':'over';
+      const otNeeded    = Math.max(0, dem - cap.normal);
+      const otPerPerson = cap.workers>0 ? otNeeded/cap.workers : 0;
+      const perPerson   = cap.workers>0 ? dem/cap.workers : 0;
+      const workersNeeded = cap.stdHrs>0 ? Math.ceil(dem/cap.stdHrs) : 0;
+      wkTotalDemand += dem;
+      wkTotalNormal += cap.normal;
+      return {dem, cap, pct, status, otNeeded, otPerPerson, perPerson, workersNeeded};
+    });
+    const hasOT   = cells.some(c=>c.status==='ot');
+    const hasOver = cells.some(c=>c.status==='over');
+    if (hasOT)   wkOTCount++;
+    if (hasOver) wkOverCount++;
+    const wkDemand = cells.reduce((s,c)=>s+c.dem,0);
+    const wkCap    = cells.reduce((s,c)=>s+c.cap.normal,0);
+    return {wc, cfg, cells, hasOT, hasOver, wkDemand, wkCap};
+  }).filter(r=>r.wkDemand>0);
+
+  // Status colour helpers
+  const SCOL  = {ok:'#1a7a4a',warn:'#c07800',ot:'#d06000',over:'#c0392b',empty:'var(--txt3)',closed:'var(--txt3)'};
+  const SBG   = {ok:'rgba(26,122,74,.07)',warn:'rgba(192,120,0,.08)',ot:'rgba(208,96,0,.09)',over:'rgba(192,57,43,.09)',empty:'',closed:'var(--bg3)'};
+
+  function cellHtml(cell, ds) {
+    if (cell.status==='closed') return `<td style="border-bottom:1px solid var(--bord);background:var(--bg3)"><div style="text-align:center;color:var(--txt3);font-size:9px;padding:6px 4px">—</div></td>`;
+    if (cell.status==='empty')  return `<td style="border-bottom:1px solid var(--bord)"><div style="text-align:center;color:var(--txt3);font-size:9px;padding:6px 4px">—</div></td>`;
+    const {pct,dem,otNeeded,perPerson,status,workersNeeded,cap} = cell;
+    const col = SCOL[status]; const bg = SBG[status];
+    const isToday = ds===todayStr;
+    return `<td style="border-bottom:1px solid var(--bord);background:${bg};cursor:pointer;${isToday?'border-top:2px solid var(--blue)':''}" onclick="capDayDetail='${ds}';setTab('capacity')">
+      <div style="text-align:center;padding:5px 4px">
+        <div style="font-family:var(--mono);font-size:11px;font-weight:700;color:${col}">${dem.toFixed(1)}h</div>
+        <div style="height:4px;background:var(--bg4);border-radius:2px;margin:3px auto;width:80%;overflow:hidden">
+          <div style="height:100%;width:${Math.min(pct,100)}%;background:${col};border-radius:2px"></div>
+        </div>
+        <div style="font-size:8px;color:${col};line-height:1.3">
+          ${pct.toFixed(0)}% · ${perPerson.toFixed(1)}h/คน
+          ${otNeeded>0?`<br>OT +${otNeeded.toFixed(1)}h`:''}
+        </div>
+      </div>
+    </td>`;
+  }
+
+  // Day detail panel
+  let dayDetailHtml = '';
+  if (capDayDetail) {
+    const dayDem  = demand[capDayDetail] || {};
+    const dayOrds = orders.filter(o=>o.plan_date===capDayDetail);
+    const dt      = new Date(capDayDetail+'T00:00:00');
+    const DOW_FULL = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์'];
+    const entries  = Object.entries(dayDem).sort((a,b)=>b[1]-a[1]);
+    const dayTotal = entries.reduce((s,[,h])=>s+h,0);
+
+    dayDetailHtml = `<div class="card" style="margin-bottom:12px;border-left:3px solid var(--blue)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px">
+        <div>
+          <div style="font-size:14px;font-weight:700">📅 ${capDayDetail} — วัน${DOW_FULL[dt.getDay()]}</div>
+          <div style="font-size:11px;color:var(--txt2);margin-top:2px">
+            ${dayOrds.length} orders · ${dayTotal.toFixed(1)} h demand รวม ·
+            <span style="color:var(--txt3)">${dayOrds.map(o=>`${o.sap_so||o.id}(${o.effectiveKva||o.kva}kVA×${o.qty})`).join(' · ')}</span>
+          </div>
+        </div>
+        <button onclick="capDayDetail=null;setTab('capacity')" class="btn-sm btn-ghost">✕ ปิด</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px">
+        ${entries.map(([wc,dem])=>{
+          const cap  = getDayCapacity(wc, capDayDetail);
+          const cfg  = WC_CONFIG[wc] || {workers:3, name:wc, hrs:8};
+          const pct  = cap.normal>0 ? dem/cap.normal*100 : 0;
+          const st   = pct<=80?'ok':pct<=100?'warn':pct<=130?'ot':'over';
+          const col  = SCOL[st];
+          const otN  = Math.max(0, dem-cap.normal);
+          const pp   = cfg.workers>0 ? dem/cfg.workers : 0;
+          const otPP = cfg.workers>0 ? otN/cfg.workers : 0;
+          const wkNeed = cap.stdHrs>0 ? Math.ceil(dem/cap.stdHrs) : 0;
+          const verdict = st==='ok'?'✅ เพียงพอ':st==='warn'?'⚠ ใกล้เต็ม':st==='ot'?'🟡 ต้อง OT':'🔴 OT ไม่พอ';
+          return `<div style="padding:9px 12px;background:var(--bg3);border-radius:8px;border-left:3px solid ${col}">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+              <span style="font-family:var(--mono);font-size:10px;font-weight:700;color:${col}">${wc}</span>
+              <span style="font-size:10px;font-weight:700;font-family:var(--mono);color:${col}">${dem.toFixed(1)} h</span>
+            </div>
+            <div style="font-size:10px;color:var(--txt2);margin-bottom:5px">${cfg.name}</div>
+            <div style="height:5px;background:var(--bg4);border-radius:3px;overflow:hidden;margin-bottom:6px">
+              <div style="height:100%;width:${Math.min(pct,100)}%;background:${col}"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px;font-size:9px;color:var(--txt3)">
+              <div>คนมี: <strong style="color:var(--txt)">${cfg.workers}</strong></div>
+              <div>คนต้องการ: <strong style="color:${wkNeed>cfg.workers?'var(--red)':'var(--green)'}">${wkNeed}</strong></div>
+              <div>Load: <strong style="color:${col}">${pct.toFixed(0)}%</strong></div>
+              <div>ต่อคน: <strong style="color:var(--txt)">${pp.toFixed(1)} h</strong></div>
+              ${otN>0?`<div>OT รวม: <strong style="color:var(--red)">${otN.toFixed(1)} h</strong></div>
+              <div>OT/คน: <strong style="color:var(--red)">${otPP.toFixed(1)} h</strong></div>`:''}
+            </div>
+            <div style="margin-top:5px;font-size:9px;font-weight:700;color:${col}">${verdict}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  const noDataHtml = wcRows.length===0 ? `<div style="text-align:center;padding:48px;color:var(--txt3)">
+    <div style="font-size:32px;margin-bottom:12px">📭</div>
+    <div style="font-size:14px;font-weight:600">ไม่มี orders ในสัปดาห์นี้</div>
+    <div style="font-size:12px;margin-top:6px">กด ← → เพื่อเปลี่ยนสัปดาห์ หรือ Import Excel ก่อน</div>
+  </div>` : '';
+
+  return `<div class="panel" style="max-width:100%;padding-bottom:2rem">
+    <!-- Header & nav -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div>
+        <div style="font-size:17px;font-weight:700">⚡ Capacity Plan — ภาระงานตาม WC & วัน</div>
+        <div style="font-size:12px;color:var(--txt2);margin-top:2px">
+          คำนวณจาก ${orders.length} orders · กดเซลล์เพื่อดูรายละเอียดต่อ WC ต่อวัน
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button onclick="capWeekOffset--;setTab('capacity')" style="padding:6px 14px;font-size:13px">← สัปดาห์ก่อน</button>
+        <button onclick="capWeekOffset=0;capDayDetail=null;setTab('capacity')" style="padding:6px 12px;font-size:12px;background:var(--bg3)">วันนี้</button>
+        <button onclick="capWeekOffset++;setTab('capacity')" style="padding:6px 14px;font-size:13px">สัปดาห์หน้า →</button>
+      </div>
+    </div>
+
+    <!-- Week label -->
+    <div style="font-size:13px;font-weight:700;color:var(--amber);margin-bottom:10px;text-align:center">📅 สัปดาห์ที่ ${capWeekOffset===0?'นี้':capWeekOffset>0?`+${capWeekOffset}`:capWeekOffset} — ${weekLabel}</div>
+
+    <!-- KPI -->
+    ${wcRows.length>0?`<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
+      <div class="mc"><div class="mc-label">⏱ Demand สัปดาห์นี้</div><div class="mc-val" style="color:var(--amber)">${wkTotalDemand.toFixed(0)}<span style="font-size:11px">h</span></div><div class="mc-sub">Capacity ${wkTotalNormal.toFixed(0)}h</div></div>
+      <div class="mc"><div class="mc-label">Load รวม</div><div class="mc-val" style="color:${wkTotalNormal>0&&wkTotalDemand/wkTotalNormal>1?'var(--red)':'var(--green)'}">${wkTotalNormal>0?(wkTotalDemand/wkTotalNormal*100).toFixed(0):0}%</div></div>
+      <div class="mc"><div class="mc-label">🟡 WC ต้อง OT</div><div class="mc-val" style="color:${wkOTCount>0?'#d06000':'var(--txt2)'}">${wkOTCount}</div></div>
+      <div class="mc"><div class="mc-label">🔴 WC เกิน OT</div><div class="mc-val" style="color:${wkOverCount>0?'var(--red)':'var(--txt2)'}">${wkOverCount}</div></div>
+    </div>`:''}
+
+    <!-- Day detail -->
+    ${dayDetailHtml}
+
+    <!-- Legend -->
+    <div style="display:flex;gap:10px;margin-bottom:8px;flex-wrap:wrap;font-size:10px;align-items:center">
+      <span style="color:var(--txt3)">สี:</span>
+      ${[['#1a7a4a','≤80% ปกติ'],['#c07800','80–100% ใกล้เต็ม'],['#d06000','100–130% OT ได้'],['#c0392b','>130% OT ไม่พอ']].map(([c,l])=>
+        `<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:${c};display:inline-block"></span>${l}</span>`
+      ).join('')}
+      <span style="color:var(--txt3);margin-left:6px">กดเซลล์ → รายละเอียดรายวัน</span>
+    </div>
+
+    ${noDataHtml}
+
+    <!-- Week grid -->
+    ${wcRows.length>0?`<div style="overflow-x:auto;border-radius:10px;border:1px solid var(--bord)">
+    <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:700px">
+      <thead>
+        <tr style="background:var(--bg3)">
+          <th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--bord2);min-width:160px;position:sticky;left:0;background:var(--bg3)">Work Center</th>
+          ${weekDays.map((d,i)=>{
+            const ds = wkStrs[i];
+            const isToday = ds===todayStr;
+            const dayOrds = orders.filter(o=>o.plan_date===ds);
+            return `<th style="padding:6px 8px;text-align:center;border-bottom:1px solid var(--bord2);min-width:110px;${isToday?'background:rgba(91,142,240,.08);border-top:2px solid var(--blue)':''}">
+              <div style="font-size:11px;font-weight:700;color:${isToday?'var(--blue)':'var(--txt)'}">${DOW_TH[i]} ${d.getDate()}/${d.getMonth()+1}</div>
+              ${dayOrds.length>0?`<div style="font-size:9px;color:var(--amber)">${dayOrds.length} orders · ${dayOrds.reduce((s,o)=>s+(o.qty||1),0)} ตัว</div>`:'<div style="font-size:9px;color:var(--txt3)">—</div>'}
+            </th>`;
+          }).join('')}
+          <th style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--bord2);min-width:80px">สัปดาห์</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${wcRows.map(({wc,cfg,cells,hasOT,hasOver,wkDemand,wkCap})=>{
+          const sumCol = hasOver?'#c0392b':hasOT?'#d06000':'var(--txt2)';
+          const pctWk  = wkCap>0?wkDemand/wkCap*100:0;
+          const wkVerd = hasOver?'🔴':hasOT?'🟡':'✅';
+          return `<tr>
+            <td style="padding:6px 10px;border-bottom:1px solid var(--bord);position:sticky;left:0;background:var(--bg2)">
+              <div style="font-family:var(--mono);font-size:9px;font-weight:700;color:var(--amber)">${wc}</div>
+              <div style="font-size:9px;color:var(--txt2)">${cfg.name}</div>
+              <div style="font-size:8px;color:var(--txt3)">${cfg.workers} คน · ${cfg.hrs}h/วัน · OT ${cfg.ot}h</div>
+            </td>
+            ${cells.map((c,i)=>cellHtml(c,wkStrs[i])).join('')}
+            <td style="padding:6px 8px;border-bottom:1px solid var(--bord);text-align:center">
+              <div style="font-family:var(--mono);font-size:11px;font-weight:700;color:${sumCol}">${wkDemand.toFixed(0)}h</div>
+              <div style="font-size:8px;color:${sumCol}">${pctWk.toFixed(0)}% ${wkVerd}</div>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+      <tfoot>
+        <tr style="background:var(--bg3)">
+          <td style="padding:7px 10px;font-size:10px;font-weight:700;color:var(--txt2);position:sticky;left:0;background:var(--bg3)">รวมทุก WC</td>
+          ${wkStrs.map(ds=>{
+            const dayTotal = wcRows.reduce((s,r)=>{
+              const c = r.cells[wkStrs.indexOf(ds)];
+              return s+(c?.dem||0);
+            },0);
+            const dayCap = wcRows.reduce((s,r)=>{
+              const c = r.cells[wkStrs.indexOf(ds)];
+              return s+(c?.cap?.normal||0);
+            },0);
+            const pct = dayCap>0?dayTotal/dayCap*100:0;
+            const col = pct>130?'#c0392b':pct>100?'#d06000':pct>80?'#c07800':'#1a7a4a';
+            return `<td style="padding:6px 8px;text-align:center;border-top:1px solid var(--bord2)">
+              ${dayTotal>0?`<div style="font-family:var(--mono);font-size:10px;font-weight:700;color:${col}">${dayTotal.toFixed(0)}h</div>
+              <div style="font-size:8px;color:${col}">${pct.toFixed(0)}%</div>`:`<div style="font-size:9px;color:var(--txt3)">—</div>`}
+            </td>`;
+          }).join('')}
+          <td style="padding:7px 8px;text-align:center;border-top:1px solid var(--bord2)">
+            <div style="font-family:var(--mono);font-size:11px;font-weight:700;color:var(--amber)">${wkTotalDemand.toFixed(0)}h</div>
+            <div style="font-size:8px;color:var(--txt3)">${wkTotalNormal>0?(wkTotalDemand/wkTotalNormal*100).toFixed(0):0}%</div>
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+    </div>
+
+    <!-- Per-WC weekly analysis strip -->
+    <div style="margin-top:14px">
+      <div style="font-size:12px;font-weight:700;color:var(--txt2);margin-bottom:8px">📊 สรุปรายสัปดาห์ต่อ Work Center</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px">
+        ${wcRows.map(({wc,cfg,cells,hasOT,hasOver,wkDemand,wkCap})=>{
+          const pct   = wkCap>0?wkDemand/wkCap*100:0;
+          const otTot = cells.reduce((s,c)=>s+(c.otNeeded||0),0);
+          const col   = hasOver?'#c0392b':hasOT?'#d06000':'#1a7a4a';
+          const verdict = hasOver?'🔴 OT ไม่เพียงพอ':hasOT?'🟡 ต้องการ OT':wkDemand>0?'✅ ปกติได้':'—';
+          return `<div style="padding:8px 12px;background:var(--bg3);border-radius:8px;border-left:3px solid ${col}">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+              <span style="font-family:var(--mono);font-size:10px;font-weight:700;color:var(--amber)">${wc}</span>
+              <span style="font-size:10px;font-weight:700;color:${col}">${pct.toFixed(0)}%</span>
+            </div>
+            <div style="font-size:9px;color:var(--txt2);margin-bottom:4px">${cfg.name}</div>
+            <div style="height:4px;background:var(--bg4);border-radius:2px;overflow:hidden;margin-bottom:5px">
+              <div style="height:100%;width:${Math.min(pct,100)}%;background:${col}"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;font-size:8px;color:var(--txt3)">
+              <div>Demand: <strong style="color:${col}">${wkDemand.toFixed(0)}h</strong></div>
+              <div>Capacity: <strong>${wkCap.toFixed(0)}h</strong></div>
+              <div>คน: <strong>${cfg.workers}</strong></div>
+              ${otTot>0?`<div>OT รวม: <strong style="color:var(--red)">${otTot.toFixed(0)}h</strong></div>`:'<div></div>'}
+            </div>
+            <div style="margin-top:4px;font-size:9px;font-weight:600;color:${col}">${verdict}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`:''}
+
+    ${orders.length===0?`<div class="card" style="margin-top:14px;background:rgba(91,142,240,.04);border-color:rgba(91,142,240,.2)">
+      <div class="card-title" style="color:var(--blue)">วิธีใช้</div>
+      <div style="font-size:12px;color:var(--txt2);line-height:1.9">
+        <div>1. ไปที่ 📥 Import Excel → อัปโหลดไฟล์ Master Plan</div>
+        <div>2. กด "โหลดเข้าระบบ" → กลับมาหน้านี้</div>
+        <div>3. ตาราง Grid จะแสดงภาระงานต่อ WC ต่อวัน — กดเซลล์เพื่อดูรายละเอียด</div>
+      </div>
+    </div>`:''}
+  </div>`;
+}
+
 // ── Employee Directory ───────────────────────────────────────
 let empSearch='', empDeptFilter='All';
 const DEPT_COLOR_EMP = {'31':'#e09c2a','32':'#4caf7d','33':'#5b8ef0','34':'#9b7fe8','35':'#8a8880','36':'#73b6c0','37':'#e03a3a','38':'#c07030','42':'#c0392b','51':'#c17d3c','52':'#a0845c','53':'#8b6c3c','54':'#c47c5a','56':'#7d9e5c','71':'#8a8880','11':'#6a9fd8','12':'#6a9fd8','13':'#6a9fd8','14':'#6a9fd8'};
@@ -3628,6 +4663,29 @@ function kvaToTemplate(kva) {
   return 'tr.7000kVA';
 }
 
+// Decode Item Code → pick best product template + return decoded info
+function itemCodeToProduct(item5, fallbackKva) {
+  const decoded = (item5 && item5.length >= 8) ? decodeItemCode(item5) : null;
+  const kva = decoded?.kva ? parseFloat(decoded.kva) : (fallbackKva || 0);
+  const product = kvaToTemplate(kva || fallbackKva || 0);
+  return { product, decoded, effectiveKva: kva || fallbackKva || 0 };
+}
+
+// Aggregate per-WC hours across all import rows
+function calcImportWcHours(rows) {
+  const wcMap = {}; // wc → { name, hrs }
+  for (const r of rows) {
+    const prod = PRODUCTS[r.product];
+    if (!prod?.ops) continue;
+    const qty = r.qty || 1;
+    for (const op of prod.ops) {
+      if (!wcMap[op.wc]) wcMap[op.wc] = { name: op.name, hrs: 0 };
+      wcMap[op.wc].hrs += op.hrs * qty;
+    }
+  }
+  return wcMap;
+}
+
 function fmtDateCell(v) {
   if (!v) return null;
   if (v instanceof Date) return v.toISOString().slice(0,10);
@@ -3740,7 +4798,18 @@ function handleExcelFile(file) {
             qty,
             test_date: fmtDateCell(row[cols.testDate]),
             deadline:  dl,
-            product:   kvaToTemplate(kva),
+            // --- Item Code analysis ---
+            ...(() => {
+              const ic = itemCodeToProduct(String(row[cols.item5]||'').trim(), kva);
+              const prod = PRODUCTS[ic.product];
+              return {
+                product:        ic.product,
+                decoded:        ic.decoded,
+                effectiveKva:   ic.effectiveKva,
+                std_hrs_unit:   prod?.std_hrs || 0,
+                total_hrs:      (prod?.std_hrs || 0) * qty,
+              };
+            })(),
           });
         }
       }
@@ -3769,10 +4838,15 @@ function loadImportToSystem() {
     deadline:     r.deadline || new Date(today.getTime()+30*86400000).toISOString().slice(0,10),
     sap_so:       r.sap_so,
     customer:     r.customer,
-    kva:          r.kva,
+    kva:          r.effectiveKva || r.kva,
     category:     r.category,
     plan_date:    r.plan_date,
     comment:      r.comment,
+    item_code:    r.item5,
+    item_type:    r.decoded?.raw?.B || '',
+    item_group:   r.decoded?.raw?.I || '',
+    item_hv:      r.decoded?.raw?.GH || '',
+    std_hrs_unit: r.std_hrs_unit || 0,
     from_import:  true,
   }));
   nextId = ACCEPTED.length + 1;
@@ -3820,12 +4894,54 @@ function renderImport() {
     </div>` : ''}
 
     <!-- Preview -->
-    ${importRows.length > 0 ? `
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
+    ${importRows.length > 0 ? (()=>{
+      const totalHrs   = importRows.reduce((s,r)=>s+(r.total_hrs||0),0);
+      const decodedCnt = importRows.filter(r=>r.decoded).length;
+      const wcMap      = calcImportWcHours(importRows);
+      const wcEntries  = Object.entries(wcMap).sort((a,b)=>b[1].hrs-a[1].hrs);
+      const maxWcHrs   = wcEntries.length ? wcEntries[0][1].hrs : 1;
+
+      const rows_html = importRows.map((r,i)=>{
+        const today2 = new Date();
+        const dl     = r.deadline ? new Date(r.deadline) : null;
+        const days   = dl ? Math.round((dl-today2)/86400000) : null;
+        const isLate = days !== null && days < 0;
+        const isUrg  = days !== null && days >= 0 && days <= 7;
+        const catCol = r.category==='หลัก'?'var(--blue)':r.category==='Fast'?'var(--red)':'var(--green)';
+        const typeShort = r.decoded ? `<div style="font-size:9px;color:var(--txt3);margin-top:1px">${(r.decoded.type||'').replace('3Ph ','').replace('(High Loss)','HL').substring(0,18)}</div>` : '';
+        const hvShort   = r.decoded?.hv ? `<div style="font-size:9px;color:var(--blue);margin-top:1px">${r.decoded.hv.split('–')[0].trim()}</div>` : '';
+        return `<tr style="border-bottom:0.5px solid var(--bord);background:${isLate?'rgba(224,90,78,.03)':''}">
+          <td style="padding:5px 8px;text-align:center;font-size:10px;color:var(--txt3)">${i+1}</td>
+          <td style="padding:5px 8px"><span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${catCol}18;color:${catCol};font-weight:600">${r.category}</span></td>
+          <td style="padding:5px 8px;font-family:var(--mono);font-size:10px;color:var(--amber)">${r.sap_so||'—'}</td>
+          <td style="padding:5px 8px;font-size:11px;color:var(--txt2)">${r.customer||'—'}</td>
+          <td style="padding:5px 8px;text-align:center">
+            <span style="font-size:10px;font-weight:700;color:${r.effectiveKva>=3500?'var(--red)':r.effectiveKva>=1000?'var(--amber)':'var(--green)'}">${r.effectiveKva||r.kva}</span>
+            ${r.decoded&&r.effectiveKva!==r.kva?`<div style="font-size:8px;color:var(--txt3)">(Excel:${r.kva})</div>`:''}
+          </td>
+          <td style="padding:5px 8px;text-align:center;font-family:var(--mono);font-size:11px">${r.qty}</td>
+          <td style="padding:5px 8px">
+            <div style="font-family:var(--mono);font-size:10px;color:var(--blue)">${r.item5||'—'}</div>
+            ${typeShort}${hvShort}
+            ${r.decoded?.raw?.I?`<div style="font-size:9px;color:#6c3da8">Grp:${r.decoded.raw.I}</div>`:''}
+          </td>
+          <td style="padding:5px 8px;text-align:center;font-size:10px;font-family:var(--mono);color:var(--txt2)">${r.std_hrs_unit?r.std_hrs_unit.toFixed(1)+'h':'—'}</td>
+          <td style="padding:5px 8px;text-align:center;font-size:10px;font-family:var(--mono);font-weight:700;color:${(r.total_hrs||0)>=80?'var(--red)':(r.total_hrs||0)>=30?'var(--amber)':'var(--txt)'}">${r.total_hrs?(r.total_hrs.toFixed(1)+'h'):'—'}</td>
+          <td style="padding:5px 8px;text-align:center;font-size:10px">
+            <div style="color:${isLate?'var(--red)':isUrg?'var(--amber)':'var(--txt2)'};font-weight:${isLate||isUrg?700:400}">${r.deadline||'—'}</div>
+            ${isLate?`<div style="font-size:9px;color:var(--red)">เกิน ${Math.abs(days)}d</div>`:isUrg?`<div style="font-size:9px;color:var(--amber)">อีก ${days}d</div>`:''}
+          </td>
+          <td style="padding:5px 8px;font-size:10px;color:var(--txt3);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.comment||'—'}</td>
+        </tr>`;
+      }).join('');
+
+      return `
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px">
       <div class="mc"><div class="mc-label">Orders ที่พบ</div><div class="mc-val" style="color:var(--green)">${importRows.length}</div></div>
       <div class="mc"><div class="mc-label">🔴 เกิน Deadline</div><div class="mc-val" style="color:${lateCount>0?'var(--red)':'var(--txt2)'}">${lateCount}</div></div>
-      <div class="mc"><div class="mc-label">Deadline สุดท้าย</div><div class="mc-val" style="font-size:13px">${maxDeadline||'—'}</div></div>
-      <div class="mc"><div class="mc-label">kVA range</div><div class="mc-val" style="font-size:13px">${Math.min(...importRows.map(r=>r.kva))}–${Math.max(...importRows.map(r=>r.kva))}</div></div>
+      <div class="mc"><div class="mc-label">ถอดรหัสได้</div><div class="mc-val" style="color:var(--blue)">${decodedCnt}<span style="font-size:11px;color:var(--txt3)">/${importRows.length}</span></div></div>
+      <div class="mc"><div class="mc-label">⏱ ชั่วโมงรวม</div><div class="mc-val" style="color:var(--amber)">${totalHrs.toFixed(0)}<span style="font-size:11px;color:var(--txt3)">h</span></div></div>
+      <div class="mc"><div class="mc-label">Deadline สุดท้าย</div><div class="mc-val" style="font-size:12px">${maxDeadline||'—'}</div></div>
     </div>
 
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
@@ -3840,53 +4956,51 @@ function renderImport() {
       <span style="font-size:11px;color:var(--txt3)">⚠ จะมีหน้าต่างยืนยันก่อนแทนที่ orders ที่มีอยู่ทั้งหมด</span>
     </div>
 
+    <!-- WC Hours Summary -->
+    <div class="card" style="margin-bottom:12px;border-left:3px solid var(--amber)">
+      <div class="card-title">⏱ ชั่วโมงประมาณการ แยกตาม Work Center — รวมทุก Order (${importRows.length} รายการ · ${totalHrs.toFixed(0)} h)</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:6px">
+        ${wcEntries.map(([wc,{name,hrs}])=>{
+          const pct = Math.round(hrs/maxWcHrs*100);
+          const col = hrs>=50?'var(--red)':hrs>=20?'var(--amber)':'var(--green)';
+          return `<div style="padding:7px 10px;background:var(--bg3);border-radius:7px;border:1px solid var(--bord)">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+              <div>
+                <span style="font-family:var(--mono);font-size:10px;font-weight:700;color:${col}">${wc}</span>
+                <span style="font-size:10px;color:var(--txt2);margin-left:6px">${name}</span>
+              </div>
+              <span style="font-family:var(--mono);font-size:11px;font-weight:700;color:${col}">${hrs.toFixed(1)}h</span>
+            </div>
+            <div style="height:5px;background:var(--bg4);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${pct}%;background:${col};border-radius:3px"></div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+
     <!-- Preview table -->
     <div style="overflow-x:auto;border-radius:10px;border:1px solid var(--bord);max-height:420px;overflow-y:auto">
     <table style="width:100%;border-collapse:collapse;font-size:11px">
       <thead style="position:sticky;top:0;z-index:1">
         <tr style="border-bottom:1px solid var(--bord2)">
-          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:44px">#</th>
-          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:60px">หมวด</th>
-          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;min-width:100px">SAP SO</th>
-          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;min-width:100px">ลูกค้า</th>
-          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:60px">kVA</th>
-          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:44px">จำนวน</th>
-          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;min-width:120px">Template</th>
-          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:90px">Deadline</th>
+          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:36px">#</th>
+          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:54px">หมวด</th>
+          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;min-width:96px">SAP SO</th>
+          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;min-width:90px">ลูกค้า</th>
+          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:56px">kVA</th>
+          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:36px">จำนวน</th>
+          <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;min-width:130px">Item Code · ประเภท</th>
+          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:60px">STD/ตัว</th>
+          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:68px">รวม hrs</th>
+          <th style="padding:7px 8px;text-align:center;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600;width:86px">Deadline</th>
           <th style="padding:7px 8px;text-align:left;background:var(--bg3);color:var(--txt3);font-size:10px;font-weight:600">Comment</th>
         </tr>
       </thead>
-      <tbody>
-        ${importRows.map((r,i) => {
-          const today2 = new Date();
-          const dl     = r.deadline ? new Date(r.deadline) : null;
-          const days   = dl ? Math.round((dl-today2)/86400000) : null;
-          const isLate = days !== null && days < 0;
-          const isUrg  = days !== null && days >= 0 && days <= 7;
-          const catCol = r.category==='หลัก'?'var(--blue)':r.category==='Fast'?'var(--red)':'var(--green)';
-          return `<tr style="border-bottom:0.5px solid var(--bord);background:${isLate?'rgba(224,90,78,.03)':''}">
-            <td style="padding:5px 8px;text-align:center;font-size:10px;color:var(--txt3)">${i+1}</td>
-            <td style="padding:5px 8px"><span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${catCol}18;color:${catCol};font-weight:600">${r.category}</span></td>
-            <td style="padding:5px 8px;font-family:var(--mono);font-size:10px;color:var(--amber)">${r.sap_so||'—'}</td>
-            <td style="padding:5px 8px;font-size:11px;color:var(--txt2)">${r.customer||'—'}</td>
-            <td style="padding:5px 8px;text-align:center">
-              <span style="font-size:10px;font-weight:700;color:${r.kva>=3500?'var(--red)':r.kva>=1000?'var(--amber)':'var(--green)'}">${r.kva}</span>
-            </td>
-            <td style="padding:5px 8px;text-align:center;font-family:var(--mono);font-size:11px">${r.qty}</td>
-            <td style="padding:5px 8px;font-size:10px;color:var(--txt2)">${r.product}</td>
-            <td style="padding:5px 8px;text-align:center;font-size:10px">
-              <div style="color:${isLate?'var(--red)':isUrg?'var(--amber)':'var(--txt2)'};font-weight:${isLate||isUrg?700:400}">
-                ${r.deadline||'—'}
-              </div>
-              ${isLate?`<div style="font-size:9px;color:var(--red)">เกิน ${Math.abs(days)}d</div>`:
-                isUrg?`<div style="font-size:9px;color:var(--amber)">อีก ${days}d</div>`:''}
-            </td>
-            <td style="padding:5px 8px;font-size:10px;color:var(--txt3);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.comment||'—'}</td>
-          </tr>`;
-        }).join('')}
-      </tbody>
+      <tbody>${rows_html}</tbody>
     </table>
-    </div>` : ''}
+    </div>`;
+    })() : ''}
 
     <!-- Instructions -->
     <div class="card" style="margin-top:14px;background:rgba(91,142,240,.04);border-color:rgba(91,142,240,.2)">
@@ -3935,7 +5049,7 @@ function setTab(tab) {
     t.classList.toggle('active', t.getAttribute('onclick') === `setTab('${tab}')`);
   });
   const body = document.getElementById('body-root');
-  const renderers = { simulate: renderSimulate, import: renderImport, orders: renderOrders, catalog: renderCatalog, employees: renderEmployees, timedash: renderTimeDashboard, dept: renderDept, load: renderLoad, gantt: renderGantt, calendar: renderCalendar, settings: renderSettings };
+  const renderers = { simulate: renderSimulate, import: renderImport, orders: renderOrders, catalog: renderCatalog, employees: renderEmployees, timedash: renderTimeDashboard, dept: renderDept, load: renderLoad, gantt: renderGantt, plan: renderPlan, capacity: renderCapacityPlan, itemdecode: renderItemDecoder, transcode: renderTransCode, calendar: renderCalendar, settings: renderSettings };
   body.innerHTML = renderers[tab]();
   if (tab === 'simulate') onSimChange();
   if (tab === 'timedash') setTimeout(()=>{ if(document.getElementById('op-table-wrap')) renderOpTable(); }, 50);
