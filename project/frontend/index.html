@@ -4039,6 +4039,18 @@ function renderTransCode() {
 let capWeekOffset = 0;
 let capDayDetail  = null;
 
+function jumpToDate(dateStr) {
+  if (!dateStr) return;
+  const picked = new Date(dateStr + 'T00:00:00');
+  const dow = picked.getDay();
+  const pickedMon = new Date(picked);
+  pickedMon.setDate(picked.getDate() - (dow === 0 ? 6 : dow - 1));
+  const todayMon = capMondayOfWeek(0);
+  capWeekOffset = Math.round((pickedMon - todayMon) / 604800000);
+  capDayDetail = null;
+  setTab('capacity');
+}
+
 // Hours needed per WC per plan_date (effective, adjusted for efficiency)
 function calcDailyDemand(orders) {
   const demand = {};
@@ -4223,15 +4235,32 @@ function renderCapacityPlan() {
           คำนวณจาก ${orders.length} orders · กดเซลล์เพื่อดูรายละเอียดต่อ WC ต่อวัน
         </div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <button onclick="capWeekOffset--;setTab('capacity')" style="padding:6px 14px;font-size:13px">← สัปดาห์ก่อน</button>
-        <button onclick="capWeekOffset=0;capDayDetail=null;setTab('capacity')" style="padding:6px 12px;font-size:12px;background:var(--bg3)">วันนี้</button>
-        <button onclick="capWeekOffset++;setTab('capacity')" style="padding:6px 14px;font-size:13px">สัปดาห์หน้า →</button>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <button onclick="capWeekOffset--;setTab('capacity')"
+          style="padding:6px 12px;font-size:13px;border-radius:7px;border:1px solid var(--bord2);background:var(--bg2);cursor:pointer">←</button>
+        <button onclick="capWeekOffset=0;capDayDetail=null;setTab('capacity')"
+          style="padding:6px 12px;font-size:12px;border-radius:7px;border:1px solid var(--bord2);background:var(--bg3);cursor:pointer;font-weight:600">วันนี้</button>
+        <button onclick="capWeekOffset++;setTab('capacity')"
+          style="padding:6px 12px;font-size:13px;border-radius:7px;border:1px solid var(--bord2);background:var(--bg2);cursor:pointer">→</button>
+        <div style="width:1px;height:24px;background:var(--bord2);margin:0 2px"></div>
+        <input type="date" value="${capDateStr(monday)}"
+          onchange="jumpToDate(this.value)"
+          style="padding:5px 10px;font-size:12px;border-radius:7px;border:1px solid var(--bord2);background:var(--bg2);color:var(--txt);cursor:pointer;outline:none">
+        <div style="width:1px;height:24px;background:var(--bord2);margin:0 2px"></div>
+        <button onclick="capWeekOffset-=4;setTab('capacity')"
+          style="padding:5px 10px;font-size:11px;border-radius:7px;border:1px solid var(--bord2);background:var(--bg2);cursor:pointer;color:var(--txt2)">−1 เดือน</button>
+        <button onclick="capWeekOffset+=4;setTab('capacity')"
+          style="padding:5px 10px;font-size:11px;border-radius:7px;border:1px solid var(--bord2);background:var(--bg2);cursor:pointer;color:var(--txt2)">+1 เดือน</button>
       </div>
     </div>
 
     <!-- Week label -->
-    <div style="font-size:13px;font-weight:700;color:var(--amber);margin-bottom:10px;text-align:center">📅 สัปดาห์ที่ ${capWeekOffset===0?'นี้':capWeekOffset>0?`+${capWeekOffset}`:capWeekOffset} — ${weekLabel}</div>
+    <div style="font-size:13px;font-weight:700;color:var(--amber);margin-bottom:10px;text-align:center">
+      📅 ${weekLabel}
+      ${capWeekOffset===0?`<span style="font-size:11px;padding:2px 8px;border-radius:10px;background:rgba(91,142,240,.12);color:var(--blue);margin-left:6px;font-weight:600">สัปดาห์ปัจจุบัน</span>`
+        :capWeekOffset>0?`<span style="font-size:11px;color:var(--txt3);margin-left:6px">+${capWeekOffset} สัปดาห์ข้างหน้า</span>`
+        :`<span style="font-size:11px;color:var(--txt3);margin-left:6px">${Math.abs(capWeekOffset)} สัปดาห์ที่แล้ว</span>`}
+    </div>
 
     <!-- KPI -->
     ${wcRows.length>0?`<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
