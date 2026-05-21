@@ -4394,37 +4394,55 @@ function renderCapacityPlan() {
 let empSearch='', empDeptFilter='All';
 const DEPT_COLOR_EMP = {'31':'#e09c2a','32':'#4caf7d','33':'#5b8ef0','34':'#9b7fe8','35':'#8a8880','36':'#73b6c0','37':'#e03a3a','38':'#c07030','42':'#c0392b','51':'#c17d3c','52':'#a0845c','53':'#8b6c3c','54':'#c47c5a','56':'#7d9e5c','71':'#8a8880','11':'#6a9fd8','12':'#6a9fd8','13':'#6a9fd8','14':'#6a9fd8'};
 
-function renderEmployees() {
-  const depts={};
-  Object.entries(EMP_DIR).forEach(([wc,data])=>{
-    const d=data.dept;
-    if(!depts[d]) depts[d]=[];
-    depts[d].push({wc,...data});
-  });
-  const totalActive=Object.values(EMP_DIR).reduce((s,d)=>s+d.employees.length,0);
-  const q=empSearch.toLowerCase();
-  const matchEmp=e=>!q||e.name.toLowerCase().includes(q)||e.id.includes(q);
+function isEmpActive(e) {
+  if (e.is_active === undefined || e.is_active === null) return true; // default active
+  if (typeof e.is_active === 'boolean') return e.is_active;
+  const s = String(e.is_active).trim().toLowerCase();
+  return s === 'true' || s === '1' || s === 'yes' || s === 'active' || s === 'y';
+}
 
-  let filteredDepts={...depts};
-  if(empDeptFilter!=='All'){
-    filteredDepts={};
-    if(depts[empDeptFilter]) filteredDepts[empDeptFilter]=depts[empDeptFilter];
+function renderEmployees() {
+  const depts = {};
+  Object.entries(EMP_DIR).forEach(([wc, data]) => {
+    const d = data.dept;
+    if (!depts[d]) depts[d] = [];
+    depts[d].push({ wc, ...data });
+  });
+
+  // Only active employees
+  const isActive = e => isEmpActive(e);
+  const totalAll    = Object.values(EMP_DIR).reduce((s,d) => s + d.employees.length, 0);
+  const totalActive = Object.values(EMP_DIR).reduce((s,d) => s + d.employees.filter(isActive).length, 0);
+  const totalInactive = totalAll - totalActive;
+
+  // Largest WC by active count
+  const wcCounts = Object.entries(EMP_DIR).map(([wc,d]) => [wc, d.employees.filter(isActive).length]);
+  const [bigWC, bigCnt] = wcCounts.sort((a,b) => b[1]-a[1])[0] || ['—', 0];
+  const bigName = WC_CONFIG[bigWC]?.name || '';
+
+  const q = empSearch.toLowerCase();
+  const matchEmp = e => isActive(e) && (!q || e.name.toLowerCase().includes(q) || (e.id||'').includes(q));
+
+  let filteredDepts = {...depts};
+  if (empDeptFilter !== 'All') {
+    filteredDepts = {};
+    if (depts[empDeptFilter]) filteredDepts[empDeptFilter] = depts[empDeptFilter];
   }
-  const shownCount=Object.values(filteredDepts).flat().reduce((s,w)=>s+w.employees.filter(matchEmp).length,0);
+  const shownCount = Object.values(filteredDepts).flat().reduce((s,w) => s + w.employees.filter(matchEmp).length, 0);
 
   return `<div class="panel" style="max-width:100%">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div>
         <div style="font-size:15px;font-weight:600">👥 Employee Directory</div>
-        <div style="font-size:12px;color:var(--txt2);margin-top:2px">${totalActive} คน active · ${Object.keys(EMP_DIR).length} Work Centers · จาก SAP Employee</div>
+        <div style="font-size:12px;color:var(--txt2);margin-top:2px">${totalActive} คน Active · ${Object.keys(EMP_DIR).length} Work Centers</div>
       </div>
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
-      <div class="mc"><div class="mc-label">พนักงาน Active</div><div class="mc-val">${totalActive}</div></div>
-      <div class="mc"><div class="mc-label">WC ใหญ่สุด</div><div class="mc-val" style="font-size:13px">EE3201</div><div class="mc-sub">33 คน (พันคอยล์ HV)</div></div>
+      <div class="mc"><div class="mc-label">พนักงาน Active</div><div class="mc-val" style="color:var(--green)">${totalActive}</div></div>
+      <div class="mc"><div class="mc-label">WC ใหญ่สุด</div><div class="mc-val" style="font-size:13px">${bigWC}</div><div class="mc-sub">${bigCnt} คน${bigName?' · '+bigName:''}</div></div>
       <div class="mc"><div class="mc-label">Work Centers</div><div class="mc-val">${Object.keys(EMP_DIR).length}</div></div>
-      <div class="mc"><div class="mc-label">แสดง</div><div class="mc-val">${shownCount}</div></div>
+      <div class="mc"><div class="mc-label">ไม่ Active</div><div class="mc-val" style="color:${totalInactive>0?'var(--txt3)':'var(--txt2)'}">${totalInactive}</div></div>
     </div>
 
     <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
@@ -4437,23 +4455,24 @@ function renderEmployees() {
         ${Object.entries(DEPT_NAME_MAP).sort((a,b)=>Number(a[0])-Number(b[0])).map(([k,v])=>
           `<option value="${k}" ${empDeptFilter===k?'selected':''}>${k} — ${v}</option>`).join('')}
       </select>
+      <span style="font-size:11px;color:var(--txt3)">แสดงเฉพาะ Is_Active = true</span>
     </div>
 
     ${Object.entries(filteredDepts).sort((a,b)=>Number(a[0])-Number(b[0])).map(([dept,wcs])=>{
-      const deptEmps=wcs.flatMap(w=>w.employees).filter(matchEmp);
-      if(!deptEmps.length) return '';
-      const col=DEPT_COLOR_EMP[dept]||'#888';
-      const dName=DEPT_NAME_MAP[dept]||dept;
+      const deptEmps = wcs.flatMap(w => w.employees).filter(matchEmp);
+      if (!deptEmps.length) return '';
+      const col   = DEPT_COLOR_EMP[dept] || '#888';
+      const dName = DEPT_NAME_MAP[dept] || dept;
       return `<div class="card" style="margin-bottom:10px;border-left:3px solid ${col}">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
           <div style="font-size:13px;font-weight:600"><span style="color:${col}">Dept ${dept}</span> — ${dName}</div>
           <span class="badge b-b">${deptEmps.length} คน</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">
-          ${wcs.map(w=>{
-            const emps=w.employees.filter(matchEmp);
-            if(!emps.length) return '';
-            const wcCfg=WC_CONFIG[w.wc];
+          ${wcs.map(w => {
+            const emps = w.employees.filter(matchEmp);
+            if (!emps.length) return '';
+            const wcCfg = WC_CONFIG[w.wc];
             return `<div style="background:var(--bg3);border-radius:8px;padding:10px;border:1px solid var(--bord)">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
                 <div>
@@ -4462,11 +4481,12 @@ function renderEmployees() {
                 </div>
                 <span style="font-size:10px;padding:1px 5px;border-radius:999px;background:${col}18;color:${col};font-weight:600">${emps.length}</span>
               </div>
-              ${emps.map(e=>`<div style="display:flex;align-items:center;gap:5px;padding:4px 0;border-bottom:0.5px solid var(--bord);font-size:11px">
-                ${e.is_head?`<span style="font-size:8px;padding:1px 4px;border-radius:3px;background:rgba(192,120,0,.15);color:var(--amber);font-weight:700;flex-shrink:0">หัวหน้า</span>`:
-                `<span style="width:30px;flex-shrink:0"></span>`}
+              ${emps.map(e => `<div style="display:flex;align-items:center;gap:5px;padding:4px 0;border-bottom:0.5px solid var(--bord);font-size:11px">
+                ${e.is_head
+                  ? `<span style="font-size:8px;padding:1px 4px;border-radius:3px;background:rgba(192,120,0,.15);color:var(--amber);font-weight:700;flex-shrink:0">หัวหน้า</span>`
+                  : `<span style="width:30px;flex-shrink:0"></span>`}
                 <span style="flex:1;color:var(--txt2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.name}</span>
-                <span style="font-family:var(--mono);font-size:9px;color:var(--txt3);flex-shrink:0">${e.id.slice(-6)}</span>
+                <span style="font-family:var(--mono);font-size:9px;color:var(--txt3);flex-shrink:0">${(e.id||'').slice(-6)}</span>
               </div>`).join('')}
             </div>`;
           }).join('')}
@@ -4941,8 +4961,9 @@ function handleEmpFile(file) {
       // Keywords — แผนก removed from WC_KEYS (it's dept, not WC)
       const WC_KEYS   = ['wc','workcenter','หน่วยงาน','หน่วย','workctr','costcenter','work'];
       const NAME_KEYS = ['พนักงาน','firstname','ชื่อ','name','fullname','empname','ชื่อสกุล','ชื่อนามสกุล','employee'];
-      const ID_KEYS   = ['id','empid','รหัส','personnel','empno','employeeid'];
-      const DEPT_KEYS = ['dept','department','แผนก','division','ฝ่าย'];
+      const ID_KEYS     = ['id','empid','รหัส','personnel','empno','employeeid'];
+      const DEPT_KEYS   = ['dept','department','แผนก','division','ฝ่าย'];
+      const ACTIVE_KEYS = ['isactive','is_active','active','สถานะ','status'];
 
       let headerRow = null, dataStart = 0, detectNote = '';
 
@@ -4980,39 +5001,48 @@ function handleEmpFile(file) {
         return idx >= 0 ? idx : fallback;
       };
 
-      const iWC   = findCol(WC_KEYS, 0);
-      const iId   = findCol(ID_KEYS, -1);
-      const iName = findCol(NAME_KEYS, -1);
-      const iDept = findCol(DEPT_KEYS, -1);
-      empImportColMap = { iWC, iId, iName, iDept };
+      const iWC     = findCol(WC_KEYS, 0);
+      const iId     = findCol(ID_KEYS, -1);
+      const iName   = findCol(NAME_KEYS, -1);
+      const iDept   = findCol(DEPT_KEYS, -1);
+      const iActive = findCol(ACTIVE_KEYS, -1);
+      empImportColMap = { iWC, iId, iName, iDept, iActive };
 
       const colLabel = i => i >= 0 ? (headerRow?.[i] ? `"${headerRow[i]}"[col${i+1}]` : `col${i+1}`) : '—';
-      const mappingNote = `WC=${colLabel(iWC)} · Name=${colLabel(iName)} · ID=${colLabel(iId)} · Dept=${colLabel(iDept)}`;
+      const mappingNote = `WC=${colLabel(iWC)} · Name=${colLabel(iName)} · ID=${colLabel(iId)} · Dept=${colLabel(iDept)} · Active=${colLabel(iActive)}`;
 
       // Store raw header + all data rows for full-table preview
       empImportHeader  = headerRow || [];
       const dataSlice  = raw.slice(dataStart);
       empImportRawRows = dataSlice.filter(r => r && !r.every(v=>v===null||String(v).trim()===''));
 
-      // Build mapped rows (require WC + Name)
+      // Build mapped rows (require WC)
       const rows = [];
       for (const row of empImportRawRows) {
         const wc   = String(row[iWC]  ||'').trim().toUpperCase();
         const name = iName >= 0 ? String(row[iName]||'').trim() : '';
         if (!wc) continue;
+        // Parse is_active: true if column missing, else parse value
+        let is_active = true;
+        if (iActive >= 0 && row[iActive] !== null && row[iActive] !== undefined) {
+          const v = String(row[iActive]).trim().toLowerCase();
+          is_active = (v === 'true' || v === '1' || v === 'yes' || v === 'active' || v === 'y');
+        }
         rows.push({
           wc,
-          empId:   iId   >= 0 ? String(row[iId]  ||'').replace(/\.0$/,'').trim() : '',
-          empName: name || `(row ${rows.length+1})`,
-          dept:    iDept >= 0 ? (String(row[iDept]||'').trim() || detectDeptFromWC(wc)) : detectDeptFromWC(wc),
+          empId:     iId   >= 0 ? String(row[iId]  ||'').replace(/\.0$/,'').trim() : '',
+          empName:   name || `(row ${rows.length+1})`,
+          dept:      iDept >= 0 ? (String(row[iDept]||'').trim() || detectDeptFromWC(wc)) : detectDeptFromWC(wc),
+          is_active,
           _raw: row,
         });
       }
 
       empImportRows = rows;
       if (rows.length) {
-        const wcCount = [...new Set(rows.map(r=>r.wc))].length;
-        empImportStatus = `✅ พบ ${rows.length} แถว จาก ${wcCount} WCs ${detectNote}\n📋 ${mappingNote}`;
+        const wcCount  = [...new Set(rows.map(r=>r.wc))].length;
+        const actCount = rows.filter(r=>r.is_active).length;
+        empImportStatus = `✅ พบ ${rows.length} แถว (Active ${actCount} · Inactive ${rows.length-actCount}) จาก ${wcCount} WCs ${detectNote}\n📋 ${mappingNote}`;
       } else {
         const hdrPreview = (headerRow||[]).filter(Boolean).slice(0,8).join(' | ');
         empImportStatus = `⚠ ไม่พบข้อมูล ${detectNote}\nHeader ที่พบ: ${hdrPreview||'ไม่มี'}\n💡 ตรวจสอบว่ามีคอลัมน์ WC และ ชื่อพนักงาน`;
@@ -5033,7 +5063,7 @@ function loadEmpToSystem() {
   const newDir = {};
   for (const r of empImportRows) {
     if (!newDir[r.wc]) newDir[r.wc] = { dept: r.dept, employees: [] };
-    newDir[r.wc].employees.push({ name: r.empName, id: r.empId });
+    newDir[r.wc].employees.push({ name: r.empName, id: r.empId, is_active: r.is_active });
     if (r.dept && !newDir[r.wc].dept) newDir[r.wc].dept = r.dept;
   }
   // Replace EMP_DIR in-place (it's a const object)
@@ -5042,7 +5072,8 @@ function loadEmpToSystem() {
 
   invalidateLoadCache();
   empImportDone   = true;
-  empImportStatus = `🎉 โหลดสำเร็จ! ${empImportRows.length} คน จาก ${wcSet.length} WCs เข้าระบบแล้ว`;
+  const actCnt = empImportRows.filter(r=>r.is_active).length;
+  empImportStatus = `🎉 โหลดสำเร็จ! Active ${actCnt} คน · Inactive ${empImportRows.length-actCnt} คน จาก ${wcSet.length} WCs`;
   setTab('import');
 }
 
@@ -5591,8 +5622,8 @@ function renderImportEmployees() {
         <tr style="background:var(--bg3);border-bottom:1px solid var(--bord2)">
           <th style="padding:6px 8px;text-align:center;color:var(--txt3);font-size:9px;font-weight:600;width:32px">#</th>
           ${empImportHeader.map((h,ci)=>{
-            const {iWC,iId,iName,iDept} = empImportColMap;
-            const tag = ci===iWC?'WC':ci===iName?'Name':ci===iId?'ID':ci===iDept?'Dept':'';
+            const {iWC,iId,iName,iDept,iActive} = empImportColMap;
+            const tag = ci===iWC?'WC':ci===iName?'Name':ci===iId?'ID':ci===iDept?'Dept':ci===iActive?'Active':'';
             const hl  = tag ? `color:var(--amber);background:rgba(192,120,0,.08)` : 'color:var(--txt3)';
             return `<th style="padding:6px 8px;text-align:left;font-size:10px;font-weight:600;white-space:nowrap;${hl}">
               ${h||`col${ci+1}`}${tag?`<span style="font-size:8px;margin-left:3px;padding:1px 4px;border-radius:3px;background:var(--amber);color:#fff">${tag}</span>`:''}
@@ -5607,18 +5638,25 @@ function renderImportEmployees() {
           return `<tr style="border-bottom:0.5px solid var(--bord);background:${bg}">
             <td style="padding:4px 8px;text-align:center;font-size:9px;color:var(--txt3)">${ri+1}</td>
             ${empImportHeader.map((_,ci)=>{
-              const {iWC,iId,iName,iDept} = empImportColMap;
+              const {iWC,iId,iName,iDept,iActive} = empImportColMap;
               const val = row[ci] != null ? String(row[ci]).replace(/\.0$/,'').trim() : '';
-              const isWC   = ci===iWC;
-              const isName = ci===iName;
-              const isId   = ci===iId;
-              const isDept = ci===iDept;
-              const style  = isWC   ? 'font-family:var(--mono);font-weight:700;color:var(--amber)'
-                           : isName ? 'font-weight:600;color:var(--txt)'
-                           : isId   ? 'font-family:var(--mono);color:var(--blue)'
-                           : isDept ? 'color:var(--green)'
-                           : 'color:var(--txt2)';
-              return `<td style="padding:4px 8px;font-size:11px;${style};white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${val}">${val||'—'}</td>`;
+              const isWC     = ci===iWC;
+              const isName   = ci===iName;
+              const isId     = ci===iId;
+              const isDept   = ci===iDept;
+              const isActive = ci===iActive;
+              const activeVal = isActive ? (() => {
+                const v = val.toLowerCase();
+                const ok = v==='true'||v==='1'||v==='yes'||v==='active'||v==='y';
+                return `<span style="padding:1px 6px;border-radius:999px;font-size:9px;font-weight:700;background:${ok?'rgba(76,175,125,.15)':'rgba(224,90,78,.12)'};color:${ok?'var(--green)':'var(--red)'}">${val||'—'}</span>`;
+              })() : null;
+              const style = isWC     ? 'font-family:var(--mono);font-weight:700;color:var(--amber)'
+                          : isName   ? 'font-weight:600;color:var(--txt)'
+                          : isId     ? 'font-family:var(--mono);color:var(--blue)'
+                          : isDept   ? 'color:var(--green)'
+                          : isActive ? ''
+                          : 'color:var(--txt2)';
+              return `<td style="padding:4px 8px;font-size:11px;${style};white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${val}">${activeVal||(val||'—')}</td>`;
             }).join('')}
           </tr>`;
         }).join('')}
@@ -5631,12 +5669,13 @@ function renderImportEmployees() {
       <div class="card-title" style="color:var(--blue)">รูปแบบ Excel ที่รองรับ</div>
       <div style="font-size:12px;color:var(--txt2);line-height:1.9">
         <div style="margin-bottom:8px">ชื่อหัวคอลัมน์ที่ระบบรู้จัก (ไม่ต้องตรงทุกตัวอักษร):</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
           ${[
             ['WC / Work Center','wc, workcenter, หน่วยงาน, หน่วย, costcenter','ต้องมี — เช่น EE3102, MP5101'],
             ['Employee Name / พนักงาน','พนักงาน, ชื่อ, name, firstname, fullname, empname, employee','ต้องมี — ชื่อ-นามสกุล'],
             ['Employee ID / รหัส','id, empid, รหัส, personnel, empno, employeeid','optional — รหัส SAP เช่น 10001'],
-            ['Department / แผนก','dept, department, แผนก, division, ฝ่าย','optional — ระบบ auto-detect ได้จาก WC']
+            ['Department / แผนก','dept, department, แผนก, division, ฝ่าย','optional — auto-detect จาก WC'],
+            ['Is_Active / สถานะ','is_active, isactive, active, สถานะ, status','optional — true/1/yes = Active · false/0/no = ไม่แสดง']
           ].map(([label,keys,hint])=>`
           <div style="padding:6px 9px;background:var(--bg3);border-radius:6px">
             <div style="font-weight:700;color:var(--txt);font-size:10px;margin-bottom:2px">${label}</div>
