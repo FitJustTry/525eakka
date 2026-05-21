@@ -5250,8 +5250,8 @@ function renderImportSap() {
       ondrop="event.preventDefault();this.style.borderColor='var(--bord2)';handleSapFile(event.dataTransfer.files[0])">
       <div style="font-size:28px;margin-bottom:8px">📋</div>
       <div style="font-size:13px;font-weight:600;color:var(--txt2)">คลิกหรือลากวาง SAP Excel</div>
-      <div style="font-size:11px;color:var(--txt3);margin-top:4px">รองรับ .xlsx / .xls — ตรวจหา header อัตโนมัติ</div>
-      <input type="file" id="sap-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleSapFile(this.files[0])">
+      <div style="font-size:11px;color:var(--txt3);margin-top:4px">รองรับ .xlsx / .xls / .csv — ตรวจหา header อัตโนมัติ</div>
+      <input type="file" id="sap-file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleSapFile(this.files[0])">
     </div>
 
     ${sapImportStatus ? `<div style="padding:10px 14px;border-radius:8px;font-size:13px;font-weight:500;margin-bottom:12px;background:${sb};color:${sc};border:1px solid ${sd}">${sapImportStatus}</div>` : ''}
@@ -5368,8 +5368,8 @@ function renderImportMasterPlan() {
       ondrop="event.preventDefault();this.style.borderColor='var(--bord2)';this.style.background='var(--bg3)';handleExcelFile(event.dataTransfer.files[0])">
       <div style="font-size:32px;margin-bottom:8px">📊</div>
       <div style="font-size:14px;font-weight:600;color:var(--txt2)">คลิกเพื่อเลือกไฟล์ หรือ ลากวางที่นี่</div>
-      <div style="font-size:12px;color:var(--txt3);margin-top:4px">.xlsx / .xls — แผนลงคอยล์ (sheet AAA)</div>
-      <input type="file" id="excel-input" accept=".xlsx,.xls" style="display:none"
+      <div style="font-size:12px;color:var(--txt3);margin-top:4px">.xlsx / .xls / .csv — แผนลงคอยล์ (sheet AAA)</div>
+      <input type="file" id="excel-input" accept=".xlsx,.xls,.csv" style="display:none"
         onchange="handleExcelFile(this.files[0])">
     </div>
 
@@ -5529,8 +5529,8 @@ function renderImportEmployees() {
       ondrop="event.preventDefault();this.style.borderColor='var(--bord2)';handleEmpFile(event.dataTransfer.files[0])">
       <div style="font-size:28px;margin-bottom:8px">👥</div>
       <div style="font-size:13px;font-weight:600;color:var(--txt2)">คลิกหรือลากวาง Excel พนักงาน</div>
-      <div style="font-size:11px;color:var(--txt3);margin-top:4px">รองรับ .xlsx / .xls — ระบบหาหัวคอลัมน์อัตโนมัติ</div>
-      <input type="file" id="emp-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleEmpFile(this.files[0])">
+      <div style="font-size:11px;color:var(--txt3);margin-top:4px">รองรับ .xlsx / .xls / .csv — ระบบหาหัวคอลัมน์อัตโนมัติ</div>
+      <input type="file" id="emp-file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleEmpFile(this.files[0])">
     </div>
 
     ${empImportStatus ? `<div style="padding:10px 14px;border-radius:8px;font-size:13px;font-weight:500;margin-bottom:12px;background:${statusBg};color:${statusCol};border:1px solid ${statusBd};white-space:pre-line">${empImportStatus}</div>` : ''}
@@ -5626,8 +5626,8 @@ function renderImportCatalog() {
       ondrop="event.preventDefault();this.style.borderColor='var(--bord2)';handleCatFile(event.dataTransfer.files[0])">
       <div style="font-size:28px;margin-bottom:8px">📚</div>
       <div style="font-size:13px;font-weight:600;color:var(--txt2)">คลิกหรือลากวาง Excel Catalog</div>
-      <div style="font-size:11px;color:var(--txt3);margin-top:4px">รองรับ .xlsx / .xls — ระบบหาหัวคอลัมน์อัตโนมัติ</div>
-      <input type="file" id="cat-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleCatFile(this.files[0])">
+      <div style="font-size:11px;color:var(--txt3);margin-top:4px">รองรับ .xlsx / .xls / .csv — ระบบหาหัวคอลัมน์อัตโนมัติ</div>
+      <input type="file" id="cat-file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleCatFile(this.files[0])">
     </div>
 
     ${catImportStatus ? `<div style="padding:10px 14px;border-radius:8px;font-size:13px;font-weight:500;margin-bottom:12px;background:${statusBg};color:${statusCol};border:1px solid ${statusBd}">${catImportStatus}</div>` : ''}
