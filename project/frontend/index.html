@@ -4889,10 +4889,14 @@ function detectDeptFromWC(wc) {
   return '';
 }
 
+let empImportHeader  = [];   // raw header row from file
+let empImportRawRows = [];   // all raw data rows (for full-table preview)
+let empImportColMap  = {};   // { iWC, iId, iName, iDept }
+
 function handleEmpFile(file) {
   if (!file) return;
   empImportStatus = '⏳ กำลังอ่านไฟล์...';
-  empImportRows = []; empImportDone = false;
+  empImportRows = []; empImportHeader = []; empImportRawRows = []; empImportDone = false;
   setTab('import');
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -4900,50 +4904,46 @@ function handleEmpFile(file) {
       const XLSX = window.XLSX;
       if (!XLSX) { empImportStatus='❌ SheetJS ยังไม่พร้อม'; setTab('import'); return; }
       const wb  = XLSX.read(e.target.result, {type:'array'});
-      const sheetName = wb.SheetNames[0];
-      const ws  = wb.Sheets[sheetName];
+      const ws  = wb.Sheets[wb.SheetNames[0]];
       const raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
 
       const nm = v => String(v||'').toLowerCase().replace(/[\s_\-\.\/()]+/g,'');
 
-      // Header detection — 4 strategies from strict to loose
-      const WC_KEYS   = ['wc','workcenter','หน่วยงาน','หน่วย','workctr','costcenter','แผนก','work'];
-      const NAME_KEYS = ['name','ชื่อ','fullname','empname','ชื่อสกุล','ชื่อนามสกุล','employee'];
-      const ID_KEYS   = ['id','empid','รหัส','personnel','empno','employeeid','no','ลำดับ'];
+      // Keywords — แผนก removed from WC_KEYS (it's dept, not WC)
+      const WC_KEYS   = ['wc','workcenter','หน่วยงาน','หน่วย','workctr','costcenter','work'];
+      const NAME_KEYS = ['พนักงาน','firstname','ชื่อ','name','fullname','empname','ชื่อสกุล','ชื่อนามสกุล','employee'];
+      const ID_KEYS   = ['id','empid','รหัส','personnel','empno','employeeid'];
       const DEPT_KEYS = ['dept','department','แผนก','division','ฝ่าย'];
 
       let headerRow = null, dataStart = 0, detectNote = '';
 
-      // Strategy 1: row has WC + Name keywords
+      // Strategy 1: WC + Name
       for (let i=0; i<Math.min(raw.length,30); i++) {
-        const normed = (raw[i]||[]).map(nm);
-        if (normed.some(h=>WC_KEYS.some(k=>h.includes(k))) && normed.some(h=>NAME_KEYS.some(k=>h.includes(k)))) {
+        const n = (raw[i]||[]).map(nm);
+        if (n.some(h=>WC_KEYS.some(k=>h.includes(k))) && n.some(h=>NAME_KEYS.some(k=>h.includes(k)))) {
           headerRow = raw[i]; dataStart = i+1; detectNote='(ตรวจพบ header อัตโนมัติ)'; break;
         }
       }
-      // Strategy 2: row has Name + ID keywords (no WC — will fallback to col 0)
+      // Strategy 2: Name + ID
       if (!headerRow) {
         for (let i=0; i<Math.min(raw.length,30); i++) {
-          const normed = (raw[i]||[]).map(nm);
-          if (normed.some(h=>NAME_KEYS.some(k=>h.includes(k))) && normed.some(h=>ID_KEYS.some(k=>h.includes(k)))) {
-            headerRow = raw[i]; dataStart = i+1; detectNote='(พบ Name+ID — WC ใช้ column แรก)'; break;
+          const n = (raw[i]||[]).map(nm);
+          if (n.some(h=>NAME_KEYS.some(k=>h.includes(k))) && n.some(h=>ID_KEYS.some(k=>h.includes(k)))) {
+            headerRow = raw[i]; dataStart = i+1; detectNote='(พบ Name+ID)'; break;
           }
         }
       }
-      // Strategy 3: row has at least 3 non-empty strings (first such row = header)
+      // Strategy 3: first row with 3+ text strings
       if (!headerRow) {
         for (let i=0; i<Math.min(raw.length,10); i++) {
-          const row = raw[i]||[];
-          const strs = row.filter(v=>v!==null&&String(v).trim()!=='');
-          if (strs.length >= 3 && strs.every(v=>isNaN(parseFloat(v)))) {
-            headerRow = raw[i]; dataStart = i+1; detectNote='(ใช้ row แรกที่มีข้อความ 3+ column)'; break;
+          const strs = (raw[i]||[]).filter(v=>v!==null&&String(v).trim()!=='');
+          if (strs.length >= 3 && strs.every(v=>isNaN(parseFloat(String(v))))) {
+            headerRow = raw[i]; dataStart = i+1; detectNote='(ใช้ row แรกที่มีข้อความ)'; break;
           }
         }
       }
-      // Strategy 4: treat row 0 as header
-      if (!headerRow && raw.length > 0) {
-        headerRow = raw[0]; dataStart = 1; detectNote='(ใช้ row 1 เป็น header)';
-      }
+      // Strategy 4: row 0
+      if (!headerRow && raw.length > 0) { headerRow = raw[0]; dataStart = 1; detectNote='(ใช้ row 1)'; }
 
       const findCol = (keys, fallback) => {
         if (!headerRow) return fallback;
@@ -4952,36 +4952,41 @@ function handleEmpFile(file) {
       };
 
       const iWC   = findCol(WC_KEYS, 0);
-      const iId   = findCol(ID_KEYS, 1);
-      const iName = findCol(NAME_KEYS, 2);
+      const iId   = findCol(ID_KEYS, -1);
+      const iName = findCol(NAME_KEYS, -1);
       const iDept = findCol(DEPT_KEYS, -1);
+      empImportColMap = { iWC, iId, iName, iDept };
 
-      // Build readable mapping note
-      const colLabel = i => i >= 0 ? (headerRow?.[i] ? `"${headerRow[i]}"[${i+1}]` : `col${i+1}`) : '—';
-      const mappingNote = `WC=${colLabel(iWC)} · Name=${colLabel(iName)} · ID=${colLabel(iId)}${iDept>=0?` · Dept=${colLabel(iDept)}`:''}`;
+      const colLabel = i => i >= 0 ? (headerRow?.[i] ? `"${headerRow[i]}"[col${i+1}]` : `col${i+1}`) : '—';
+      const mappingNote = `WC=${colLabel(iWC)} · Name=${colLabel(iName)} · ID=${colLabel(iId)} · Dept=${colLabel(iDept)}`;
 
+      // Store raw header + all data rows for full-table preview
+      empImportHeader  = headerRow || [];
+      const dataSlice  = raw.slice(dataStart);
+      empImportRawRows = dataSlice.filter(r => r && !r.every(v=>v===null||String(v).trim()===''));
+
+      // Build mapped rows (require WC + Name)
       const rows = [];
-      const dataSlice = headerRow ? raw.slice(dataStart) : raw;
-      for (const row of dataSlice) {
-        if (!row || row.every(v=>v===null||String(v).trim()==='')) continue;
+      for (const row of empImportRawRows) {
         const wc   = String(row[iWC]  ||'').trim().toUpperCase();
-        const name = String(row[iName]||'').trim();
-        if (!wc || !name) continue;
+        const name = iName >= 0 ? String(row[iName]||'').trim() : '';
+        if (!wc) continue;
         rows.push({
           wc,
-          empId:   String(row[iId]  ||'').replace(/\.0$/,'').trim(),
-          empName: name,
-          dept:    iDept>=0 ? (String(row[iDept]||'').trim()||detectDeptFromWC(wc)) : detectDeptFromWC(wc),
+          empId:   iId   >= 0 ? String(row[iId]  ||'').replace(/\.0$/,'').trim() : '',
+          empName: name || `(row ${rows.length+1})`,
+          dept:    iDept >= 0 ? (String(row[iDept]||'').trim() || detectDeptFromWC(wc)) : detectDeptFromWC(wc),
+          _raw: row,
         });
       }
 
-      empImportRows   = rows;
+      empImportRows = rows;
       if (rows.length) {
         const wcCount = [...new Set(rows.map(r=>r.wc))].length;
-        empImportStatus = `✅ พบ ${rows.length} คน จาก ${wcCount} WCs ${detectNote}\n📋 Column: ${mappingNote}`;
+        empImportStatus = `✅ พบ ${rows.length} แถว จาก ${wcCount} WCs ${detectNote}\n📋 ${mappingNote}`;
       } else {
-        const preview = headerRow ? `Header ที่พบ: [${(headerRow||[]).filter(Boolean).slice(0,6).join(', ')}]` : 'ไม่พบ header';
-        empImportStatus = `⚠ ไม่พบข้อมูลพนักงาน ${detectNote}\n${preview}\n💡 ต้องมีคอลัมน์ WC/หน่วยงาน และ ชื่อ/Name อย่างน้อย 1 คน`;
+        const hdrPreview = (headerRow||[]).filter(Boolean).slice(0,8).join(' | ');
+        empImportStatus = `⚠ ไม่พบข้อมูล ${detectNote}\nHeader ที่พบ: ${hdrPreview||'ไม่มี'}\n💡 ตรวจสอบว่ามีคอลัมน์ WC และ ชื่อพนักงาน`;
       }
       empImportDone = false;
       setTab('import');
@@ -5550,29 +5555,42 @@ function renderImportEmployees() {
       <span style="font-size:11px;color:var(--txt3)">⚠ จะแทนที่ข้อมูลพนักงานที่มีอยู่ทั้งหมด</span>
     </div>
 
-    <!-- Preview by WC -->
-    <div style="overflow-x:auto;border-radius:10px;border:1px solid var(--bord);max-height:380px;overflow-y:auto">
-    <table style="width:100%;border-collapse:collapse;font-size:11px">
+    <!-- Full raw table — all columns from file -->
+    <div style="overflow-x:auto;border-radius:10px;border:1px solid var(--bord);max-height:420px;overflow-y:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:${Math.max(500,empImportHeader.length*120)}px">
       <thead style="position:sticky;top:0;z-index:1">
         <tr style="background:var(--bg3);border-bottom:1px solid var(--bord2)">
-          <th style="padding:7px 10px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600;width:100px">WC</th>
-          <th style="padding:7px 10px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600">ชื่อ WC</th>
-          <th style="padding:7px 10px;text-align:center;color:var(--txt3);font-size:10px;font-weight:600;width:60px">แผนก</th>
-          <th style="padding:7px 10px;text-align:center;color:var(--txt3);font-size:10px;font-weight:600;width:60px">จำนวน</th>
-          <th style="padding:7px 10px;text-align:left;color:var(--txt3);font-size:10px;font-weight:600">พนักงาน</th>
+          <th style="padding:6px 8px;text-align:center;color:var(--txt3);font-size:9px;font-weight:600;width:32px">#</th>
+          ${empImportHeader.map((h,ci)=>{
+            const {iWC,iId,iName,iDept} = empImportColMap;
+            const tag = ci===iWC?'WC':ci===iName?'Name':ci===iId?'ID':ci===iDept?'Dept':'';
+            const hl  = tag ? `color:var(--amber);background:rgba(192,120,0,.08)` : 'color:var(--txt3)';
+            return `<th style="padding:6px 8px;text-align:left;font-size:10px;font-weight:600;white-space:nowrap;${hl}">
+              ${h||`col${ci+1}`}${tag?`<span style="font-size:8px;margin-left:3px;padding:1px 4px;border-radius:3px;background:var(--amber);color:#fff">${tag}</span>`:''}
+            </th>`;
+          }).join('')}
         </tr>
       </thead>
       <tbody>
-        ${wcList.map(([wc,cnt],i)=>{
-          const employees = empImportRows.filter(r=>r.wc===wc);
-          const dept = employees[0]?.dept || '';
-          const wcName = WC_CONFIG[wc]?.name || '—';
-          return `<tr style="border-bottom:0.5px solid var(--bord);${i%2?'background:var(--bg3)':''}">
-            <td style="padding:5px 10px;font-family:var(--mono);font-size:10px;font-weight:700;color:var(--amber)">${wc}</td>
-            <td style="padding:5px 10px;font-size:11px;color:var(--txt2)">${wcName}</td>
-            <td style="padding:5px 10px;text-align:center;font-size:10px;color:var(--txt3)">${dept}</td>
-            <td style="padding:5px 10px;text-align:center;font-family:var(--mono);font-size:11px;font-weight:700;color:var(--green)">${cnt}</td>
-            <td style="padding:5px 10px;font-size:10px;color:var(--txt2)">${employees.slice(0,5).map(e=>`${e.empName}${e.empId?` (${e.empId})`:''}`).join(' · ')}${cnt>5?` + ${cnt-5} คน…`:''}</td>
+        ${empImportRawRows.map((row,ri)=>{
+          const wc = String(row[empImportColMap.iWC]||'').trim().toUpperCase();
+          const bg = ri%2 ? 'var(--bg3)' : '';
+          return `<tr style="border-bottom:0.5px solid var(--bord);background:${bg}">
+            <td style="padding:4px 8px;text-align:center;font-size:9px;color:var(--txt3)">${ri+1}</td>
+            ${empImportHeader.map((_,ci)=>{
+              const {iWC,iId,iName,iDept} = empImportColMap;
+              const val = row[ci] != null ? String(row[ci]).replace(/\.0$/,'').trim() : '';
+              const isWC   = ci===iWC;
+              const isName = ci===iName;
+              const isId   = ci===iId;
+              const isDept = ci===iDept;
+              const style  = isWC   ? 'font-family:var(--mono);font-weight:700;color:var(--amber)'
+                           : isName ? 'font-weight:600;color:var(--txt)'
+                           : isId   ? 'font-family:var(--mono);color:var(--blue)'
+                           : isDept ? 'color:var(--green)'
+                           : 'color:var(--txt2)';
+              return `<td style="padding:4px 8px;font-size:11px;${style};white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${val}">${val||'—'}</td>`;
+            }).join('')}
           </tr>`;
         }).join('')}
       </tbody>
@@ -5586,8 +5604,8 @@ function renderImportEmployees() {
         <div style="margin-bottom:8px">ชื่อหัวคอลัมน์ที่ระบบรู้จัก (ไม่ต้องตรงทุกตัวอักษร):</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
           ${[
-            ['WC / Work Center','wc, workcenter, หน่วยงาน, หน่วย, แผนก, costcenter','ต้องมี — เช่น EE3102, MP5101'],
-            ['Employee Name / ชื่อ','name, ชื่อ, fullname, empname, ชื่อสกุล, employee','ต้องมี — ชื่อ-นามสกุล'],
+            ['WC / Work Center','wc, workcenter, หน่วยงาน, หน่วย, costcenter','ต้องมี — เช่น EE3102, MP5101'],
+            ['Employee Name / พนักงาน','พนักงาน, ชื่อ, name, firstname, fullname, empname, employee','ต้องมี — ชื่อ-นามสกุล'],
             ['Employee ID / รหัส','id, empid, รหัส, personnel, empno, employeeid','optional — รหัส SAP เช่น 10001'],
             ['Department / แผนก','dept, department, แผนก, division, ฝ่าย','optional — ระบบ auto-detect ได้จาก WC']
           ].map(([label,keys,hint])=>`
