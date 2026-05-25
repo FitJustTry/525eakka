@@ -3837,6 +3837,90 @@ function buildTransCode(e) {
   return `${e.A}${e.B}${cf}${e.GH}${e.I}${e.run||'001'}`;
 }
 
+function renderWorkingTime(code) {
+  code = (code||'').trim().toUpperCase();
+  if (code.length < 8) return '';
+  const decoded = decodeItemCode(code);
+  if (!decoded) return '';
+  const kva      = parseFloat(decoded.kva) || 0;
+  const tmplKey  = kvaToTemplate(kva);
+  const prod     = PRODUCTS[tmplKey];
+  if (!prod?.ops) return `<div style="padding:10px;font-size:12px;color:var(--txt3)">ไม่พบ routing สำหรับ ${kva} kVA</div>`;
+
+  const totalHrs = prod.ops.reduce((s,op)=>s+op.hrs,0);
+  const maxHrs   = Math.max(...prod.ops.map(op=>op.hrs));
+  const eff      = 90; // default efficiency %
+
+  return `<div class="card" style="border-left:3px solid var(--green);margin-top:0">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:6px">
+      <div>
+        <div style="font-size:13px;font-weight:700;color:var(--green)">⏱ Working Time — ${code}</div>
+        <div style="font-size:11px;color:var(--txt2);margin-top:2px">
+          Template: <span style="font-family:var(--mono);color:var(--amber)">${tmplKey}</span> ·
+          ${prod.ops.length} operations · eff ${eff}%
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:22px;font-weight:800;font-family:var(--mono);color:var(--green)">${totalHrs.toFixed(2)}<span style="font-size:13px;font-weight:400"> h STD</span></div>
+        <div style="font-size:11px;color:var(--txt3)">Effective: ${(totalHrs/(eff/100)).toFixed(2)} h</div>
+      </div>
+    </div>
+
+    <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead>
+        <tr style="background:var(--bg3);border-bottom:1px solid var(--bord2)">
+          <th style="padding:6px 8px;text-align:left;font-size:9px;font-weight:700;color:var(--txt3);width:90px">WC</th>
+          <th style="padding:6px 8px;text-align:left;font-size:9px;font-weight:700;color:var(--txt3)">ชื่องาน</th>
+          <th style="padding:6px 8px;text-align:right;font-size:9px;font-weight:700;color:var(--txt3);width:64px">STD hrs</th>
+          <th style="padding:6px 8px;text-align:right;font-size:9px;font-weight:700;color:var(--txt3);width:64px">Eff hrs</th>
+          <th style="padding:6px 8px;width:120px;font-size:9px;font-weight:700;color:var(--txt3)">สัดส่วน</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${prod.ops.map((op,i)=>{
+          const effHrs = op.hrs / (eff/100);
+          const pct    = maxHrs > 0 ? op.hrs/maxHrs*100 : 0;
+          const col    = op.hrs >= maxHrs*0.8 ? 'var(--red)' : op.hrs >= maxHrs*0.5 ? 'var(--amber)' : 'var(--green)';
+          return `<tr style="border-bottom:0.5px solid var(--bord);${i%2?'background:var(--bg3)':''}">
+            <td style="padding:5px 8px;font-family:var(--mono);font-size:10px;font-weight:700;color:var(--amber)">${op.wc}</td>
+            <td style="padding:5px 8px;color:var(--txt2)">${op.name}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-weight:700;color:${col}">${op.hrs.toFixed(2)}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:var(--txt3)">${effHrs.toFixed(2)}</td>
+            <td style="padding:5px 8px">
+              <div style="display:flex;align-items:center;gap:5px">
+                <div style="flex:1;height:6px;background:var(--bg4);border-radius:3px;overflow:hidden">
+                  <div style="height:100%;width:${pct.toFixed(0)}%;background:${col};border-radius:3px"></div>
+                </div>
+                <span style="font-size:9px;color:var(--txt3);width:28px;text-align:right">${pct.toFixed(0)}%</span>
+              </div>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+      <tfoot>
+        <tr style="background:var(--bg3);border-top:1px solid var(--bord2)">
+          <td colspan="2" style="padding:7px 8px;font-weight:700;font-size:11px;color:var(--txt)">รวม</td>
+          <td style="padding:7px 8px;text-align:right;font-family:var(--mono);font-weight:800;color:var(--green);font-size:12px">${totalHrs.toFixed(2)}</td>
+          <td style="padding:7px 8px;text-align:right;font-family:var(--mono);font-weight:700;color:var(--txt2)">${(totalHrs/(eff/100)).toFixed(2)}</td>
+          <td style="padding:7px 8px;font-size:10px;color:var(--txt3)">100%</td>
+        </tr>
+      </tfoot>
+    </table>
+
+    <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+      ${prod.ops.map(op=>{
+        const pct = totalHrs>0?op.hrs/totalHrs*100:0;
+        const col = op.hrs >= maxHrs*0.8?'var(--red)':op.hrs >= maxHrs*0.5?'var(--amber)':'var(--green)';
+        return `<div style="padding:5px 9px;background:var(--bg3);border-radius:6px;border:1px solid var(--bord);text-align:center;min-width:80px">
+          <div style="font-family:var(--mono);font-size:9px;font-weight:700;color:var(--amber)">${op.wc}</div>
+          <div style="font-size:13px;font-weight:800;color:${col};font-family:var(--mono)">${op.hrs.toFixed(1)}</div>
+          <div style="font-size:8px;color:var(--txt3)">h · ${pct.toFixed(0)}%</div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
 function renderTransCode() {
   if (!window._tcEnc) window._tcEnc = {A:'5',B:'1',kva:100,GH:'22',I:'A',run:'001'};
   const e = window._tcEnc;
@@ -3844,6 +3928,7 @@ function renderTransCode() {
   const decIn = (window._tcDecInput||'').toUpperCase();
   const decResult = decIn.length>=8 ? renderItemDecoderResult(decIn) :
     '<div style="font-size:12px;color:var(--txt3);padding:8px 0">กรอก Item Code เพื่อถอดรหัสอัตโนมัติ</div>';
+  const timeCalc = renderWorkingTime(decIn);
 
   const kvaList = [50,100,160,250,315,400,500,630,800,1000,1250,1600,2000,2500,3150,4000,5000,6300,7500,10000,12500,16000];
   const segs = [
@@ -3958,6 +4043,14 @@ function renderTransCode() {
           class="btn-primary" style="width:100%;font-size:13px">📋 Copy รหัส</button>
       </div>
     </div>
+
+    <!-- Working Time Calculator -->
+    ${timeCalc ? `<div style="margin-bottom:14px">
+      <div style="font-size:13px;font-weight:700;color:var(--green);margin-bottom:8px;letter-spacing:.04em">⏱ Working Time Calculator</div>
+      ${timeCalc}
+    </div>` : `<div class="card" style="margin-bottom:14px;background:rgba(26,122,74,.04);border-color:rgba(26,122,74,.2);text-align:center;padding:18px">
+      <div style="font-size:12px;color:var(--txt3)">⏱ กรอก Item Code ด้านบน → ระบบจะคำนวณชั่วโมงการผลิตแยกตาม Work Center อัตโนมัติ</div>
+    </div>`}
 
     <!-- Reference Tables -->
     <div style="font-size:13px;font-weight:700;color:var(--txt2);margin-bottom:10px;letter-spacing:.04em">📑 Reference Tables</div>
