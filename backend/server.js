@@ -747,6 +747,39 @@ app.delete('/api/coil-plan/week/:week_start', asyncRoute(async (req, res) => {
   res.json({ deleted: result.rowCount });
 }));
 
+app.put('/api/coil-plan/:id', asyncRoute(async (req, res) => {
+  const allowed = ['plan_date','seq','importance','sap_so','item_code','comment','plant','kva',
+    'electrical','customer','total_kva','qty','enter_test','cable_box','control',
+    'due_store','due_so','adjust_plan','due_clamp','due_box_ctrl','raw_mat','lv','hv'];
+  const entries = Object.entries(req.body).filter(([k]) => allowed.includes(k));
+  if (!entries.length) return res.status(400).json({ error: 'No valid fields' });
+  const sets = entries.map(([k], i) => `${k}=$${i + 2}`).join(', ');
+  const result = await pool.query(
+    `UPDATE coil_plan SET ${sets} WHERE id=$1 RETURNING *`,
+    [req.params.id, ...entries.map(([, v]) => v)]
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+  res.json(result.rows[0]);
+}));
+
+app.put('/api/employees/:id', asyncRoute(async (req, res) => {
+  const allowed = ['emp_name','dept','title','wc_id','is_active','is_head','firstname','lastname'];
+  const entries = Object.entries(req.body).filter(([k]) => allowed.includes(k));
+  if (!entries.length) return res.status(400).json({ error: 'No valid fields' });
+  const sets = entries.map(([k], i) => `${k}=$${i + 2}`).join(', ');
+  const result = await pool.query(
+    `UPDATE employees SET ${sets}, updated_at=now() WHERE id=$1 RETURNING *`,
+    [req.params.id, ...entries.map(([, v]) => v)]
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+  res.json(result.rows[0]);
+}));
+
+app.delete('/api/employees/:id', asyncRoute(async (req, res) => {
+  await pool.query('DELETE FROM employees WHERE id=$1', [req.params.id]);
+  res.status(204).send();
+}));
+
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(500).json({ error: err.message || 'Internal server error' });
