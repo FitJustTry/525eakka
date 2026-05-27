@@ -184,6 +184,24 @@ async function initDatabase() {
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS drill_8mm BOOLEAN NOT NULL DEFAULT false`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS drill_22mm BOOLEAN NOT NULL DEFAULT false`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS coil_plan (
+        id SERIAL PRIMARY KEY,
+        plan_date TEXT NOT NULL,
+        seq NUMERIC,
+        importance TEXT,
+        sap_so TEXT, item_code TEXT, comment TEXT, plant TEXT,
+        kva NUMERIC, electrical TEXT, customer TEXT,
+        total_kva NUMERIC, qty INTEGER,
+        enter_test TEXT, cable_box TEXT, control TEXT,
+        due_store TEXT, due_so TEXT, adjust_plan TEXT,
+        due_clamp TEXT, due_box_ctrl TEXT, raw_mat TEXT,
+        lv TEXT, hv TEXT,
+        week_start TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_coil_plan_week ON coil_plan(week_start)');
     await client.query('COMMIT');
     console.log('✅ PostgreSQL tables ready');
   } catch (err) {
@@ -680,6 +698,38 @@ app.put('/api/cutting-machines/:id', asyncRoute(async (req, res) => {
 app.delete('/api/cutting-machines/:id', asyncRoute(async (req, res) => {
   await pool.query('DELETE FROM cutting_machines WHERE id = $1', [req.params.id]);
   res.status(204).send();
+}));
+
+app.get('/api/coil-plan', asyncRoute(async (req, res) => {
+  const { week_start } = req.query;
+  const result = week_start
+    ? await pool.query('SELECT * FROM coil_plan WHERE week_start=$1 ORDER BY plan_date, seq', [week_start])
+    : await pool.query('SELECT * FROM coil_plan ORDER BY plan_date, seq');
+  res.json(result.rows);
+}));
+
+app.post('/api/coil-plan/batch', asyncRoute(async (req, res) => {
+  const { rows, week_start } = req.body;
+  if (!Array.isArray(rows) || !week_start) return res.status(400).json({ error: 'Missing rows or week_start' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM coil_plan WHERE week_start=$1', [week_start]);
+    for (const r of rows) {
+      await client.query(
+        `INSERT INTO coil_plan (plan_date,seq,importance,sap_so,item_code,comment,plant,kva,electrical,customer,total_kva,qty,enter_test,cable_box,control,due_store,due_so,adjust_plan,due_clamp,due_box_ctrl,raw_mat,lv,hv,week_start)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+        [r.plan_date,r.seq,r.importance,r.sap_so,r.item_code,r.comment,r.plant,r.kva,r.electrical,r.customer,r.total_kva,r.qty,r.enter_test,r.cable_box,r.control,r.due_store,r.due_so,r.adjust_plan,r.due_clamp,r.due_box_ctrl,r.raw_mat,r.lv,r.hv,week_start]
+      );
+    }
+    await client.query('COMMIT');
+    res.json({ inserted: rows.length, week_start });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }));
 
 app.use((err, req, res, next) => {
