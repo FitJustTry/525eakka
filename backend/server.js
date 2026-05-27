@@ -496,6 +496,10 @@ app.delete('/api/holidays/:date', publicHoliday.remove);
 const factoryHoliday = holidayRoutes('factory_holidays');
 app.get('/api/factory-holidays', factoryHoliday.list);
 app.post('/api/factory-holidays', factoryHoliday.upsert);
+app.delete('/api/factory-holidays', asyncRoute(async (req, res) => {
+  const result = await pool.query('DELETE FROM factory_holidays');
+  res.json({ deleted: result.rowCount });
+}));
 app.delete('/api/factory-holidays/:date', factoryHoliday.remove);
 
 app.get('/api/orders', asyncRoute(async (req, res) => {
@@ -547,6 +551,11 @@ app.put('/api/orders/:id', asyncRoute(async (req, res) => {
   );
   if (!result.rowCount) return res.status(404).json({ error: 'Order not found' });
   res.json(rowToOrder(result.rows[0]));
+}));
+
+app.delete('/api/orders', asyncRoute(async (req, res) => {
+  const result = await pool.query('DELETE FROM accepted_orders');
+  res.json({ deleted: result.rowCount });
 }));
 
 app.delete('/api/orders/:id', asyncRoute(async (req, res) => {
@@ -625,6 +634,13 @@ app.get('/api/employees', asyncRoute(async (req, res) => {
     employees[row.wc_id].employees.push({ id: row.emp_id, name: row.emp_name, title: row.title||'', firstname: row.firstname||'', lastname: row.lastname||'', is_active: row.is_active, is_head: row.is_head, head_id: row.head_id||'', wc_list: row.wc_list||'', access_code: row.access_code||'', image: row.image||'', extra: row.extra||{} });
   });
   res.json(employees);
+}));
+
+app.get('/api/employees/flat', asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    'SELECT id, wc_id, emp_id, emp_name, title, firstname, lastname, dept, is_active, is_head FROM employees ORDER BY wc_id, sort_order, id'
+  );
+  res.json(result.rows);
 }));
 
 // POST /api/employees/batch — replace all employees with EMP_DIR-shaped object
@@ -735,6 +751,11 @@ app.post('/api/coil-plan/batch', asyncRoute(async (req, res) => {
   } finally {
     client.release();
   }
+}));
+
+app.delete('/api/coil-plan', asyncRoute(async (req, res) => {
+  const result = await pool.query('DELETE FROM coil_plan');
+  res.json({ deleted: result.rowCount });
 }));
 
 app.delete('/api/coil-plan/:id', asyncRoute(async (req, res) => {

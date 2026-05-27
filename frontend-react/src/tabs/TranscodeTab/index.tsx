@@ -85,6 +85,7 @@ export default function TranscodeTab() {
   const [decInput, setDecInput] = useState('')
   const [enc, setEnc] = useState<EncState>(DEFAULT_ENC)
   const [showRef, setShowRef] = useState(false)
+  const [showGuide, setShowGuide] = useState(false)
 
   const dec = decInput.length >= 8 ? decodeItemCode(decInput) : null
   const encCode = (() => {
@@ -244,7 +245,7 @@ export default function TranscodeTab() {
       </div>
 
       {/* kVA Reference Table */}
-      <div style={{ background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 10, overflow: 'hidden' }}>
+      <div style={{ background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 10, overflow: 'hidden', marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'var(--bg3)', borderBottom: '1px solid var(--bord)', cursor: 'pointer' }}
           onClick={() => setShowRef(r => !r)}>
           <div style={{ fontSize: 11, fontWeight: 600 }}>📊 ตาราง kVA → CDEF Reference</div>
@@ -260,6 +261,224 @@ export default function TranscodeTab() {
                 <div style={{ fontSize: 8, color: 'var(--txt3)' }}>CDEF</div>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* Guide / Reference */}
+      <div style={{ background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 12, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', background: 'var(--bg3)', borderBottom: showGuide ? '1px solid var(--bord)' : 'none', cursor: 'pointer' }}
+          onClick={() => setShowGuide(g => !g)}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>📖 คู่มือ Item Code — EN-T-001</div>
+            <div style={{ fontSize: 11, color: 'var(--txt3)', marginTop: 2 }}>Transformer Item Code Data Logic · โครงสร้าง AB CDEF GH I J(KLM) · 10–12 หลัก</div>
+          </div>
+          <div style={{ fontSize: 18, color: 'var(--txt3)', marginLeft: 16 }}>{showGuide ? '▲' : '▼'}</div>
+        </div>
+        {showGuide && (
+          <div style={{ padding: '24px 24px', display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+            {/* ── Structure banner ── */}
+            <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: '16px 20px', border: '1px solid var(--bord)' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--txt3)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 12 }}>โครงสร้างรหัส</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 14 }}>
+                {[
+                  { seg: 'A', color: '#f38ba8', desc: 'หมวดสินค้า', sub: '1 digit' },
+                  { seg: 'B', color: '#f9e2af', desc: 'ประเภทหม้อแปลง', sub: '1 digit' },
+                  { seg: 'CDEF', color: '#a6e3a1', desc: 'ขนาด kVA', sub: '4 digits' },
+                  { seg: 'GH', color: '#89b4fa', desc: 'แรงดัน HV', sub: '2 digits' },
+                  { seg: 'I', color: '#cba6f7', desc: 'กลุ่ม/มาตรฐาน', sub: '1 digit' },
+                  { seg: 'J(KLM)', color: '#fab387', desc: 'Running No.', sub: '1–4 digits' },
+                ].map((s, i) => (
+                  <div key={s.seg} style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
+                    {i > 0 && <div style={{ color: 'var(--txt3)', fontSize: 22, paddingBottom: 22, fontWeight: 300 }}>·</div>}
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 900, color: s.color, padding: '8px 14px', borderRadius: 8, background: s.color + '18', border: `2px solid ${s.color}50`, letterSpacing: '.12em', minWidth: 52 }}>{s.seg}</div>
+                      <div style={{ fontSize: 10, color: s.color, fontWeight: 700, marginTop: 4 }}>{s.desc}</div>
+                      <div style={{ fontSize: 9, color: 'var(--txt3)', marginTop: 1 }}>{s.sub}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--amber)', background: 'rgba(249,226,175,.08)', padding: '8px 14px', borderRadius: 6, border: '1px solid rgba(249,226,175,.2)', display: 'inline-block', letterSpacing: '.1em' }}>
+                A B · C D E F · G H · I · J(KLM)
+              </div>
+            </div>
+
+            {/* ── Digits 1 & 2 ── */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 16 }}>
+              {/* A */}
+              <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: '16px 18px', border: '1px solid var(--bord)', borderTop: '3px solid #f38ba8' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#f38ba8', marginBottom: 12 }}>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 18, marginRight: 8 }}>A</span>หมวดสินค้า
+                </div>
+                {[['5','Finished Transformer','สำเร็จรูป'],['4','90% Semi-Finished','ใช้ภายใน']].map(([c, en, th]) => (
+                  <div key={c} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid var(--bord)' }}>
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 900, color: '#f38ba8', minWidth: 24, textAlign: 'center' }}>{c}</span>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--txt)' }}>{en}</div>
+                      <div style={{ fontSize: 11, color: 'var(--txt3)' }}>{th}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* B */}
+              <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: '16px 18px', border: '1px solid var(--bord)', borderTop: '3px solid #f9e2af' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#f9e2af', marginBottom: 12 }}>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 18, marginRight: 8 }}>B</span>ประเภทหม้อแปลง
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
+                  {[
+                    ['1 / C','3 Ph. Conservator Type','C = High Loss'],
+                    ['2 / N','3 Ph. N₂ Gas Sealed','N = High Loss'],
+                    ['3 / F','3 Ph. Hermetically Sealed — Full Oil','F = High Loss'],
+                    ['4','3 Ph. Cast Resin','Dry Type'],
+                    ['5','3 Ph. Pad Mounted',''],
+                    ['6','Dry Type','Class H, Class A'],
+                    ['8','Special Type',''],
+                    ['9','1 Phase',''],
+                  ].map(([c, en, note]) => (
+                    <div key={c} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--bord)' }}>
+                      <span style={{ fontFamily: 'var(--mono)', fontSize: 14, fontWeight: 900, color: '#f9e2af', minWidth: 36 }}>{c}</span>
+                      <div>
+                        <div style={{ fontSize: 12, color: 'var(--txt)' }}>{en}</div>
+                        {note && <div style={{ fontSize: 10, color: 'var(--txt3)' }}>{note}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* ── kVA Logic ── */}
+            <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: '16px 18px', border: '1px solid var(--bord)', borderTop: '3px solid #a6e3a1' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#a6e3a1', marginBottom: 12 }}>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 18, marginRight: 8 }}>CDEF</span>ขนาด kVA — สูตรคำนวณ
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap', marginBottom: 14 }}>
+                <div style={{ padding: '10px 18px', background: 'rgba(166,227,161,.1)', borderRadius: 8, border: '1px solid rgba(166,227,161,.3)', textAlign: 'center' }}>
+                  <div style={{ fontSize: 18, fontWeight: 800, fontFamily: 'var(--mono)', color: '#a6e3a1', letterSpacing: '.06em' }}>DEF × 10<sup style={{ fontSize: 12 }}>C</sup></div>
+                  <div style={{ fontSize: 10, color: 'var(--txt3)', marginTop: 4 }}>= VA → ÷ 1,000 = kVA</div>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--txt2)', lineHeight: 1.7 }}>
+                  <div><strong style={{ color: 'var(--txt)' }}>C</strong> = ตัวคูณ (เลขยกกำลังของ 10)</div>
+                  <div><strong style={{ color: 'var(--txt)' }}>DEF</strong> = ค่าฐาน (3 หลัก)</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {[
+                  { kva: '30 kVA', code: '2300', calc: '300 × 10² = 30,000 VA' },
+                  { kva: '160 kVA', code: '3160', calc: '160 × 10³ = 160,000 VA' },
+                  { kva: '1,000 kVA', code: '4100', calc: '100 × 10⁴ = 1,000,000 VA' },
+                  { kva: '1,500 kVA', code: '4150', calc: '150 × 10⁴ = 1,500,000 VA' },
+                ].map(ex => (
+                  <div key={ex.code} style={{ padding: '10px 14px', background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bord)', textAlign: 'center', flex: '1 1 140px' }}>
+                    <div style={{ fontFamily: 'var(--mono)', fontSize: 18, fontWeight: 900, color: '#a6e3a1' }}>{ex.code}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt)', margin: '4px 0' }}>{ex.kva}</div>
+                    <div style={{ fontSize: 10, color: 'var(--txt3)' }}>{ex.calc}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ── GH & I ── */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+              {/* GH */}
+              <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: '16px 18px', border: '1px solid var(--bord)', borderTop: '3px solid #89b4fa' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#89b4fa', marginBottom: 12 }}>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 18, marginRight: 8 }}>GH</span>แรงดัน HV
+                </div>
+                {[['01','0–1,000 V'],['11','11,000 V'],['19','19,000 V'],['22','22,000 V'],['33','33,000–36,000 V'],['40','11,000 / 22,000 V (Dual)']].map(([c,d]) => (
+                  <div key={c} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid var(--bord)' }}>
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: 16, fontWeight: 900, color: '#89b4fa', minWidth: 32 }}>{c}</span>
+                    <span style={{ fontSize: 13, color: 'var(--txt2)' }}>{d}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* I */}
+              <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: '16px 18px', border: '1px solid var(--bord)', borderTop: '3px solid #cba6f7' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#cba6f7', marginBottom: 12 }}>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 18, marginRight: 8 }}>I</span>กลุ่ม / มาตรฐาน / วัสดุ
+                </div>
+                {[
+                  ['A / C','Ekarat Standard','A=Foil · C=Wire'],
+                  ['E / F','PEA Standard','E=Foil · F=Wire'],
+                  ['I / J','MEA Standard','I=Foil · J=Wire'],
+                  ['S','Special Add-ons','Cable Box, Control, Conservator'],
+                  ['H / L','Aluminum Winding','H=HV only · L=HV & LV'],
+                ].map(([c,en,note]) => (
+                  <div key={c} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid var(--bord)' }}>
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: 14, fontWeight: 900, color: '#cba6f7', minWidth: 40 }}>{c}</span>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--txt)' }}>{en}</div>
+                      <div style={{ fontSize: 10, color: 'var(--txt3)' }}>{note}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ── Running No ── */}
+            <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: '14px 18px', border: '1px solid var(--bord)', borderTop: '3px solid #fab387', display: 'flex', alignItems: 'center', gap: 16 }}>
+              <span style={{ fontFamily: 'var(--mono)', fontSize: 24, fontWeight: 900, color: '#fab387' }}>J(KLM)</span>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#fab387', marginBottom: 3 }}>หมายเลขวิ่ง (Running Number)</div>
+                <div style={{ fontSize: 12, color: 'var(--txt2)' }}>ลำดับที่ใช้แยกแบบการออกแบบในรุ่นเดียวกัน — เช่น <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt)' }}>1</span>, <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt)' }}>001</span>, <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt)' }}>S001</span></div>
+              </div>
+            </div>
+
+            {/* ── Decoding Examples ── */}
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--txt)', marginBottom: 14 }}>ตัวอย่างการถอดรหัส</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                {[
+                  {
+                    code: '51410022A1',
+                    segs: [
+                      { chars: '5',    label: 'A',    color: '#f38ba8', meaning: 'Finished Transformer' },
+                      { chars: '1',    label: 'B',    color: '#f9e2af', meaning: '3 Ph. Conservator Type' },
+                      { chars: '4100', label: 'CDEF', color: '#a6e3a1', meaning: '1,000 kVA (100 × 10⁴)' },
+                      { chars: '22',   label: 'GH',   color: '#89b4fa', meaning: '22,000 V HV System' },
+                      { chars: 'A',    label: 'I',    color: '#cba6f7', meaning: 'Ekarat Standard (Foil Winding)' },
+                      { chars: '1',    label: 'J',    color: '#fab387', meaning: 'Design Sequence No. 1' },
+                    ]
+                  },
+                  {
+                    code: '53415022S001',
+                    segs: [
+                      { chars: '5',    label: 'A',    color: '#f38ba8', meaning: 'Finished Transformer' },
+                      { chars: '3',    label: 'B',    color: '#f9e2af', meaning: '3 Ph. Hermetically Sealed — Full Oil' },
+                      { chars: '4150', label: 'CDEF', color: '#a6e3a1', meaning: '1,500 kVA (150 × 10⁴)' },
+                      { chars: '22',   label: 'GH',   color: '#89b4fa', meaning: '22,000 V HV System' },
+                      { chars: 'S',    label: 'I',    color: '#cba6f7', meaning: 'Special Add-on (+Cable Box Type 1)' },
+                      { chars: '001',  label: 'KLM',  color: '#fab387', meaning: 'Design Sequence No. 001' },
+                    ]
+                  },
+                ].map(ex => (
+                  <div key={ex.code} style={{ background: 'var(--bg3)', borderRadius: 10, padding: '16px 18px', border: '1px solid var(--bord)' }}>
+                    <div style={{ fontFamily: 'var(--mono)', fontSize: 22, fontWeight: 900, color: 'var(--amber)', marginBottom: 14, letterSpacing: '.1em' }}>{ex.code}</div>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 14 }}>
+                      {ex.segs.map(s => (
+                        <div key={s.label} style={{ padding: '4px 8px', borderRadius: 5, background: s.color + '18', border: `1.5px solid ${s.color}50`, textAlign: 'center' }}>
+                          <div style={{ fontFamily: 'var(--mono)', fontWeight: 800, color: s.color, fontSize: 13 }}>{s.chars}</div>
+                          <div style={{ fontSize: 8, color: s.color, opacity: 0.8, marginTop: 1 }}>{s.label}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {ex.segs.map(s => (
+                      <div key={s.label} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--bord)' }}>
+                        <span style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 800, color: s.color, minWidth: 36 }}>{s.chars}</span>
+                        <span style={{ fontSize: 9, fontWeight: 700, color: s.color, opacity: 0.7, minWidth: 28 }}>{s.label}</span>
+                        <span style={{ fontSize: 12, color: 'var(--txt2)' }}>{s.meaning}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+
           </div>
         )}
       </div>

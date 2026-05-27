@@ -138,6 +138,11 @@ function MasterPlan() {
             {weeks.map(w => <option key={w} value={w}>สัปดาห์ {w}</option>)}
           </select>
           {weekDel && <button style={S.btnRed} onClick={() => delWeek(weekDel)}>🗑 ลบ {weekDel}</button>}
+          <button style={S.btnRed} onClick={async () => {
+            if (!confirm(`ลบ Master Plan ทั้งหมด ${orders.length} รายการ?`)) return
+            await apiFetch('/orders', 'DELETE')
+            dispatch({ type: 'SET_ORDERS', orders: [] })
+          }}>🗑 ลบทั้งหมด</button>
         </div>
       </div>
       <div style={S.wrap}>
@@ -237,6 +242,11 @@ function CoilPlan() {
         {wf && <button style={S.btnRed} onClick={() => delWeek(wf)}>🗑 ลบสัปดาห์ {wf}</button>}
         {wf && <button style={S.btn} onClick={() => setWf('')}>✕ ล้าง</button>}
         <span style={{ fontSize: 10, color: 'var(--txt3)', marginLeft: 8 }}>คลิกเซลล์เพื่อแก้ไข</span>
+        <button style={{ ...S.btnRed, marginLeft: 'auto' }} onClick={async () => {
+          if (!confirm(`ลบ Coil Plan ทั้งหมด ${rows.length} รายการ?`)) return
+          await apiFetch('/coil-plan', 'DELETE')
+          setRows([])
+        }}>🗑 ลบทั้งหมด</button>
       </div>
       <div style={S.wrap}>
         {loading ? <div style={{ padding: 28, textAlign: 'center', color: 'var(--txt3)' }}>กำลังโหลด…</div> : (
@@ -331,30 +341,30 @@ function CuttingMachines() {
 }
 
 // ── 4. EMPLOYEES ─────────────────────────────────────────────────────────────
-interface EmpRow { id: string; emp_id: string; emp_name: string; firstname: string; lastname: string; dept: string; title: string; wc_id: string; is_active: boolean; is_head: boolean }
+interface EmpRow { id: number; emp_id: string; emp_name: string; firstname: string; lastname: string; dept: string; title: string; wc_id: string; is_active: boolean; is_head: boolean }
 
 function Employees() {
   const [rows, setRows] = useState<EmpRow[]>([]); const [loading, setLoading] = useState(true)
-  const [q, setQ] = useState(''); const [busy, setBusy] = useState<string | null>(null)
+  const [q, setQ] = useState(''); const [busy, setBusy] = useState<number | null>(null)
   useEffect(() => {
-    apiFetch('/employees').then((d: EmpRow[]) => { setRows(d.sort((a, b) => (a.wc_id ?? '').localeCompare(b.wc_id ?? ''))); setLoading(false) })
+    apiFetch('/employees/flat').then((d: EmpRow[]) => { setRows(d); setLoading(false) })
   }, [])
   const filtered = useMemo(() => {
     const lo = q.toLowerCase()
     return lo ? rows.filter(r => (r.emp_name ?? '').toLowerCase().includes(lo) || (r.dept ?? '').toLowerCase().includes(lo) || (r.wc_id ?? '').toLowerCase().includes(lo)) : rows
   }, [rows, q])
 
-  const save = async (id: string, field: string, val: unknown) => {
+  const save = async (id: number, field: string, val: unknown) => {
     setBusy(id)
     try {
-      const updated = await apiFetch(`/employees/${encodeURIComponent(id)}`, 'PUT', { [field]: val })
+      const updated = await apiFetch(`/employees/${id}`, 'PUT', { [field]: val })
       setRows(prev => prev.map(r => r.id === id ? { ...r, ...updated } : r))
     } catch (e) { alert(String(e)) }
     setBusy(null)
   }
-  const del = async (id: string, name: string) => {
+  const del = async (id: number, name: string) => {
     if (!confirm(`ลบ ${name}?`)) return
-    await apiFetch(`/employees/${encodeURIComponent(id)}`, 'DELETE')
+    await apiFetch(`/employees/${id}`, 'DELETE')
     setRows(prev => prev.filter(r => r.id !== id))
   }
 
@@ -412,7 +422,7 @@ function Holidays() {
     setBusy(true)
     try {
       await apiFetch('/factory-holidays', 'POST', { date: newDate, name: newName.trim() })
-      dispatch({ type: 'SET_FACTORY_HOLIDAYS', holidays: { ...state.factoryHolidays, [newDate]: newName.trim() } })
+      dispatch({ type: 'SET_FACTORY_HOLIDAYS', factoryHolidays: { ...state.factoryHolidays, [newDate]: newName.trim() } })
       setNewDate(''); setNewName('')
     } catch (e) { alert(String(e)) }
     setBusy(false)
@@ -421,7 +431,7 @@ function Holidays() {
     if (!confirm(`ลบวันหยุด ${date}?`)) return
     await apiFetch(`/factory-holidays/${encodeURIComponent(date)}`, 'DELETE')
     const next = { ...state.factoryHolidays }; delete next[date]
-    dispatch({ type: 'SET_FACTORY_HOLIDAYS', holidays: next })
+    dispatch({ type: 'SET_FACTORY_HOLIDAYS', factoryHolidays: next })
   }
 
   return (
@@ -433,6 +443,13 @@ function Holidays() {
           onKeyDown={e => e.key === 'Enter' && add()} />
         <button style={{ ...S.btn, background: 'rgba(137,180,250,.12)', color: 'var(--blue)', border: '1px solid rgba(137,180,250,.3)' }}
           onClick={add} disabled={busy || !newDate || !newName.trim()}>+ เพิ่ม</button>
+        <button style={{ ...S.btnRed, marginLeft: 'auto' }} onClick={async () => {
+          if (!confirm(`ลบวันหยุดทั้งหมด ${holidays.length} วัน?`)) return
+          setBusy(true)
+          await apiFetch('/factory-holidays', 'DELETE')
+          dispatch({ type: 'SET_FACTORY_HOLIDAYS', factoryHolidays: {} })
+          setBusy(false)
+        }} disabled={busy || !holidays.length}>🗑 ลบทั้งหมด</button>
       </div>
       <div style={S.wrap}>
         <table style={S.tbl}>
