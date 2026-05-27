@@ -180,10 +180,14 @@ async function initDatabase() {
       )
     `);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS laser_m4 BOOLEAN NOT NULL DEFAULT false`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS laser BOOLEAN NOT NULL DEFAULT false`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS m4 BOOLEAN NOT NULL DEFAULT false`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS min_face_mm INTEGER NOT NULL DEFAULT 1`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS max_face_mm INTEGER NOT NULL DEFAULT 9999`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS drill_8mm BOOLEAN NOT NULL DEFAULT false`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS drill_22mm BOOLEAN NOT NULL DEFAULT false`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''`);
+    await client.query(`UPDATE cutting_machines SET laser = laser_m4 WHERE laser = false AND laser_m4 = true`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS coil_plan (
         id SERIAL PRIMARY KEY,
@@ -660,7 +664,8 @@ function rowToCuttingMachine(row) {
     id: row.id, name: row.name,
     count: toInt(row.count, 1), min_kva: toInt(row.min_kva, 50),
     max_kva: toInt(row.max_kva, 1000), hrs_per_unit: toNumber(row.hrs_per_unit, 2.5),
-    laser_m4: !!row.laser_m4, max_face_mm: toInt(row.max_face_mm, 9999),
+    laser: !!row.laser, m4: !!row.m4,
+    min_face_mm: toInt(row.min_face_mm, 1), max_face_mm: toInt(row.max_face_mm, 9999),
     drill_8mm: !!row.drill_8mm, drill_22mm: !!row.drill_22mm, notes: row.notes || '',
   };
 }
@@ -671,25 +676,25 @@ app.get('/api/cutting-machines', asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/cutting-machines', asyncRoute(async (req, res) => {
-  const { name, count, min_kva, max_kva, hrs_per_unit, laser_m4, max_face_mm, drill_8mm, drill_22mm, notes } = req.body;
+  const { name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes } = req.body;
   const result = await pool.query(
-    `INSERT INTO cutting_machines (name, count, min_kva, max_kva, hrs_per_unit, laser_m4, max_face_mm, drill_8mm, drill_22mm, notes, sort_order)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,(SELECT COALESCE(MAX(sort_order),0)+1 FROM cutting_machines))
+    `INSERT INTO cutting_machines (name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes, sort_order)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,(SELECT COALESCE(MAX(sort_order),0)+1 FROM cutting_machines))
      RETURNING *`,
     [name||'เครื่องตัด', toInt(count,1), toInt(min_kva,50), toInt(max_kva,1000), toNumber(hrs_per_unit,2.5),
-     !!laser_m4, toInt(max_face_mm,9999), !!drill_8mm, !!drill_22mm, notes||'']
+     !!laser, !!m4, toInt(min_face_mm,1), toInt(max_face_mm,9999), !!drill_8mm, !!drill_22mm, notes||'']
   );
   res.status(201).json(rowToCuttingMachine(result.rows[0]));
 }));
 
 app.put('/api/cutting-machines/:id', asyncRoute(async (req, res) => {
-  const { name, count, min_kva, max_kva, hrs_per_unit, laser_m4, max_face_mm, drill_8mm, drill_22mm, notes } = req.body;
+  const { name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes } = req.body;
   const result = await pool.query(
     `UPDATE cutting_machines SET name=$2, count=$3, min_kva=$4, max_kva=$5, hrs_per_unit=$6,
-     laser_m4=$7, max_face_mm=$8, drill_8mm=$9, drill_22mm=$10, notes=$11, updated_at=now()
+     laser=$7, m4=$8, min_face_mm=$9, max_face_mm=$10, drill_8mm=$11, drill_22mm=$12, notes=$13, updated_at=now()
      WHERE id=$1 RETURNING *`,
     [req.params.id, name, toInt(count,1), toInt(min_kva,50), toInt(max_kva,1000), toNumber(hrs_per_unit,2.5),
-     !!laser_m4, toInt(max_face_mm,9999), !!drill_8mm, !!drill_22mm, notes||'']
+     !!laser, !!m4, toInt(min_face_mm,1), toInt(max_face_mm,9999), !!drill_8mm, !!drill_22mm, notes||'']
   );
   if (!result.rowCount) return res.status(404).json({ error: 'Machine not found' });
   res.json(rowToCuttingMachine(result.rows[0]));
@@ -730,6 +735,16 @@ app.post('/api/coil-plan/batch', asyncRoute(async (req, res) => {
   } finally {
     client.release();
   }
+}));
+
+app.delete('/api/coil-plan/:id', asyncRoute(async (req, res) => {
+  await pool.query('DELETE FROM coil_plan WHERE id = $1', [req.params.id]);
+  res.status(204).send();
+}));
+
+app.delete('/api/coil-plan/week/:week_start', asyncRoute(async (req, res) => {
+  const result = await pool.query('DELETE FROM coil_plan WHERE week_start=$1', [req.params.week_start]);
+  res.json({ deleted: result.rowCount });
 }));
 
 app.use((err, req, res, next) => {
