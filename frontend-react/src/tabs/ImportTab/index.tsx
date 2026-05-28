@@ -4,7 +4,7 @@ import { api } from '../../api'
 import type { EmpDir } from '../../api'
 import type { Order, Employee, Product } from '../../types'
 
-type SubTab = 'masterplan' | 'coilplan' | 'employees' | 'catalog' | 'sap' | 'help'
+type SubTab = 'masterplan' | 'plandetail' | 'coilplan' | 'employees' | 'catalog' | 'sap' | 'help'
 
 // ── Shared styles ──
 const thStyle: React.CSSProperties = {
@@ -131,6 +131,40 @@ function itemCodeToProduct(code: string): string {
   if (kva <= 3500) return 'tr.3500kVA'
   if (kva <= 7000) return 'tr.7000kVA'
   return 'tr.16000kVA'
+}
+
+// ── Plan Detail helpers ──
+
+interface ParsedPlanDetail {
+  week_start: string; plan_date: string; seq: number
+  sap_so: string; item_code: string; product: string; customer: string
+  kva: number; qty: number; deadline: string
+  face_mm: number | null; electrical: string; hv: string; lv: string
+  comment: string; category: string
+}
+
+function guessPlanDetailCols(headers: string[], dataRows: unknown[][]) {
+  const base = guessOrderCols(headers, dataRows)
+  const find = (...keys: string[]) => {
+    const hi = headers.map(h => h.toLowerCase())
+    for (const k of keys) { const i = hi.findIndex(h => h.includes(k.toLowerCase())); if (i >= 0) return i }
+    return -1
+  }
+  return {
+    ...base,
+    face_mm:    find('face', 'หน้ากว้าง', 'facewidth', 'width mm', 'หน้า mm'),
+    electrical: find('electrical', 'ระบบไฟ', 'volt system', 'ระบบ'),
+    hv:         find('hv', 'high volt', 'แรงดันสูง', 'primary volt'),
+    lv:         find('lv', 'low volt', 'แรงดันต่ำ', 'secondary volt'),
+  }
+}
+
+function planDateToWeekStart(isoDate: string): string {
+  const d = new Date(isoDate + 'T00:00:00')
+  if (isNaN(d.getTime())) return isoDate
+  const dow = d.getDay()
+  d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow))
+  return d.toISOString().slice(0, 10)
 }
 
 // ── Coil Plan helpers — ported from test.html processRows ──
@@ -284,7 +318,7 @@ function parseCoilPlan(rows: string[][]): ParsedCoilRow[] {
   }
 
   if (result.length === 0) throw new Error('ไม่พบข้อมูลที่ถูกต้อง (ไม่มีแถวที่มีลำดับเป็นตัวเลข)')
-  return result
+  return { rows: result, headers: combinedHeaders, colMap: c as Record<string, number> }
 }
 
 // ── Employees helpers ──
@@ -374,6 +408,9 @@ export default function ImportTab() {
   const [sapDragOver, setSapDragOver] = useState(false)
   const [sapHeaders, setSapHeaders] = useState<string[]>([])
   const [sapRows, setSapRows] = useState<unknown[][]>([])
+  const [sapImporting, setSapImporting] = useState(false)
+  const [sapResult, setSapResult] = useState<string | null>(null)
+  const [sapShowLimit, setSapShowLimit] = useState<number>(100)
   const sapFileRef = useRef<HTMLInputElement>(null)
 
   // Coil Plan state
@@ -382,6 +419,24 @@ export default function ImportTab() {
   const [coilImporting, setCoilImporting] = useState(false)
   const [coilResult, setCoilResult] = useState<string | null>(null)
   const coilFileRef = useRef<HTMLInputElement>(null)
+
+  // Plan Detail state
+  const [pdDragOver, setPdDragOver] = useState(false)
+  const [pdParsed, setPdParsed] = useState<ParsedPlanDetail[]>([])
+  const [pdImporting, setPdImporting] = useState(false)
+  const [pdResult, setPdResult] = useState<string | null>(null)
+  const pdFileRef = useRef<HTMLInputElement>(null)
+
+  // Master Plan (coil-format) state
+  const [mpCoilDragOver, setMpCoilDragOver] = useState(false)
+  const [mpCoilParsed, setMpCoilParsed] = useState<ParsedCoilRow[]>([])
+  const [mpCoilImporting, setMpCoilImporting] = useState(false)
+  const [mpCoilResult, setMpCoilResult] = useState<string | null>(null)
+  const [mpCoilHeaders, setMpCoilHeaders] = useState<string[]>([])
+  const [mpCoilColMap, setMpCoilColMap] = useState<Record<string, number>>({})
+  const [mpCoilActiveDay, setMpCoilActiveDay] = useState<string | null>(null)
+  const [mpCoilMapOpen, setMpCoilMapOpen] = useState(false)
+  const mpCoilFileRef = useRef<HTMLInputElement>(null)
 
   // ── Master Plan handlers ──
 
@@ -489,6 +544,173 @@ export default function ImportTab() {
     } catch (e) {
       setMpResult('❌ เกิดข้อผิดพลาด: ' + (e instanceof Error ? e.message : String(e)))
     } finally { setMpImporting(false) }
+  }
+
+  // ── Master Plan (coil-format) handlers ──
+
+  async function handleMpCoilFile(file: File) {
+    setMpCoilResult(null); setMpCoilParsed([]); setMpCoilActiveDay(null); setMpCoilMapOpen(false)
+    try {
+      const XLSX = await import('xlsx')
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const rawRows: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+      const rows: string[][] = rawRows.map(row =>
+        (row as unknown[]).map(cell => {
+          if (cell == null) return ''
+          if (cell instanceof Date) return `${cell.getDate()}/${cell.getMonth() + 1}/${cell.getFullYear()}`
+          if (typeof cell === 'number' && cell > 40000 && cell < 50000) {
+            type SSFMod = { parse_date_code?: (n: number) => { d: number; m: number; y: number } }
+            const ssf = (XLSX as Record<string, unknown>).SSF as SSFMod | undefined
+            const d = ssf?.parse_date_code?.(cell)
+            if (d) return `${d.d}/${d.m}/${d.y}`
+          }
+          return String(cell).trim()
+        })
+      )
+      if (rows.length < 2) { alert('ไม่พบข้อมูลในไฟล์'); return }
+      const { rows: result, headers, colMap } = parseCoilPlan(rows)
+      setMpCoilParsed(result)
+      setMpCoilHeaders(headers)
+      setMpCoilColMap(colMap)
+    } catch (e) { setMpCoilResult('❌ ' + (e instanceof Error ? e.message : String(e))) }
+  }
+
+  async function handleMpCoilImport() {
+    if (mpCoilParsed.length === 0) return
+    setMpCoilImporting(true)
+    try {
+      const newOrders: Order[] = mpCoilParsed.map((r, idx) => {
+        const deadline = dmyToISO(r.due_so) || dmyToISO(r.enter_test) || r.plan_date || new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10)
+        const id = `${r.plan_date}_${String(idx).padStart(4, '0')}_${r.sap_so || 'x'}`
+        const d = new Date(r.plan_date + 'T00:00:00')
+        const dow = d.getDay()
+        d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow))
+        const week_start = d.toISOString().slice(0, 10)
+        return {
+          id,
+          product: itemCodeToProduct(r.item_code) || (r.kva <= 160 ? 'tr.160kVA' : r.kva <= 630 ? 'tr.630kVA' : r.kva <= 2000 ? 'tr.2000kVA' : 'tr.4000kVA'),
+          qty: r.qty || 1,
+          deadline: deadline!,
+          customer: r.customer,
+          kva: r.kva,
+          category: r.importance || '',
+          sap_so: r.sap_so,
+          plan_date: r.plan_date,
+          comment: r.comment,
+          item_code: r.item_code,
+          week_start,
+          seq: r.seq || idx,
+          plant: r.plant,
+          electrical: r.electrical,
+          total_kva: r.total_kva,
+          enter_test: r.enter_test,
+          cable_box: r.cable_box,
+          control: r.control,
+          due_store: r.due_store,
+          due_so: r.due_so,
+          adjust_plan: r.adjust_plan,
+          due_clamp: r.due_clamp,
+          due_box_ctrl: r.due_box_ctrl,
+          raw_mat: r.raw_mat,
+          lv: r.lv,
+          hv: r.hv,
+        }
+      })
+      const existing = new Set(orders.map(o => o.id))
+      const toAdd = newOrders.filter(o => !existing.has(o.id))
+      const toUpdate = newOrders.filter(o => existing.has(o.id))
+      const merged = [...orders]
+      toUpdate.forEach(o => { const i = merged.findIndex(m => m.id === o.id); if (i >= 0) merged[i] = o })
+      toAdd.forEach(o => merged.push(o))
+      dispatch({ type: 'SET_ORDERS', orders: merged })
+      await api.orders.batch(merged)
+      const dayMap = new Map<string, number>()
+      newOrders.forEach(o => { const d = o.plan_date || '(ไม่ระบุ)'; dayMap.set(d, (dayMap.get(d) ?? 0) + 1) })
+      const daySummary = [...dayMap.entries()].sort().map(([d, n]) => `${d.slice(5)} (${n})`).join(' · ')
+      const totalQty = newOrders.reduce((s, o) => s + o.qty, 0)
+      setMpCoilResult(`✅ นำเข้าสำเร็จ — ${toAdd.length} ใหม่ · ${toUpdate.length} อัปเดต · ${totalQty} เครื่อง\n${daySummary}`)
+      setMpCoilParsed([])
+    } catch (e) {
+      setMpCoilResult('❌ เกิดข้อผิดพลาด: ' + (e instanceof Error ? e.message : String(e)))
+    } finally { setMpCoilImporting(false) }
+  }
+
+  // ── Plan Detail handlers ──
+
+  async function handlePdFile(file: File) {
+    setPdResult(null); setPdParsed([])
+    try {
+      const XLSX = await import('xlsx')
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(buf, { cellDates: false, raw: false })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const rows: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' })
+      if (rows.length < 2) { alert('ไม่พบข้อมูลในไฟล์'); return }
+      const headerRowIdx = findHeaderRow(rows)
+      const headers = (rows[headerRowIdx] as unknown[]).map(h => String(h ?? '').trim())
+      const dataRows = rows.slice(headerRowIdx + 1)
+      const cols = guessPlanDetailCols(headers, dataRows)
+      const dateFmt = detectSlashFmt(dataRows, [cols.plan_date, cols.deadline].filter(c => c >= 0))
+      const result: ParsedPlanDetail[] = []
+      let lastPlanDate: string | null = null
+      let seq = 0
+      for (let i = headerRowIdx + 1; i < rows.length; i++) {
+        const row = rows[i] as unknown[]
+        if (row.every(v => !v || String(v).trim() === '')) continue
+        const rawPlanDate = cols.plan_date >= 0 ? String(row[cols.plan_date] ?? '').trim() : ''
+        if (rawPlanDate) { lastPlanDate = parseDate(rawPlanDate, dateFmt); seq = 0 }
+        if (!lastPlanDate) continue
+        const d = new Date(lastPlanDate + 'T00:00:00')
+        if (isNaN(d.getTime()) || d.getDay() === 0) continue
+        const id = cols.id >= 0 ? String(row[cols.id] ?? '').trim() : ''
+        if (!id || id.includes('/') || id.includes(' ') || id.includes(',') || /^\d{1,3}$/.test(id) || /^[฀-๿]/.test(id)) continue
+        const kva = cols.kva >= 0 ? parseFloat(String(row[cols.kva] ?? '').replace(/,/g, '')) || 0 : 0
+        const itemCode = cols.item5 >= 0 ? String(row[cols.item5] ?? '').trim() : ''
+        const rawFaceMm = cols.face_mm >= 0 ? String(row[cols.face_mm] ?? '').replace(/,/g, '').trim() : ''
+        const faceMm = rawFaceMm ? parseInt(rawFaceMm) || null : null
+        result.push({
+          week_start: planDateToWeekStart(lastPlanDate),
+          plan_date: lastPlanDate,
+          seq: seq++,
+          sap_so: id,
+          item_code: itemCode,
+          product: itemCodeToProduct(itemCode) || (kva <= 160 ? 'tr.160kVA' : kva <= 630 ? 'tr.630kVA' : kva <= 1600 ? 'tr.1600kVA' : 'tr.4000kVA'),
+          customer: cols.customer >= 0 ? String(row[cols.customer] ?? '').trim() : '',
+          kva,
+          qty: cols.qty >= 0 ? parseInt(String(row[cols.qty] ?? '').replace(/,/g, '')) || 1 : 1,
+          deadline: parseDate(cols.deadline >= 0 ? row[cols.deadline] : undefined, dateFmt),
+          face_mm: faceMm,
+          electrical: cols.electrical >= 0 ? String(row[cols.electrical] ?? '').trim() : '',
+          hv: cols.hv >= 0 ? String(row[cols.hv] ?? '').trim() : '',
+          lv: cols.lv >= 0 ? String(row[cols.lv] ?? '').trim() : '',
+          comment: cols.comment >= 0 ? String(row[cols.comment] ?? '').trim() : '',
+          category: cols.category >= 0 ? String(row[cols.category] ?? '').trim() : '',
+        })
+      }
+      if (result.length === 0) { setPdResult('❌ ไม่พบข้อมูล — ตรวจสอบชื่อคอลัมน์ (ต้องมี Order No, kVA, Deadline)'); return }
+      setPdParsed(result)
+    } catch (e) { alert('อ่านไฟล์ไม่ได้: ' + (e instanceof Error ? e.message : String(e))) }
+  }
+
+  async function handlePdImport() {
+    if (pdParsed.length === 0) return
+    setPdImporting(true)
+    try {
+      const res = await fetch('/api/plan-orders/batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pdParsed),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const { inserted } = await res.json()
+      const weeks = [...new Set(pdParsed.map(r => r.week_start))].sort()
+      const totalQty = pdParsed.reduce((s, r) => s + r.qty, 0)
+      setPdResult(`✅ นำเข้าสำเร็จ — ${inserted} รายการ · ${totalQty} เครื่อง · ${weeks.length} สัปดาห์ (${weeks.join(', ')})`)
+      setPdParsed([])
+    } catch (e) {
+      setPdResult('❌ เกิดข้อผิดพลาด: ' + (e instanceof Error ? e.message : String(e)))
+    } finally { setPdImporting(false) }
   }
 
   function toggleMpSort(col: string) {
@@ -632,8 +854,22 @@ export default function ImportTab() {
 
   // ── SAP handlers ──
 
+  function guessSapCols(headers: string[]) {
+    const lo = headers.map(h => h.toLowerCase().replace(/[\s_\-]/g, ''))
+    const find = (...keys: string[]) => { for (const k of keys) { const i = lo.findIndex(h => h.includes(k)); if (i >= 0) return i } return -1 }
+    return {
+      order_no:      find('ordernumber','orderno','order','aufnr','materialdocument'),
+      material_code: find('materialorder','material','matnr','itemcode','item5'),
+      wc_id:         find('workcenter','workctr','arbpl'),
+      operation:     find('optext','operation','activity','ltxa1','description'),
+      std_hrs:       find('stdactivitytype3','stdhrs','standardhours','standardlabor','planarbeit','arbeit'),
+      is_confirmed:  find('isconfirm','isconfirmed','confirmed','bestaetig'),
+      plant:         find('plant','werk'),
+    }
+  }
+
   async function handleSapFile(file: File) {
-    setSapRows([]); setSapHeaders([])
+    setSapRows([]); setSapHeaders([]); setSapResult(null)
     try {
       const XLSX = await import('xlsx')
       const buf = await file.arrayBuffer()
@@ -644,6 +880,43 @@ export default function ImportTab() {
       setSapHeaders((rows[0] as string[]).map(h => String(h ?? '')))
       setSapRows(rows.slice(1).filter(r => (r as unknown[]).some(v => v != null && v !== '')))
     } catch (e) { alert('อ่านไฟล์ไม่ได้: ' + (e instanceof Error ? e.message : String(e))) }
+  }
+
+  async function handleSapImport() {
+    if (sapRows.length === 0) return
+    setSapImporting(true); setSapResult(null)
+    try {
+      const cols = guessSapCols(sapHeaders)
+      const knownIdxSet = new Set(Object.values(cols).filter(i => i >= 0))
+      const g = (row: unknown[], idx: number) => idx >= 0 ? String((row[idx] as unknown) ?? '').trim() : ''
+      const payload = sapRows.map(row => {
+        const extra: Record<string, string> = {}
+        sapHeaders.forEach((h, i) => {
+          if (!knownIdxSet.has(i) && h) extra[h] = String((row as unknown[])[i] ?? '').trim()
+        })
+        return {
+          order_no:      g(row as unknown[], cols.order_no),
+          material_code: g(row as unknown[], cols.material_code),
+          wc_id:         g(row as unknown[], cols.wc_id),
+          operation:     g(row as unknown[], cols.operation),
+          std_hrs:       cols.std_hrs >= 0 ? parseFloat(String((row as unknown[])[cols.std_hrs] ?? '0').replace(/,/g,'')) || 0 : 0,
+          is_confirmed:  cols.is_confirmed >= 0 ? parseBool((row as unknown[])[cols.is_confirmed]) : false,
+          plant:         g(row as unknown[], cols.plant),
+          extra,
+        }
+      })
+      const res = await fetch('/api/sap-routing/batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const { inserted } = await res.json()
+      const wcCount = new Set(payload.map(r => r.wc_id).filter(Boolean)).size
+      const orderCount = new Set(payload.map(r => r.order_no).filter(Boolean)).size
+      setSapResult(`✅ บันทึกสำเร็จ — ${inserted} operations · ${orderCount} orders · ${wcCount} WC`)
+    } catch (e) {
+      setSapResult('❌ ' + (e instanceof Error ? e.message : String(e)))
+    } finally { setSapImporting(false) }
   }
 
   // ── Coil Plan handlers ──
@@ -713,12 +986,13 @@ export default function ImportTab() {
   // ── Render ──
 
   const SUB_TABS: { id: SubTab; label: string }[] = [
-    { id: 'masterplan', label: 'Master Plan' },
-    { id: 'coilplan',   label: 'Coil Plan' },
-    { id: 'employees',  label: 'พนักงาน' },
-    { id: 'catalog',    label: 'Catalog' },
-    { id: 'sap',        label: 'SAP' },
-    { id: 'help',       label: 'คู่มือ' },
+    { id: 'masterplan',  label: 'Master Plan' },
+    { id: 'plandetail',  label: '🗂 Plan (Legacy)' },
+    { id: 'coilplan',    label: 'Coil Plan' },
+    { id: 'employees',   label: 'พนักงาน' },
+    { id: 'catalog',     label: 'Catalog' },
+    { id: 'sap',         label: 'SAP' },
+    { id: 'help',        label: 'คู่มือ' },
   ]
 
   return (
@@ -739,186 +1013,260 @@ export default function ImportTab() {
         </div>
       </div>
 
-      {/* ────────────── MASTER PLAN ────────────── */}
+      {/* ────────────── MASTER PLAN (coil format) ────────────── */}
       {subTab === 'masterplan' && (
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          {mpParsed.length === 0 && (
-            <DropZone dragOver={mpDragOver} setDragOver={setMpDragOver} fileRef={mpFileRef}
-              onFile={handleMpFile} label="วางไฟล์ Excel Master Plan ที่นี่" />
+          {mpCoilParsed.length === 0 && (
+            <DropZone dragOver={mpCoilDragOver} setDragOver={setMpCoilDragOver} fileRef={mpCoilFileRef}
+              onFile={handleMpCoilFile} label="วางไฟล์ Excel Master Plan (รูปแบบเดียวกับ Coil Plan) ที่นี่" />
           )}
-          {mpResult && <ResultBanner msg={mpResult} onClear={() => setMpResult(null)} />}
-          {mpParsed.length > 0 && (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{mpParsed.length} รายการจาก Excel</div>
-                <div style={{ fontSize: 11, color: 'var(--txt3)', marginRight: 'auto' }}>
-                  ตรวจสอบข้อมูลก่อนกด Import
-                  {mpHeaderRow > 0 && <span style={{ marginLeft: 8, color: 'var(--amber)' }}>(header แถวที่ {mpHeaderRow + 1})</span>}
-                </div>
-                <button onClick={() => { setMpParsed([]); setMpHeaderRow(0); setMpRawHeaders([]); setMpColMap({}) }} style={cancelBtn}>✕ ยกเลิก</button>
-                <button onClick={handleMpImport} disabled={mpImporting}
-                  style={{ ...importBtn, background: mpImporting ? 'var(--bord2)' : 'var(--green)' }}>
-                  {mpImporting ? 'กำลังนำเข้า…' : `✓ Import ${mpParsed.length} รายการ`}
-                </button>
-              </div>
-              {/* Week summary strip — 6 day chips */}
-              {grouped.length > 0 && (
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-                  {grouped.map(({ date, dayLabel, rows, totalQty }) => (
-                    <div key={date} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 20, background: 'var(--bg3)', border: '1px solid var(--bord)', fontSize: 11 }}>
-                      <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--blue)' }}>{date.slice(5)}</span>
-                      <span style={{ color: 'var(--txt3)', fontSize: 10 }}>{dayLabel}</span>
-                      <span style={{ color: 'var(--txt2)' }}>{rows.length} ออเดอร์</span>
-                      <span style={{ color: 'var(--txt3)' }}>·</span>
-                      <span style={{ color: 'var(--amber)', fontFamily: 'var(--mono)' }}>{totalQty} ตัว</span>
-                    </div>
-                  ))}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 20, background: 'rgba(166,227,161,.1)', border: '1px solid rgba(166,227,161,.3)', fontSize: 11 }}>
-                    <span style={{ color: 'var(--green)', fontWeight: 700 }}>รวม {grouped.length} วัน</span>
-                    <span style={{ color: 'var(--txt3)' }}>·</span>
-                    <span style={{ color: 'var(--green)', fontFamily: 'var(--mono)', fontWeight: 700 }}>{grouped.reduce((s, g) => s + g.totalQty, 0)} ตัว</span>
+          {mpCoilResult && <ResultBanner msg={mpCoilResult} onClear={() => setMpCoilResult(null)} />}
+          {mpCoilParsed.length > 0 && (() => {
+            const DAY_TH = ['อา','จ','อ','พ','พฤ','ศ','ส']
+            const dayMap = new Map<string, ParsedCoilRow[]>()
+            mpCoilParsed.forEach(r => { if (!dayMap.has(r.plan_date)) dayMap.set(r.plan_date, []); dayMap.get(r.plan_date)!.push(r) })
+            const days = [...dayMap.entries()].sort((a,b) => a[0].localeCompare(b[0])).map(([date, rows]) => {
+              const d = new Date(date + 'T00:00:00')
+              return { date, dayLabel: isNaN(d.getTime()) ? '' : DAY_TH[d.getDay()], rows, totalQty: rows.reduce((s,r)=>s+r.qty,0), totalKva: rows.reduce((s,r)=>s+r.kva*r.qty,0) }
+            })
+            const activeDay = mpCoilActiveDay
+            const visibleDays = activeDay ? days.filter(d => d.date === activeDay) : days
+            return (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexShrink: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{mpCoilParsed.length} รายการ</div>
+                  <div style={{ fontSize: 11, color: 'var(--txt3)', marginRight: 'auto' }}>
+                    {days.reduce((s,d)=>s+d.totalQty,0)} เครื่อง · {days.reduce((s,d)=>s+d.totalKva,0).toLocaleString()} kVA · ตรวจสอบก่อนกด Import
                   </div>
+                  <button onClick={() => setMpCoilParsed([])} style={cancelBtn}>✕ ยกเลิก</button>
+                  <button onClick={handleMpCoilImport} disabled={mpCoilImporting}
+                    style={{ ...importBtn, background: mpCoilImporting ? 'var(--bord2)' : 'var(--green)' }}>
+                    {mpCoilImporting ? 'กำลังนำเข้า…' : `✓ Import ${mpCoilParsed.length} รายการ`}
+                  </button>
                 </div>
-              )}
-              {/* Header mapping panel */}
-              {mpRawHeaders.length > 0 && (() => {
-                const FIELD_LABELS: Record<string, { label: string; col: string }> = {
-                  id:        { label: 'Order ID', col: '#e09c2a' },
-                  plan_date: { label: 'วันที่', col: '#89b4fa' },
-                  customer:  { label: 'ลูกค้า', col: '#a6e3a1' },
-                  kva:       { label: 'kVA', col: '#cba6f7' },
-                  qty:       { label: 'จำนวน', col: '#89dceb' },
-                  deadline:  { label: 'Deadline', col: '#f38ba8' },
-                  sap_so:    { label: 'SAP SO', col: '#fab387' },
-                  category:  { label: 'Category', col: '#f9e2af' },
-                  item5:     { label: 'Item Code', col: '#94e2d5' },
-                  comment:   { label: 'Comment', col: 'var(--txt3)' },
-                }
-                const colToField: Record<number, string> = {}
-                Object.entries(mpColMap).forEach(([field, idx]) => {
-                  if (idx >= 0) colToField[idx] = field
-                })
-                return (
-                  <div style={{ background: 'var(--bg3)', border: '1px solid var(--bord)', borderRadius: 8, padding: '8px 12px', marginBottom: 8 }}>
-                    <div style={{ fontSize: 10, color: 'var(--txt3)', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em' }}>
-                      คอลัมน์ทั้งหมด {mpRawHeaders.length} คอลัมน์ · header แถวที่ {mpHeaderRow + 1}
-                    </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                      {mpRawHeaders.map((h, i) => {
-                        const field = colToField[i]
-                        const info = field ? FIELD_LABELS[field] : null
-                        const isEmpty = !h.trim()
-                        return (
-                          <div key={i} style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 4,
-                            padding: '3px 8px', borderRadius: 6, fontSize: 10,
-                            background: info ? info.col + '20' : isEmpty ? 'transparent' : 'var(--bg2)',
-                            border: `1px solid ${info ? info.col + '60' : 'var(--bord)'}`,
-                            color: info ? info.col : isEmpty ? 'var(--bord2)' : 'var(--txt3)',
-                            fontWeight: info ? 700 : 400,
-                          }}>
-                            <span style={{ fontFamily: 'var(--mono)', fontSize: 9, opacity: 0.6 }}>{i + 1}</span>
-                            <span>{isEmpty ? '(ว่าง)' : h}</span>
-                            {info && <span style={{ fontSize: 9, background: info.col + '30', padding: '0 4px', borderRadius: 3 }}>→ {info.label}</span>}
-                          </div>
-                        )
-                      })}
-                    </div>
-                    {/* Show undetected important fields */}
-                    {(() => {
-                      const missed = Object.entries(FIELD_LABELS).filter(([field]) => {
-                        const idx = (mpColMap as Record<string, number>)[field]
-                        return idx == null || idx < 0
-                      }).map(([, info]) => info.label)
-                      if (missed.length === 0) return null
-                      return (
-                        <div style={{ marginTop: 6, fontSize: 10, color: 'var(--red)' }}>
-                          ⚠ ไม่พบ: {missed.join(', ')}
+                {/* Day filter chips — click to filter table, click again to show all */}
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8, flexShrink: 0 }}>
+                  {days.map(({ date, dayLabel, rows, totalQty, totalKva }) => {
+                    const isActive = activeDay === date
+                    return (
+                      <button key={date} onClick={() => setMpCoilActiveDay(isActive ? null : date)}
+                        style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 20, cursor: 'pointer',
+                          background: isActive ? 'rgba(137,180,250,.2)' : 'var(--bg3)',
+                          border: `1px solid ${isActive ? 'rgba(137,180,250,.5)' : 'var(--bord)'}`,
+                          fontSize: 11, outline: 'none' }}>
+                        <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--blue)' }}>{date.slice(5)}</span>
+                        <span style={{ color: 'var(--txt3)', fontSize: 10 }}>{dayLabel}</span>
+                        <span style={{ color: 'var(--txt2)', fontWeight: isActive ? 700 : 400 }}>{rows.length} รายการ</span>
+                        <span style={{ color: 'var(--txt3)' }}>·</span>
+                        <span style={{ color: 'var(--amber)', fontFamily: 'var(--mono)' }}>{totalQty} ตัว</span>
+                        <span style={{ color: 'var(--txt3)' }}>·</span>
+                        <span style={{ color: 'var(--txt3)', fontSize: 10 }}>{totalKva.toLocaleString()} kVA</span>
+                      </button>
+                    )
+                  })}
+                  {activeDay && <button onClick={() => setMpCoilActiveDay(null)} style={{ ...cancelBtn, fontSize: 10, padding: '3px 8px', borderRadius: 14 }}>✕ ทั้งหมด</button>}
+                </div>
+                {/* Column mapping panel — collapsible */}
+                {mpCoilHeaders.length > 0 && (() => {
+                  const FIELD_LABEL: Record<string, string> = {
+                    date:'Plan Date', seq:'Sequence', importance:'Importance',
+                    sap:'SAP SO', itemcode:'Item Code ⭐', comment:'Comment',
+                    plant:'Plant', kva:'kVA', elec:'Electrical', customer:'Customer',
+                    totalKva:'Total kVA', qty:'Quantity', enterTest:'Enter Test',
+                    cable:'Cable Box', control:'Control', dueStore:'Due Store',
+                    dueSO:'Due SO', adjustPlan:'Adjust Plan', dueClamp:'Due Clamp',
+                    dueBox:'Due Box', dueCtrlBox:'Due Ctrl Box', rawMat:'Raw Mat',
+                    lv:'LV', hv:'HV',
+                  }
+                  const colToField: Record<number, string> = {}
+                  for (const [field, idx] of Object.entries(mpCoilColMap)) {
+                    if (idx >= 0) colToField[idx] = FIELD_LABEL[field] ?? field
+                  }
+                  const collected = Object.values(mpCoilColMap).filter(i => i >= 0).length
+                  return (
+                    <div style={{ marginBottom: 8, border: '1px solid var(--bord)', borderRadius: 8, flexShrink: 0, overflow: 'hidden' }}>
+                      <button onClick={() => setMpCoilMapOpen(v => !v)}
+                        style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', background: 'var(--bg2)', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--txt3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                          Column Mapping — {collected} / {mpCoilHeaders.length} collected
+                        </span>
+                        <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 'auto' }}>{mpCoilMapOpen ? '▲' : '▼'}</span>
+                      </button>
+                      {mpCoilMapOpen && (
+                        <div style={{ padding: '6px 12px 10px', display: 'flex', flexWrap: 'wrap', gap: 5, background: 'var(--bg2)' }}>
+                          {mpCoilHeaders.map((h, i) => {
+                            const field = colToField[i]
+                            const isKey = field?.includes('⭐')
+                            return (
+                              <div key={i} style={{
+                                fontSize: 10, padding: '3px 8px', borderRadius: 6,
+                                background: field ? (isKey ? 'rgba(250,179,135,.2)' : 'rgba(166,227,161,.15)') : 'var(--bg3)',
+                                border: `1px solid ${field ? (isKey ? 'rgba(250,179,135,.4)' : 'rgba(166,227,161,.3)') : 'var(--bord)'}`,
+                                color: field ? (isKey ? 'var(--amber)' : 'var(--green)') : 'var(--txt3)',
+                              }}>
+                                <span style={{ fontFamily: 'var(--mono)', fontWeight: 600 }}>{h || `col${i}`}</span>
+                                {field && <span style={{ marginLeft: 4, opacity: 0.8 }}>→ {field}</span>}
+                                {!field && <span style={{ marginLeft: 4, opacity: 0.5 }}>not collected</span>}
+                              </div>
+                            )
+                          })}
                         </div>
-                      )
-                    })()}
-                  </div>
-                )
-              })()}
-              <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 8 }}>
-                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-                  <thead>
-                    <tr>
-                      {[
-                        { col: null,       label: '#',        align: 'center' as const },
-                        { col: 'category', label: 'ประเภท',   align: 'center' as const },
-                        { col: 'id',       label: 'Order ID', align: 'left'   as const },
-                        { col: 'customer', label: 'ลูกค้า',   align: 'left'   as const },
-                        { col: 'kva',      label: 'kVA',      align: 'right'  as const },
-                        { col: 'qty',      label: 'จำนวน',    align: 'center' as const },
-                        { col: 'deadline', label: 'Deadline', align: 'left'   as const },
-                        { col: 'item_code',label: 'Item Code',align: 'left'   as const },
-                        { col: 'product',  label: 'Product',  align: 'left'   as const },
-                      ].map(({ col, label, align }) => (
-                        <th key={label} style={{ ...thStyle, cursor: col ? 'pointer' : 'default', textAlign: align }}
-                          onClick={() => col && toggleMpSort(col)}>
-                          {label}{col && mpSortCol === col ? (mpSortDir > 0 ? ' ▲' : ' ▼') : ''}
-                        </th>
+                      )}
+                    </div>
+                  )
+                })()}
+                {/* Preview table */}
+                <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 8 }}>
+                  <table style={{ borderCollapse: 'collapse', minWidth: '100%' }}>
+                    <thead>
+                      <tr>
+                        {([
+                          ['ลำดับ','center'],['ความสำคัญ','center'],['SAP SO','left'],
+                          ['Item Code','left'],['Comment','left'],['Plant','left'],
+                          ['kVA','right'],['ระบบไฟฟ้า','center'],['ลูกค้า','left'],
+                          ['Total kVA','right'],['จำนวน','center'],['เข้าเทส','left'],
+                          ['Cable Box','left'],['Control','left'],['กำหนดส่งสโตร์','left'],
+                          ['DUE SO','left'],['แจ้งปรับแผน','left'],['Due Clamp','left'],
+                          ['Due BOX/CTRL','left'],['Raw Mat','left'],['LV','left'],['HV','left'],
+                        ] as [string,string][]).map(([label, align]) => (
+                          <th key={label} style={{ ...thStyle, textAlign: align as 'left'|'center'|'right' }}>{label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleDays.map(({ date, dayLabel, rows, totalQty, totalKva }) => (
+                        <>
+                          <tr key={'hdr-'+date} style={{ background: 'rgba(137,180,250,.07)', borderTop: '2px solid rgba(137,180,250,.2)' }}>
+                            <td colSpan={22} style={{ ...tdStyle, padding: '7px 12px' }}>
+                              <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 12, color: 'var(--blue)' }}>📅 {date}</span>
+                              {dayLabel && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--txt3)', fontWeight: 600 }}>{dayLabel}</span>}
+                              <span style={{ marginLeft: 14, fontSize: 11, color: 'var(--txt2)' }}>{rows.length} รายการ · {totalQty} ตัว · {Math.round(totalKva).toLocaleString()} kVA</span>
+                            </td>
+                          </tr>
+                          {rows.map((r, i) => {
+                            const catColor = r.importance === 'หลัก' ? 'var(--blue)' : r.importance === 'เสริม' ? 'var(--green)' : 'var(--txt3)'
+                            const dim: React.CSSProperties = { ...tdStyle, fontSize: 10, whiteSpace: 'nowrap' }
+                            const mono: React.CSSProperties = { ...dim, fontFamily: 'var(--mono)' }
+                            return (
+                              <tr key={date+i} style={{ borderLeft: `3px solid ${catColor}` }}>
+                                <td style={{ ...mono, textAlign: 'center', color: 'var(--txt3)' }}>{r.seq}</td>
+                                <td style={{ ...tdStyle, textAlign: 'center' }}>
+                                  {r.importance ? (
+                                    <span style={{ fontSize: 9, padding: '2px 7px', borderRadius: 4, fontWeight: 700,
+                                      background: r.importance === 'หลัก' ? 'rgba(137,180,250,.18)' : r.importance === 'เสริม' ? 'rgba(166,227,161,.18)' : 'var(--bg3)',
+                                      color: catColor }}>{r.importance}</span>
+                                  ) : <span style={{ color: 'var(--txt3)', fontSize: 10 }}>—</span>}
+                                </td>
+                                <td style={{ ...mono, fontWeight: 700, color: 'var(--amber)' }}>{r.sap_so || '—'}</td>
+                                <td style={{ ...mono, color: 'var(--blue)', fontSize: 10 }}>{r.item_code || '—'}</td>
+                                <td style={{ ...dim, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.comment || '—'}</td>
+                                <td style={{ ...dim, color: 'var(--txt3)' }}>{r.plant || '—'}</td>
+                                <td style={{ ...mono, textAlign: 'right', color: 'var(--blue)', fontWeight: 700 }}>{r.kva.toLocaleString()}</td>
+                                <td style={{ ...dim, textAlign: 'center' }}>{r.electrical || '—'}</td>
+                                <td style={{ ...dim, maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.customer || '—'}</td>
+                                <td style={{ ...mono, textAlign: 'right' }}>{r.total_kva.toLocaleString()}</td>
+                                <td style={{ ...mono, textAlign: 'center', fontWeight: 700 }}>{r.qty}</td>
+                                <td style={mono}>{r.enter_test || '—'}</td>
+                                <td style={dim}>{r.cable_box || '—'}</td>
+                                <td style={dim}>{r.control || '—'}</td>
+                                <td style={mono}>{r.due_store || '—'}</td>
+                                <td style={{ ...mono, color: 'var(--amber)' }}>{r.due_so || '—'}</td>
+                                <td style={mono}>{r.adjust_plan || '—'}</td>
+                                <td style={mono}>{r.due_clamp || '—'}</td>
+                                <td style={mono}>{r.due_box_ctrl || '—'}</td>
+                                <td style={{ ...dim, color: 'var(--txt2)' }}>{r.raw_mat || '—'}</td>
+                                <td style={{ ...dim, color: 'var(--txt2)' }}>{r.lv || '—'}</td>
+                                <td style={{ ...dim, color: 'var(--txt2)' }}>{r.hv || '—'}</td>
+                              </tr>
+                            )
+                          })}
+                        </>
                       ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {grouped.map(({ date, dayLabel, rows, totalKva, totalQty }) => (
-                      <>
-                        {/* Date group header */}
-                        <tr key={'hdr-' + date} style={{ background: 'rgba(137,180,250,.07)', borderTop: '2px solid rgba(137,180,250,.2)' }}>
-                          <td colSpan={9} style={{ ...tdStyle, padding: '7px 12px' }}>
-                            <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 12, color: 'var(--blue)' }}>
-                              📅 {date}
-                            </span>
-                            {dayLabel && (
-                              <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--txt3)', fontWeight: 600 }}>{dayLabel}</span>
-                            )}
-                            <span style={{ marginLeft: 14, fontSize: 11, color: 'var(--txt2)' }}>
-                              {rows.length} รายการ
-                            </span>
-                            <span style={{ marginLeft: 10, fontSize: 11, color: 'var(--txt3)' }}>
-                              · {totalQty.toLocaleString()} เครื่อง
-                              · {totalKva.toLocaleString()} kVA รวม
-                            </span>
-                          </td>
-                        </tr>
-                        {/* Rows within group */}
-                        {rows.map((r, i) => {
-                          const inSystem = orders.some(o => o.id === r.id)
-                          const productOk = !!products[r.product]
-                          const catColor = r.category === 'หลัก' ? 'var(--blue)' : r.category === 'เสริม' ? 'var(--green)' : r.category === 'Fast' ? 'var(--red)' : 'var(--txt3)'
-                          return (
-                            <tr key={r.id + i} style={{ background: inSystem ? 'rgba(249,226,175,.05)' : 'transparent', borderLeft: `3px solid ${catColor}` }}>
-                              <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--txt3)', fontSize: 10, fontFamily: 'var(--mono)' }}>{i + 1}</td>
-                              <td style={{ ...tdStyle, textAlign: 'center' }}>
-                                {r.category ? (
-                                  <span style={{ fontSize: 9, padding: '2px 7px', borderRadius: 4, fontWeight: 700,
-                                    background: r.category === 'หลัก' ? 'rgba(137,180,250,.18)' : r.category === 'เสริม' ? 'rgba(166,227,161,.18)' : r.category === 'Fast' ? 'rgba(224,90,78,.15)' : 'var(--bg3)',
-                                    color: catColor,
-                                  }}>{r.category}</span>
-                                ) : <span style={{ color: 'var(--txt3)', fontSize: 10 }}>—</span>}
-                              </td>
-                              <td style={{ ...tdStyle, fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--amber)', whiteSpace: 'nowrap' }}>{r.id}</td>
-                              <td style={{ ...tdStyle, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.customer || <span style={{ color: 'var(--txt3)', fontStyle: 'italic' }}>—</span>}</td>
-                              <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'var(--mono)' }}>{r.kva.toLocaleString()}</td>
-                              <td style={{ ...tdStyle, textAlign: 'center', fontFamily: 'var(--mono)' }}>{r.qty}</td>
-                              <td style={{ ...tdStyle, fontFamily: 'var(--mono)', fontSize: 10, whiteSpace: 'nowrap' }}>{r.deadline}</td>
-                              <td style={{ ...tdStyle, fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--txt3)', whiteSpace: 'nowrap' }}>{r.item_code || '—'}</td>
-                              <td style={{ ...tdStyle, fontSize: 9, color: productOk ? 'var(--green)' : 'var(--amber)', whiteSpace: 'nowrap' }}>
-                                {r.product || <span style={{ color: 'var(--red)' }}>ไม่ระบุ</span>}
-                                {inSystem && <span style={{ marginLeft: 4, fontSize: 8, color: 'var(--amber)', opacity: 0.8 }}>[update]</span>}
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )
+          })()}
+        </div>
+      )}
+
+      {/* ────────────── PLAN ORDERS (DETAIL) ────────────── */}
+      {subTab === 'plandetail' && (
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          {pdParsed.length === 0 && (
+            <DropZone dragOver={pdDragOver} setDragOver={setPdDragOver} fileRef={pdFileRef}
+              onFile={handlePdFile} label="วางไฟล์ Excel Master Plan (รายละเอียด) ที่นี่" />
           )}
+          {pdResult && <ResultBanner msg={pdResult} onClear={() => setPdResult(null)} />}
+          {pdParsed.length > 0 && (() => {
+            const weeks = [...new Set(pdParsed.map(r => r.week_start))].sort()
+            const totalQty = pdParsed.reduce((s, r) => s + r.qty, 0)
+            const totalKva = pdParsed.reduce((s, r) => s + r.kva * r.qty, 0)
+            return (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{pdParsed.length} รายการ</div>
+                  <div style={{ fontSize: 11, color: 'var(--txt3)', marginRight: 'auto' }}>
+                    {totalQty} ตัว · {totalKva.toLocaleString()} kVA รวม · {weeks.length} สัปดาห์ — ตรวจสอบก่อนกด Import
+                  </div>
+                  <button onClick={() => setPdParsed([])} style={cancelBtn}>✕ ยกเลิก</button>
+                  <button onClick={handlePdImport} disabled={pdImporting}
+                    style={{ ...importBtn, background: pdImporting ? 'var(--bord2)' : 'var(--green)' }}>
+                    {pdImporting ? 'กำลังนำเข้า…' : `✓ Import ${pdParsed.length} รายการ`}
+                  </button>
+                </div>
+
+                {/* Week summary */}
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                  {weeks.map(w => {
+                    const wRows = pdParsed.filter(r => r.week_start === w)
+                    return (
+                      <div key={w} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 20, background: 'var(--bg3)', border: '1px solid var(--bord)', fontSize: 11 }}>
+                        <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--blue)' }}>{w}</span>
+                        <span style={{ color: 'var(--txt2)' }}>{wRows.length} ออเดอร์</span>
+                        <span style={{ color: 'var(--txt3)' }}>·</span>
+                        <span style={{ color: 'var(--amber)', fontFamily: 'var(--mono)' }}>{wRows.reduce((s,r)=>s+r.qty,0)} ตัว</span>
+                        <span style={{ color: 'var(--txt3)' }}>·</span>
+                        <span style={{ color: 'var(--txt3)', fontSize: 10 }}>{wRows.reduce((s,r)=>s+r.kva*r.qty,0).toLocaleString()} kVA</span>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Preview table */}
+                <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 10 }}>
+                  <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 11 }}>
+                    <thead><tr>
+                      {['สัปดาห์','วันที่','SAP SO','Item Code','ลูกค้า','kVA','จำนวน','Deadline','หน้ากว้าง (mm)','ระบบไฟฟ้า','HV','LV','ประเภท','Comment'].map(h => (
+                        <th key={h} style={thStyle}>{h}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {pdParsed.map((r, i) => (
+                        <tr key={i} style={{ background: i % 2 ? 'var(--bg3)' : undefined }}>
+                          <td style={{ ...tdStyle, fontFamily: 'var(--mono)', color: 'var(--blue)', fontWeight: 700 }}>{r.week_start}</td>
+                          <td style={{ ...tdStyle, fontFamily: 'var(--mono)', color: 'var(--txt2)' }}>{r.plan_date}</td>
+                          <td style={{ ...tdStyle, fontFamily: 'var(--mono)', color: 'var(--amber)' }}>{r.sap_so}</td>
+                          <td style={{ ...tdStyle, fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--txt3)' }}>{r.item_code || '—'}</td>
+                          <td style={tdStyle}>{r.customer || '—'}</td>
+                          <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'var(--mono)' }}>{r.kva}</td>
+                          <td style={{ ...tdStyle, textAlign: 'center', fontFamily: 'var(--mono)' }}>{r.qty}</td>
+                          <td style={{ ...tdStyle, fontFamily: 'var(--mono)', fontSize: 10 }}>{r.deadline}</td>
+                          <td style={{ ...tdStyle, textAlign: 'center', fontFamily: 'var(--mono)', color: r.face_mm ? 'var(--green)' : 'var(--txt3)' }}>{r.face_mm ?? '—'}</td>
+                          <td style={{ ...tdStyle, fontSize: 10 }}>{r.electrical || '—'}</td>
+                          <td style={{ ...tdStyle, fontSize: 10 }}>{r.hv || '—'}</td>
+                          <td style={{ ...tdStyle, fontSize: 10 }}>{r.lv || '—'}</td>
+                          <td style={{ ...tdStyle, fontSize: 10 }}>{r.category || '—'}</td>
+                          <td style={{ ...tdStyle, color: 'var(--txt3)' }}>{r.comment || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )
+          })()}
         </div>
       )}
 
@@ -1167,41 +1515,133 @@ export default function ImportTab() {
                   <KpiCard label="Pending" val={sapRows.filter(r => !parseBool((r as unknown[])[SAP_CONFIRM_IDX])).length} col="var(--red)" />
                 </>}
               </div>
+              {sapResult && <ResultBanner msg={sapResult} onClear={() => setSapResult(null)} />}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{sapRows.length} Operations จาก SAP</div>
-                <span style={{ fontSize: 11, color: 'var(--txt3)' }}>(View only — ไม่บันทึกเข้าระบบ)</span>
+                <span style={{ fontSize: 11, color: 'var(--txt3)' }}>ตรวจสอบคอลัมน์ที่ highlight แล้วกด Import</span>
                 <div style={{ flex: 1 }} />
-                <button onClick={() => { setSapRows([]); setSapHeaders([]) }} style={cancelBtn}>✕ ปิด</button>
+                <button onClick={() => { setSapRows([]); setSapHeaders([]); setSapResult(null) }} style={cancelBtn}>✕ ปิด</button>
+                <button onClick={handleSapImport} disabled={sapImporting}
+                  style={{ ...importBtn, background: sapImporting ? 'var(--bord2)' : 'var(--green)' }}>
+                  {sapImporting ? 'กำลังบันทึก…' : `✓ Save ${sapRows.length} rows to DB`}
+                </button>
               </div>
+              {/* SAP Column mapping panel */}
+              {sapHeaders.length > 0 && (() => {
+                const sapCols = guessSapCols(sapHeaders)
+                const SAP_FIELD_LABEL: Record<string, string> = {
+                  order_no:'Order No', material_code:'Material Code ⭐',
+                  wc_id:'Work Center ⭐', operation:'Operation',
+                  std_hrs:'Std Hours ⭐', is_confirmed:'Confirmed', plant:'Plant',
+                }
+                const colToField: Record<number, string> = {}
+                const knownIdxSet = new Set(Object.values(sapCols).filter(i => i >= 0))
+                for (const [field, idx] of Object.entries(sapCols)) {
+                  if (idx >= 0) colToField[idx] = SAP_FIELD_LABEL[field] ?? field
+                }
+                const extraCount = sapHeaders.filter((h, i) => h && !knownIdxSet.has(i)).length
+                return (
+                  <div style={{ marginBottom: 8, border: '1px solid var(--bord)', borderRadius: 8, overflow: 'hidden' }}>
+                    <div style={{ padding: '6px 12px', background: 'var(--bg2)', fontSize: 10, fontWeight: 700, color: 'var(--txt3)', textTransform: 'uppercase' as const, letterSpacing: '0.06em' }}>
+                      Column Mapping — {knownIdxSet.size} core fields · {extraCount} extra → all {sapHeaders.length} columns collected
+                    </div>
+                    <div style={{ padding: '6px 12px 10px', display: 'flex', flexWrap: 'wrap', gap: 5, background: 'var(--bg2)' }}>
+                      {sapHeaders.map((h, i) => {
+                        const field = colToField[i]
+                        const isKey = field?.includes('⭐')
+                        const isExtra = !field && h
+                        return (
+                          <div key={i} style={{
+                            fontSize: 10, padding: '3px 8px', borderRadius: 6,
+                            background: field ? (isKey ? 'rgba(250,179,135,.2)' : 'rgba(166,227,161,.15)') : isExtra ? 'rgba(137,180,250,.08)' : 'var(--bg3)',
+                            border: `1px solid ${field ? (isKey ? 'rgba(250,179,135,.4)' : 'rgba(166,227,161,.3)') : isExtra ? 'rgba(137,180,250,.2)' : 'var(--bord)'}`,
+                            color: field ? (isKey ? 'var(--amber)' : 'var(--green)') : isExtra ? 'var(--txt2)' : 'var(--txt3)',
+                          }}>
+                            <span style={{ fontFamily: 'var(--mono)', fontWeight: 600 }}>{h || `col${i}`}</span>
+                            {field && <span style={{ marginLeft: 4, opacity: 0.8 }}>→ {field}</span>}
+                            {isExtra && <span style={{ marginLeft: 4, opacity: 0.6 }}>→ extra</span>}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })()}
+              {/* Row range controls */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, color: 'var(--txt3)' }}>Show rows:</span>
+                {[50, 100, 500, 1000].map(n => (
+                  <button key={n} onClick={() => setSapShowLimit(n)}
+                    style={{ fontSize: 10, padding: '3px 10px', borderRadius: 6, border: '1px solid var(--bord2)', cursor: 'pointer',
+                      background: sapShowLimit === n ? 'var(--blue)' : 'var(--bg3)',
+                      color: sapShowLimit === n ? '#000' : 'var(--txt2)', fontWeight: sapShowLimit === n ? 700 : 400 }}>
+                    {n}
+                  </button>
+                ))}
+                <button onClick={() => setSapShowLimit(Infinity)}
+                  style={{ fontSize: 10, padding: '3px 10px', borderRadius: 6, border: '1px solid var(--bord2)', cursor: 'pointer',
+                    background: sapShowLimit === Infinity ? 'var(--amber)' : 'var(--bg3)',
+                    color: sapShowLimit === Infinity ? '#000' : 'var(--txt2)', fontWeight: sapShowLimit === Infinity ? 700 : 400 }}>
+                  All ({sapRows.length.toLocaleString()})
+                </button>
+                <span style={{ fontSize: 10, color: 'var(--txt3)', marginLeft: 6 }}>
+                  Showing {Math.min(sapShowLimit, sapRows.length).toLocaleString()} / {sapRows.length.toLocaleString()} rows
+                </span>
+              </div>
+
               <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 8 }}>
                 <table style={{ borderCollapse: 'collapse', minWidth: '100%' }}>
                   <thead>
                     <tr>
+                      <th style={{ ...thStyle, textAlign: 'center' }}>#</th>
                       {sapHeaders.map((h, i) => {
                         const isConfirm = /is.?confirm/i.test(h)
+                        const isStdHrs  = /stdactivitytype3|stdhrs|standardhour|planarbeit/i.test(h)
+                        const isWC      = /workcenter|workctr|arbpl/i.test(h)
+                        const isOrder   = /ordernumber|orderno|^order$|aufnr/i.test(h)
+                        const isMat     = /materialorder|material|matnr|itemcode/i.test(h)
+                        const hi = isStdHrs ? { bg:'rgba(224,156,42,.15)', col:'var(--amber)' }
+                                 : isConfirm ? { bg:'rgba(166,227,161,.15)', col:'var(--green)' }
+                                 : isWC      ? { bg:'rgba(137,180,250,.15)', col:'var(--blue)' }
+                                 : isOrder   ? { bg:'rgba(180,101,232,.12)', col:'var(--purple)' }
+                                 : isMat     ? { bg:'rgba(137,180,250,.08)', col:'var(--blue)' }
+                                 : { bg:'var(--bg3)', col:'var(--txt3)' }
                         return (
-                          <th key={i} style={{ ...thStyle, background: isConfirm ? 'rgba(166,227,161,.15)' : 'var(--bg3)', color: isConfirm ? 'var(--green)' : 'var(--txt3)' }}>
+                          <th key={i} style={{ ...thStyle, background: hi.bg, color: hi.col }}>
                             {h}
+                            {isStdHrs && <div style={{ fontSize: 8, marginTop: 2, color: 'var(--amber)' }}>⭐ std hrs</div>}
+                            {isWC     && <div style={{ fontSize: 8, marginTop: 2, color: 'var(--blue)' }}>WC</div>}
+                            {isOrder  && <div style={{ fontSize: 8, marginTop: 2, color: 'var(--purple)' }}>Order</div>}
                           </th>
                         )
                       })}
                     </tr>
                   </thead>
                   <tbody>
-                    {sapRows.slice(0, 500).map((row, ri) => {
+                    {sapRows.slice(0, sapShowLimit === Infinity ? sapRows.length : sapShowLimit).map((row, ri) => {
                       const confirmed = SAP_CONFIRM_IDX >= 0 ? parseBool((row as unknown[])[SAP_CONFIRM_IDX]) : false
                       return (
-                        <tr key={ri} style={{ background: confirmed ? 'rgba(166,227,161,.04)' : 'transparent' }}>
+                        <tr key={ri} style={{ background: confirmed ? 'rgba(166,227,161,.04)' : ri % 2 ? 'var(--bg3)' : 'transparent' }}>
+                          <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--txt3)', fontSize: 9, fontFamily: 'var(--mono)' }}>{ri + 1}</td>
                           {sapHeaders.map((h, ci) => {
                             const isConfirmCol = /is.?confirm/i.test(h)
+                            const isStdHrsCol  = /stdactivitytype3|stdhrs|standardhour|planarbeit/i.test(h)
                             const val = String((row as unknown[])[ci] ?? '')
                             if (isConfirmCol) {
                               const b = parseBool((row as unknown[])[ci])
                               return (
                                 <td key={ci} style={{ ...tdStyle, textAlign: 'center' }}>
                                   <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, fontWeight: 700, background: b ? 'rgba(166,227,161,.15)' : 'rgba(127,132,156,.1)', color: b ? 'var(--green)' : 'var(--txt3)' }}>
-                                    {b ? '✓ Confirmed' : '○ Pending'}
+                                    {b ? '✓' : '○'}
                                   </span>
+                                </td>
+                              )
+                            }
+                            if (isStdHrsCol) {
+                              const n = parseFloat(val.replace(/,/g,''))
+                              return (
+                                <td key={ci} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--amber)', fontSize: 11 }}>
+                                  {isNaN(n) ? val : n.toFixed(2)}
                                 </td>
                               )
                             }
@@ -1212,9 +1652,13 @@ export default function ImportTab() {
                     })}
                   </tbody>
                 </table>
-                {sapRows.length > 500 && (
-                  <div style={{ padding: '8px 14px', fontSize: 10, color: 'var(--txt3)' }}>
-                    แสดง 500 จาก {sapRows.length} แถว
+                {sapRows.length > (sapShowLimit === Infinity ? sapRows.length : sapShowLimit) && (
+                  <div style={{ padding: '10px 14px', fontSize: 11, color: 'var(--txt3)', textAlign: 'center', borderTop: '1px solid var(--bord)' }}>
+                    Showing {(sapShowLimit === Infinity ? sapRows.length : sapShowLimit).toLocaleString()} of {sapRows.length.toLocaleString()} rows —
+                    <button onClick={() => setSapShowLimit(Infinity)}
+                      style={{ marginLeft: 8, fontSize: 11, color: 'var(--blue)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
+                      Show all
+                    </button>
                   </div>
                 )}
               </div>

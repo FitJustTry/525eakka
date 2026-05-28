@@ -71,6 +71,23 @@ function rowToOrder(row) {
     sap_so: row.sap_so || '',
     plan_date: dateKey(row.plan_date),
     comment: row.comment || '',
+    item_code: row.item_code || '',
+    week_start: row.week_start || '',
+    seq: toInt(row.seq, 0),
+    plant: row.plant || '',
+    electrical: row.electrical || '',
+    total_kva: toNumber(row.total_kva, 0),
+    enter_test: row.enter_test || '',
+    cable_box: row.cable_box || '',
+    control: row.control || '',
+    due_store: row.due_store || '',
+    due_so: row.due_so || '',
+    adjust_plan: row.adjust_plan || '',
+    due_clamp: row.due_clamp || '',
+    due_box_ctrl: row.due_box_ctrl || '',
+    raw_mat: row.raw_mat || '',
+    lv: row.lv || '',
+    hv: row.hv || '',
     created_at: row.created_at,
   };
 }
@@ -144,6 +161,22 @@ async function initDatabase() {
     await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`);
     await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS plan_date DATE`);
     await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS item_code TEXT`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS week_start TEXT`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS seq INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS plant TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS electrical TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS total_kva NUMERIC NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS enter_test TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS cable_box TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS control TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS due_store TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS due_so TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS adjust_plan TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS due_clamp TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS due_box_ctrl TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS raw_mat TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS lv TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS hv TEXT NOT NULL DEFAULT ''`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS employees (
         id SERIAL PRIMARY KEY,
@@ -206,6 +239,46 @@ async function initDatabase() {
       )
     `);
     await client.query('CREATE INDEX IF NOT EXISTS idx_coil_plan_week ON coil_plan(week_start)');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS plan_orders (
+        id SERIAL PRIMARY KEY,
+        week_start DATE,
+        plan_date DATE,
+        seq INTEGER NOT NULL DEFAULT 0,
+        sap_so TEXT NOT NULL DEFAULT '',
+        item_code TEXT NOT NULL DEFAULT '',
+        product TEXT NOT NULL DEFAULT '',
+        customer TEXT NOT NULL DEFAULT '',
+        kva INTEGER NOT NULL DEFAULT 0,
+        qty INTEGER NOT NULL DEFAULT 1,
+        deadline DATE,
+        face_mm INTEGER,
+        electrical TEXT NOT NULL DEFAULT '',
+        hv TEXT NOT NULL DEFAULT '',
+        lv TEXT NOT NULL DEFAULT '',
+        comment TEXT NOT NULL DEFAULT '',
+        category TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_plan_orders_week ON plan_orders(week_start)');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sap_routing (
+        id SERIAL PRIMARY KEY,
+        order_no TEXT NOT NULL DEFAULT '',
+        material_code TEXT NOT NULL DEFAULT '',
+        wc_id TEXT NOT NULL DEFAULT '',
+        operation TEXT NOT NULL DEFAULT '',
+        std_hrs NUMERIC(10,4) NOT NULL DEFAULT 0,
+        is_confirmed BOOLEAN NOT NULL DEFAULT false,
+        plant TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_sap_routing_order ON sap_routing(order_no)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_sap_routing_wc ON sap_routing(wc_id)');
+    await client.query(`ALTER TABLE sap_routing ADD COLUMN IF NOT EXISTS extra JSONB NOT NULL DEFAULT '{}'`);
     await client.query('COMMIT');
     console.log('✅ PostgreSQL tables ready');
   } catch (err) {
@@ -322,28 +395,50 @@ async function upsertOrder(client, value = {}) {
     sap_so: value.sap_so || '',
     plan_date: dateKey(value.plan_date),
     comment: value.comment || '',
+    item_code: value.item_code || '',
+    week_start: value.week_start || '',
+    seq: toInt(value.seq, 0),
+    plant: value.plant || '',
+    electrical: value.electrical || '',
+    total_kva: toNumber(value.total_kva, 0),
+    enter_test: value.enter_test || '',
+    cable_box: value.cable_box || '',
+    control: value.control || '',
+    due_store: value.due_store || '',
+    due_so: value.due_so || '',
+    adjust_plan: value.adjust_plan || '',
+    due_clamp: value.due_clamp || '',
+    due_box_ctrl: value.due_box_ctrl || '',
+    raw_mat: value.raw_mat || '',
+    lv: value.lv || '',
+    hv: value.hv || '',
   };
   if (!order.product) throw new Error('product is required');
   if (!order.deadline) throw new Error('deadline is required');
 
   await client.query(
     `INSERT INTO accepted_orders
-       (id, product, qty, deadline, customer, kva, category, sap_so, plan_date, comment)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       (id,product,qty,deadline,customer,kva,category,sap_so,plan_date,comment,item_code,
+        week_start,seq,plant,electrical,total_kva,enter_test,cable_box,control,
+        due_store,due_so,adjust_plan,due_clamp,due_box_ctrl,raw_mat,lv,hv)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
      ON CONFLICT (id) DO UPDATE SET
-       product = EXCLUDED.product,
-       qty = EXCLUDED.qty,
-       deadline = EXCLUDED.deadline,
-       customer = EXCLUDED.customer,
-       kva = EXCLUDED.kva,
-       category = EXCLUDED.category,
-       sap_so = EXCLUDED.sap_so,
-       plan_date = EXCLUDED.plan_date,
-       comment = EXCLUDED.comment,
-       updated_at = now()`,
+       product=EXCLUDED.product, qty=EXCLUDED.qty, deadline=EXCLUDED.deadline,
+       customer=EXCLUDED.customer, kva=EXCLUDED.kva, category=EXCLUDED.category,
+       sap_so=EXCLUDED.sap_so, plan_date=EXCLUDED.plan_date, comment=EXCLUDED.comment,
+       item_code=EXCLUDED.item_code, week_start=EXCLUDED.week_start, seq=EXCLUDED.seq,
+       plant=EXCLUDED.plant, electrical=EXCLUDED.electrical, total_kva=EXCLUDED.total_kva,
+       enter_test=EXCLUDED.enter_test, cable_box=EXCLUDED.cable_box, control=EXCLUDED.control,
+       due_store=EXCLUDED.due_store, due_so=EXCLUDED.due_so, adjust_plan=EXCLUDED.adjust_plan,
+       due_clamp=EXCLUDED.due_clamp, due_box_ctrl=EXCLUDED.due_box_ctrl,
+       raw_mat=EXCLUDED.raw_mat, lv=EXCLUDED.lv, hv=EXCLUDED.hv,
+       updated_at=now()`,
     [
       order.id, order.product, order.qty, order.deadline, order.customer,
-      order.kva, order.category, order.sap_so, order.plan_date, order.comment,
+      order.kva, order.category, order.sap_so, order.plan_date, order.comment, order.item_code,
+      order.week_start, order.seq, order.plant, order.electrical, order.total_kva,
+      order.enter_test, order.cable_box, order.control, order.due_store, order.due_so,
+      order.adjust_plan, order.due_clamp, order.due_box_ctrl, order.raw_mat, order.lv, order.hv,
     ]
   );
   return order;
@@ -538,7 +633,9 @@ app.post('/api/orders/batch', asyncRoute(async (req, res) => {
 }));
 
 app.put('/api/orders/:id', asyncRoute(async (req, res) => {
-  const allowed = ['product', 'qty', 'deadline', 'customer', 'kva', 'category', 'sap_so', 'plan_date', 'comment'];
+  const allowed = ['product','qty','deadline','customer','kva','category','sap_so','plan_date','comment','item_code',
+    'week_start','seq','plant','electrical','total_kva','enter_test','cable_box','control',
+    'due_store','due_so','adjust_plan','due_clamp','due_box_ctrl','raw_mat','lv','hv'];
   const entries = Object.entries(req.body).filter(([key]) => allowed.includes(key));
   if (!entries.length) return res.status(400).json({ error: 'No valid fields to update' });
 
@@ -799,6 +896,154 @@ app.put('/api/employees/:id', asyncRoute(async (req, res) => {
 app.delete('/api/employees/:id', asyncRoute(async (req, res) => {
   await pool.query('DELETE FROM employees WHERE id=$1', [req.params.id]);
   res.status(204).send();
+}));
+
+// ── Plan Orders ──────────────────────────────────────────────────────────────
+
+app.get('/api/plan-orders', asyncRoute(async (req, res) => {
+  const result = await pool.query('SELECT * FROM plan_orders ORDER BY week_start, plan_date, seq, id');
+  res.json(result.rows);
+}));
+
+app.post('/api/plan-orders/batch', asyncRoute(async (req, res) => {
+  const rows = req.body;
+  if (!Array.isArray(rows)) return res.status(400).json({ error: 'Expected array of rows' });
+  const weekStarts = [...new Set(rows.map(r => r.week_start).filter(Boolean))];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const w of weekStarts) {
+      await client.query('DELETE FROM plan_orders WHERE week_start=$1', [w]);
+    }
+    const inserted = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const result = await client.query(
+        `INSERT INTO plan_orders (week_start,plan_date,seq,sap_so,item_code,product,customer,kva,qty,deadline,face_mm,electrical,hv,lv,comment,category)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+        [r.week_start||null, r.plan_date||null, r.seq??i, r.sap_so||'', r.item_code||'', r.product||'', r.customer||'', r.kva||0, r.qty||1, r.deadline||null, r.face_mm||null, r.electrical||'', r.hv||'', r.lv||'', r.comment||'', r.category||'']
+      );
+      inserted.push(result.rows[0]);
+    }
+    await client.query('COMMIT');
+    res.json({ inserted: inserted.length });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally { client.release(); }
+}));
+
+app.put('/api/plan-orders/:id', asyncRoute(async (req, res) => {
+  const allowed = ['week_start','plan_date','seq','sap_so','item_code','product','customer','kva','qty','deadline','face_mm','electrical','hv','lv','comment','category'];
+  const entries = Object.entries(req.body).filter(([k]) => allowed.includes(k));
+  if (!entries.length) return res.status(400).json({ error: 'No valid fields' });
+  const sets = entries.map(([k], i) => `${k}=$${i+2}`).join(', ');
+  const result = await pool.query(
+    `UPDATE plan_orders SET ${sets}, updated_at=now() WHERE id=$1 RETURNING *`,
+    [req.params.id, ...entries.map(([,v]) => v)]
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+  res.json(result.rows[0]);
+}));
+
+app.delete('/api/plan-orders', asyncRoute(async (req, res) => {
+  const result = await pool.query('DELETE FROM plan_orders');
+  res.json({ deleted: result.rowCount });
+}));
+
+app.delete('/api/plan-orders/week/:week_start', asyncRoute(async (req, res) => {
+  const result = await pool.query('DELETE FROM plan_orders WHERE week_start=$1', [req.params.week_start]);
+  res.json({ deleted: result.rowCount });
+}));
+
+app.delete('/api/plan-orders/:id', asyncRoute(async (req, res) => {
+  await pool.query('DELETE FROM plan_orders WHERE id=$1', [req.params.id]);
+  res.status(204).send();
+}));
+
+// ── SAP Routing ──
+app.get('/api/sap-routing', asyncRoute(async (req, res) => {
+  const { wc_id, order_no } = req.query;
+  let sql = 'SELECT * FROM sap_routing';
+  const params = [];
+  if (wc_id) { sql += ' WHERE wc_id=$1'; params.push(wc_id); }
+  else if (order_no) { sql += ' WHERE order_no=$1'; params.push(order_no); }
+  sql += ' ORDER BY order_no, wc_id';
+  const result = await pool.query(sql, params);
+  res.json(result.rows);
+}));
+
+app.get('/api/sap-routing/catalog', asyncRoute(async (req, res) => {
+  const result = await pool.query(`
+    SELECT material_code, wc_id,
+           MAX(operation) AS operation,
+           ROUND(AVG(std_hrs)::numeric, 4) AS avg_std_hrs
+    FROM sap_routing
+    GROUP BY material_code, wc_id
+    ORDER BY material_code, wc_id
+  `);
+  const catalog = {};
+  for (const row of result.rows) {
+    if (!catalog[row.material_code]) catalog[row.material_code] = { mat: row.material_code, ops: [] };
+    catalog[row.material_code].ops.push(['', row.wc_id, row.operation, parseFloat(row.avg_std_hrs)]);
+  }
+  res.json(Object.values(catalog));
+}));
+
+app.get('/api/sap-routing/summary', asyncRoute(async (req, res) => {
+  const result = await pool.query(`
+    SELECT wc_id, COUNT(*) AS op_count,
+           SUM(std_hrs) AS total_std_hrs,
+           SUM(CASE WHEN is_confirmed THEN 1 ELSE 0 END) AS confirmed
+    FROM sap_routing
+    GROUP BY wc_id ORDER BY wc_id
+  `);
+  res.json(result.rows);
+}));
+
+app.post('/api/sap-routing/batch', asyncRoute(async (req, res) => {
+  const rows = req.body;
+  if (!Array.isArray(rows) || rows.length === 0)
+    return res.status(400).json({ error: 'Expected non-empty array' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM sap_routing');
+    const CHUNK = 500;
+    let inserted = 0;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK);
+      const vals = chunk.map((_, j) => {
+        const b = j * 8;
+        return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8})`;
+      }).join(',');
+      const params = chunk.flatMap(r => [
+        String(r.order_no || ''),
+        String(r.material_code || ''),
+        String(r.wc_id || ''),
+        String(r.operation || ''),
+        toNumber(r.std_hrs),
+        !!r.is_confirmed,
+        String(r.plant || ''),
+        JSON.stringify(r.extra || {}),
+      ]);
+      await client.query(
+        `INSERT INTO sap_routing(order_no,material_code,wc_id,operation,std_hrs,is_confirmed,plant,extra) VALUES ${vals}`,
+        params
+      );
+      inserted += chunk.length;
+    }
+    await client.query('COMMIT');
+    res.json({ inserted });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally { client.release(); }
+}));
+
+app.delete('/api/sap-routing', asyncRoute(async (req, res) => {
+  const result = await pool.query('DELETE FROM sap_routing');
+  res.json({ deleted: result.rowCount });
 }));
 
 app.use((err, req, res, next) => {

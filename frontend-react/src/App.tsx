@@ -19,6 +19,8 @@ import SapRoutingTab   from './tabs/SapRoutingTab'
 import CalendarTab     from './tabs/CalendarTab'
 import SettingsTab     from './tabs/SettingsTab'
 import DataTab         from './tabs/DataTab'
+import WCLoadTab       from './tabs/WCLoadTab'
+import SapWCLoadTab    from './tabs/SapWCLoadTab'
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'simulate',   label: '🎯 Simulate' },
@@ -36,6 +38,8 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'transcode',  label: '🔢 EN-T-001' },
   { id: 'saprouting', label: '📋 SAP Routing' },
   { id: 'calendar',   label: '📆 Calendar' },
+  { id: 'wcload',      label: '📊 WC Load' },
+  { id: 'sapwcload',   label: '📡 SAP Hours' },
   { id: 'data',        label: '🗄 Data' },
   { id: 'settings',   label: '⚙ Settings' },
 ]
@@ -85,6 +89,8 @@ export default function App() {
         {tab === 'transcode'  && <TranscodeTab />}
         {tab === 'saprouting' && <SapRoutingTab />}
         {tab === 'calendar'   && <CalendarTab />}
+        {tab === 'wcload'     && <WCLoadTab />}
+        {tab === 'sapwcload'  && <SapWCLoadTab />}
         {tab === 'data'       && <DataTab />}
         {tab === 'settings'   && <SettingsTab />}
       </main>

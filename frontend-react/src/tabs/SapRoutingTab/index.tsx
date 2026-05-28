@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useApp } from '../../context/AppContext'
 import { SAP_ROUTING_DB } from '../../data/sapRouting'
 
@@ -15,6 +15,18 @@ const SR_CATS: Record<string, { label: string; color: string }> = {
 
 const LIMIT = 150
 
+// Static lookup for desc/cat/rno by mat code
+const STATIC_MAP = new Map(SAP_ROUTING_DB.map(r => [r.mat, r]))
+
+interface CatalogEntry {
+  mat: string
+  desc: string
+  cat: string
+  rno: string
+  ops: [string, string, string, number][]
+  fromDb: boolean
+}
+
 export default function SapRoutingTab() {
   const { state } = useApp()
   const { wcConfig } = state
@@ -22,36 +34,83 @@ export default function SapRoutingTab() {
   const [search, setSearch] = useState('')
   const [cat, setCat] = useState('all')
   const [selected, setSelected] = useState<string | null>(null)
+  const [dbEntries, setDbEntries] = useState<CatalogEntry[] | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch('/api/sap-routing/catalog')
+      .then(r => r.json())
+      .then((rows: { mat: string; ops: [string, string, string, number][] }[]) => {
+        if (!rows.length) { setDbEntries(null); setLoading(false); return }
+        const entries: CatalogEntry[] = rows.map(r => {
+          const s = STATIC_MAP.get(r.mat)
+          return {
+            mat: r.mat,
+            desc: s?.desc ?? '',
+            cat: s?.cat ?? 'other',
+            rno: s?.rno ?? '',
+            ops: r.ops,
+            fromDb: true,
+          }
+        })
+        setDbEntries(entries)
+        setLoading(false)
+      })
+      .catch(() => { setDbEntries(null); setLoading(false) })
+  }, [])
+
+  // Use DB entries when available, otherwise static
+  const entries: CatalogEntry[] = useMemo(() => {
+    if (dbEntries && dbEntries.length > 0) return dbEntries
+    return SAP_ROUTING_DB.map(r => ({ ...r, fromDb: false }))
+  }, [dbEntries])
+
+  const isLive = dbEntries && dbEntries.length > 0
 
   const q = search.toLowerCase()
 
   const catCounts = useMemo(() => {
-    const cnt: Record<string, number> = { all: SAP_ROUTING_DB.length }
-    SAP_ROUTING_DB.forEach(r => { cnt[r.cat] = (cnt[r.cat] ?? 0) + 1 })
+    const cnt: Record<string, number> = { all: entries.length }
+    entries.forEach(r => { cnt[r.cat] = (cnt[r.cat] ?? 0) + 1 })
     return cnt
-  }, [])
+  }, [entries])
 
   const filtered = useMemo(() =>
-    SAP_ROUTING_DB.filter(r =>
+    entries.filter(r =>
       (cat === 'all' || r.cat === cat) &&
       (!q || r.mat.toLowerCase().includes(q) || r.desc.toLowerCase().includes(q) ||
         r.ops.some(op => op[2].toLowerCase().includes(q) || op[1].toLowerCase().includes(q)))
     ),
-    [cat, q]
+    [entries, cat, q]
   )
 
-  const item = selected ? SAP_ROUTING_DB.find(r => r.mat === selected) : null
+  const item = selected ? entries.find(r => r.mat === selected) ?? null : null
 
   const th: React.CSSProperties = { padding: '5px 8px', textAlign: 'left', fontSize: 9, fontWeight: 700, color: 'var(--txt3)', background: 'var(--bg3)', borderBottom: '1px solid var(--bord2)', whiteSpace: 'nowrap' }
   const td: React.CSSProperties = { padding: '4px 8px', borderBottom: '0.5px solid var(--bord)', fontSize: 11 }
+
+  if (loading) return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--txt3)', fontSize: 13 }}>
+      Loading…
+    </div>
+  )
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', padding: '1.25rem 1.5rem 1.25rem' }}>
       {/* Header */}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 600 }}>📋 SAP Routing Catalog</div>
+        <div style={{ fontSize: 15, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+          📋 SAP Routing Catalog
+          {isLive
+            ? <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: 'rgba(166,227,161,.18)', color: 'var(--green)', border: '1px solid rgba(166,227,161,.3)', fontWeight: 600 }}>📡 Live DB</span>
+            : <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: 'rgba(137,180,250,.12)', color: 'var(--blue)', border: '1px solid rgba(137,180,250,.25)', fontWeight: 600 }}>📄 Static</span>
+          }
+        </div>
         <div style={{ fontSize: 12, color: 'var(--txt2)', marginTop: 2 }}>
-          Routing จาก SAP · <span style={{ fontFamily: 'var(--mono)', color: 'var(--amber)' }}>{SAP_ROUTING_DB.length}</span> รายการ
+          {isLive
+            ? <>Routing จาก DB · <span style={{ fontFamily: 'var(--mono)', color: 'var(--green)' }}>{entries.length}</span> materials · grouped avg std hrs</>
+            : <>Routing จาก Static File · <span style={{ fontFamily: 'var(--mono)', color: 'var(--amber)' }}>{entries.length}</span> รายการ · นำเข้า SAP ใน Import tab เพื่อใช้ข้อมูลจริง</>
+          }
         </div>
       </div>
 
@@ -92,7 +151,10 @@ export default function SapRoutingTab() {
                 <div key={r.mat} onClick={() => setSelected(sel ? null : r.mat)}
                   style={{ padding: '9px 10px', cursor: 'pointer', borderBottom: '0.5px solid var(--bord)', background: sel ? 'var(--bg4)' : 'var(--bg2)', borderLeft: `3px solid ${sel ? cc : 'transparent'}` }}>
                   <div style={{ fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700, color: cc }}>{r.mat}</div>
-                  <div style={{ fontSize: 11, color: 'var(--txt)', marginTop: 1, lineHeight: 1.3 }}>{r.desc}</div>
+                  {r.desc
+                    ? <div style={{ fontSize: 11, color: 'var(--txt)', marginTop: 1, lineHeight: 1.3 }}>{r.desc}</div>
+                    : <div style={{ fontSize: 10, color: 'var(--txt3)', marginTop: 1, fontStyle: 'italic' }}>{r.ops.length} operations</div>
+                  }
                   <div style={{ display: 'flex', gap: 6, marginTop: 3, alignItems: 'center' }}>
                     <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: cc + '18', color: cc }}>{SR_CATS[r.cat]?.label ?? r.cat}</span>
                     <span style={{ fontSize: 9, color: 'var(--txt3)' }}>{r.ops.length} ops</span>
@@ -128,10 +190,14 @@ export default function SapRoutingTab() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
                   <div>
                     <div style={{ fontFamily: 'var(--mono)', fontSize: 11, fontWeight: 700, color: cc }}>{item.mat}</div>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--txt)', marginTop: 3 }}>{item.desc}</div>
-                    <div style={{ fontSize: 10, color: 'var(--txt3)', marginTop: 3 }}>
-                      Routing No: <span style={{ fontFamily: 'var(--mono)' }}>{item.rno}</span>
-                      {' · '}<span style={{ padding: '1px 6px', borderRadius: 3, background: cc + '18', color: cc }}>{SR_CATS[item.cat]?.label ?? item.cat}</span>
+                    {item.desc
+                      ? <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--txt)', marginTop: 3 }}>{item.desc}</div>
+                      : <div style={{ fontSize: 12, color: 'var(--txt3)', marginTop: 3, fontStyle: 'italic' }}>No description</div>
+                    }
+                    <div style={{ fontSize: 10, color: 'var(--txt3)', marginTop: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {item.rno && <>Routing No: <span style={{ fontFamily: 'var(--mono)' }}>{item.rno}</span> · </>}
+                      <span style={{ padding: '1px 6px', borderRadius: 3, background: cc + '18', color: cc }}>{SR_CATS[item.cat]?.label ?? item.cat}</span>
+                      {item.fromDb && <span style={{ padding: '1px 6px', borderRadius: 3, background: 'rgba(166,227,161,.15)', color: 'var(--green)', fontSize: 9 }}>avg hrs from DB</span>}
                     </div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
@@ -143,10 +209,10 @@ export default function SapRoutingTab() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, marginBottom: 12 }}>
                   <thead>
                     <tr>
-                      <th style={{ ...th, width: 44 }}>Op</th>
+                      {!item.fromDb && <th style={{ ...th, width: 44 }}>Op</th>}
                       <th style={{ ...th, width: 76 }}>WC</th>
                       <th style={th}>ชื่องาน</th>
-                      <th style={{ ...th, textAlign: 'right', width: 60 }}>STD h</th>
+                      <th style={{ ...th, textAlign: 'right', width: 60 }}>{item.fromDb ? 'Avg h' : 'STD h'}</th>
                       <th style={{ ...th, width: 120 }}>สัดส่วน</th>
                     </tr>
                   </thead>
@@ -157,7 +223,7 @@ export default function SapRoutingTab() {
                       const wcName = wcConfig[op[1]]?.name
                       return (
                         <tr key={i} style={{ borderBottom: '0.5px solid var(--bord)', background: i % 2 ? 'var(--bg3)' : 'transparent' }}>
-                          <td style={{ ...td, fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--txt3)' }}>{op[0]}</td>
+                          {!item.fromDb && <td style={{ ...td, fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--txt3)' }}>{op[0]}</td>}
                           <td style={td}>
                             <div style={{ fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700, color: 'var(--amber)' }}>{op[1]}</div>
                             {wcName && <div style={{ fontSize: 8, color: 'var(--txt3)', whiteSpace: 'nowrap' }}>{wcName}</div>}
@@ -178,7 +244,7 @@ export default function SapRoutingTab() {
                   </tbody>
                   <tfoot>
                     <tr style={{ background: 'var(--bg3)', borderTop: '1px solid var(--bord2)' }}>
-                      <td colSpan={3} style={{ ...td, fontWeight: 700, fontSize: 11 }}>รวม</td>
+                      <td colSpan={item.fromDb ? 3 : 4} style={{ ...td, fontWeight: 700, fontSize: 11 }}>รวม</td>
                       <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 800, color: cc, fontSize: 12 }}>{tot.toFixed(3)}</td>
                       <td style={td} />
                     </tr>

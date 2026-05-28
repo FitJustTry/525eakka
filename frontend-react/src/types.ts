@@ -13,6 +13,10 @@ export interface Order {
   id: string; product: string; qty: number; deadline: string
   customer: string; kva: number; category: string; sap_so: string
   plan_date: string | null; comment: string; item_code?: string
+  week_start?: string; seq?: number; plant?: string; electrical?: string
+  total_kva?: number; enter_test?: string; cable_box?: string; control?: string
+  due_store?: string; due_so?: string; adjust_plan?: string; due_clamp?: string
+  due_box_ctrl?: string; raw_mat?: string; lv?: string; hv?: string
 }
 
 export interface CuttingMachine {
@@ -24,6 +28,26 @@ export interface CuttingMachine {
 }
 
 export interface ItemCode { description: string; category: string }
+
+export interface PlanOrder {
+  id: number
+  week_start: string | null
+  plan_date: string | null
+  seq: number
+  sap_so: string
+  item_code: string
+  product: string
+  customer: string
+  kva: number
+  qty: number
+  deadline: string | null
+  face_mm: number | null
+  electrical: string
+  hv: string
+  lv: string
+  comment: string
+  category: string
+}
 
 export interface Employee {
   id: string; name: string; dept: string; title: string
@@ -46,4 +70,4 @@ export type TabId =
   | 'simulate' | 'import' | 'orders' | 'catalog' | 'employees'
   | 'timedash' | 'dept' | 'load' | 'gantt' | 'plan'
   | 'capacity' | 'itemdecode' | 'transcode' | 'saprouting'
-  | 'calendar' | 'settings' | 'data'
+  | 'calendar' | 'settings' | 'data' | 'wcload' | 'sapwcload'
