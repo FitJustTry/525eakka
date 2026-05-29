@@ -341,7 +341,7 @@ function CuttingMachines() {
       <div style={S.wrap}>
         <table style={S.tbl}>
           <thead><tr>
-            {['ชื่อเครื่อง','จำนวน','kVA ต่ำสุด','kVA สูงสุด','h/ตัว','Laser','M4','หน้า min','หน้า max','เจาะ 8','เจาะ 22','หมายเหตุ',''].map((h, i) => <th key={i} style={S.th}>{h}</th>)}
+            {['ชื่อเครื่อง','จำนวน','kVA ต่ำสุด','kVA สูงสุด','h/ตัว','Laser','M4','หน้า min','หน้า max','เจาะรู 8mm (Oil)','เจาะรู 22mm (Cast Resin)','หมายเหตุ',''].map((h, i) => <th key={i} style={S.th}>{h}</th>)}
           </tr></thead>
           <tbody>
             {machines.map(m => (

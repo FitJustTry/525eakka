@@ -2,7 +2,11 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+// Return DATE columns as plain "YYYY-MM-DD" strings — prevents timezone shift
+// (pg returns DATE as JS Date at local midnight, .toISOString() would shift to UTC)
+types.setTypeParser(1082, val => val);
 
 const PORT = Number(process.env.PORT || 3000);
 
@@ -220,6 +224,9 @@ async function initDatabase() {
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS drill_8mm BOOLEAN NOT NULL DEFAULT false`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS drill_22mm BOOLEAN NOT NULL DEFAULT false`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS rates JSONB NOT NULL DEFAULT '[]'`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS reg_hrs NUMERIC NOT NULL DEFAULT 8`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS ot_hrs NUMERIC NOT NULL DEFAULT 4`);
     await client.query(`UPDATE cutting_machines SET laser = laser_m4 WHERE laser = false AND laser_m4 = true`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS coil_plan (
@@ -279,6 +286,13 @@ async function initDatabase() {
     await client.query('CREATE INDEX IF NOT EXISTS idx_sap_routing_order ON sap_routing(order_no)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_sap_routing_wc ON sap_routing(wc_id)');
     await client.query(`ALTER TABLE sap_routing ADD COLUMN IF NOT EXISTS extra JSONB NOT NULL DEFAULT '{}'`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cutting_rates (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        rates JSONB NOT NULL DEFAULT '[]'
+      )
+    `);
+    await client.query(`INSERT INTO cutting_rates (id, rates) VALUES (1, '[]') ON CONFLICT DO NOTHING`);
     await client.query('COMMIT');
     console.log('✅ PostgreSQL tables ready');
   } catch (err) {
@@ -780,6 +794,9 @@ function rowToCuttingMachine(row) {
     laser: !!row.laser, m4: !!row.m4,
     min_face_mm: toInt(row.min_face_mm, 1), max_face_mm: toInt(row.max_face_mm, 9999),
     drill_8mm: !!row.drill_8mm, drill_22mm: !!row.drill_22mm, notes: row.notes || '',
+    rates: Array.isArray(row.rates) ? row.rates : [],
+    reg_hrs: toNumber(row.reg_hrs, 8),
+    ot_hrs: toNumber(row.ot_hrs, 4),
   };
 }
 
@@ -789,25 +806,28 @@ app.get('/api/cutting-machines', asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/cutting-machines', asyncRoute(async (req, res) => {
-  const { name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes } = req.body;
+  const { name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes, rates, reg_hrs, ot_hrs } = req.body;
   const result = await pool.query(
-    `INSERT INTO cutting_machines (name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes, sort_order)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,(SELECT COALESCE(MAX(sort_order),0)+1 FROM cutting_machines))
+    `INSERT INTO cutting_machines (name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes, rates, reg_hrs, ot_hrs, sort_order)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,(SELECT COALESCE(MAX(sort_order),0)+1 FROM cutting_machines))
      RETURNING *`,
     [name||'เครื่องตัด', toInt(count,1), toInt(min_kva,50), toInt(max_kva,1000), toNumber(hrs_per_unit,2.5),
-     !!laser, !!m4, toInt(min_face_mm,1), toInt(max_face_mm,9999), !!drill_8mm, !!drill_22mm, notes||'']
+     !!laser, !!m4, toInt(min_face_mm,1), toInt(max_face_mm,9999), !!drill_8mm, !!drill_22mm, notes||'',
+     JSON.stringify(Array.isArray(rates) ? rates : []), toNumber(reg_hrs,8), toNumber(ot_hrs,4)]
   );
   res.status(201).json(rowToCuttingMachine(result.rows[0]));
 }));
 
 app.put('/api/cutting-machines/:id', asyncRoute(async (req, res) => {
-  const { name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes } = req.body;
+  const { name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes, rates, reg_hrs, ot_hrs } = req.body;
   const result = await pool.query(
     `UPDATE cutting_machines SET name=$2, count=$3, min_kva=$4, max_kva=$5, hrs_per_unit=$6,
-     laser=$7, m4=$8, min_face_mm=$9, max_face_mm=$10, drill_8mm=$11, drill_22mm=$12, notes=$13, updated_at=now()
+     laser=$7, m4=$8, min_face_mm=$9, max_face_mm=$10, drill_8mm=$11, drill_22mm=$12, notes=$13, rates=$14,
+     reg_hrs=$15, ot_hrs=$16, updated_at=now()
      WHERE id=$1 RETURNING *`,
     [req.params.id, name, toInt(count,1), toInt(min_kva,50), toInt(max_kva,1000), toNumber(hrs_per_unit,2.5),
-     !!laser, !!m4, toInt(min_face_mm,1), toInt(max_face_mm,9999), !!drill_8mm, !!drill_22mm, notes||'']
+     !!laser, !!m4, toInt(min_face_mm,1), toInt(max_face_mm,9999), !!drill_8mm, !!drill_22mm, notes||'',
+     JSON.stringify(Array.isArray(rates) ? rates : []), toNumber(reg_hrs,8), toNumber(ot_hrs,4)]
   );
   if (!result.rowCount) return res.status(404).json({ error: 'Machine not found' });
   res.json(rowToCuttingMachine(result.rows[0]));
@@ -816,6 +836,20 @@ app.put('/api/cutting-machines/:id', asyncRoute(async (req, res) => {
 app.delete('/api/cutting-machines/:id', asyncRoute(async (req, res) => {
   await pool.query('DELETE FROM cutting_machines WHERE id = $1', [req.params.id]);
   res.status(204).send();
+}));
+
+app.get('/api/cutting-rates', asyncRoute(async (req, res) => {
+  const result = await pool.query('SELECT rates FROM cutting_rates WHERE id=1');
+  res.json(result.rows[0]?.rates ?? []);
+}));
+
+app.put('/api/cutting-rates', asyncRoute(async (req, res) => {
+  const rates = Array.isArray(req.body) ? req.body : [];
+  await pool.query(
+    'INSERT INTO cutting_rates (id, rates) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET rates=EXCLUDED.rates',
+    [JSON.stringify(rates)]
+  );
+  res.json(rates);
 }));
 
 app.get('/api/coil-plan', asyncRoute(async (req, res) => {

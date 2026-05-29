@@ -19,12 +19,17 @@ export interface Order {
   due_box_ctrl?: string; raw_mat?: string; lv?: string; hv?: string
 }
 
+export interface CuttingRate { kva: number; hrs: number }
+
 export interface CuttingMachine {
   id: number; name: string; count: number
   min_kva: number; max_kva: number; hrs_per_unit: number
   laser: boolean; m4: boolean
   min_face_mm: number; max_face_mm: number
   drill_8mm: boolean; drill_22mm: boolean; notes: string
+  reg_hrs: number    // regular working hours per day (default 8)
+  ot_hrs: number     // max OT hours per day (default 4)
+  rates?: CuttingRate[]   // per-kVA cutting hours (overrides hrs_per_unit when matched)
 }
 
 export interface ItemCode { description: string; category: string }

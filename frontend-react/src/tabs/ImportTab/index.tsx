@@ -92,8 +92,13 @@ function detectSlashFmt(rows: unknown[][], dateCols: number[]): 'MM/DD' | 'DD/MM
   return 'MM/DD'   // default: Excel US format
 }
 
+/** Format a Date as local YYYY-MM-DD (avoids UTC timezone shift from .toISOString()) */
+function localISO(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+}
+
 function parseDate(raw: unknown, fmt: 'MM/DD' | 'DD/MM' = 'MM/DD'): string {
-  const fallback = () => new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10)
+  const fallback = () => localISO(new Date(Date.now() + 30 * 86400000))
   if (!raw) return fallback()
   const s = String(raw).trim()
   if (!s || s === '-' || s === '—') return fallback()
@@ -110,9 +115,9 @@ function parseDate(raw: unknown, fmt: 'MM/DD' | 'DD/MM' = 'MM/DD'): string {
     return `${year}-${a.padStart(2,'0')}-${b.padStart(2,'0')}`  // MM/DD
   }
   const n = parseInt(s)
-  if (!isNaN(n) && n > 40000) return new Date(new Date(1899, 11, 30).getTime() + n * 86400000).toISOString().slice(0, 10)
+  if (!isNaN(n) && n > 40000) return localISO(new Date(new Date(1899, 11, 30).getTime() + n * 86400000))
   const d3 = new Date(s)
-  if (!isNaN(d3.getTime())) return d3.toISOString().slice(0, 10)
+  if (!isNaN(d3.getTime())) return localISO(d3)
   return fallback()
 }
 
@@ -164,7 +169,7 @@ function planDateToWeekStart(isoDate: string): string {
   if (isNaN(d.getTime())) return isoDate
   const dow = d.getDay()
   d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow))
-  return d.toISOString().slice(0, 10)
+  return localISO(d)
 }
 
 // ── Coil Plan helpers — ported from test.html processRows ──
@@ -582,12 +587,12 @@ export default function ImportTab() {
     setMpCoilImporting(true)
     try {
       const newOrders: Order[] = mpCoilParsed.map((r, idx) => {
-        const deadline = dmyToISO(r.due_so) || dmyToISO(r.enter_test) || r.plan_date || new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10)
+        const deadline = dmyToISO(r.due_so) || dmyToISO(r.enter_test) || r.plan_date || localISO(new Date(Date.now() + 30 * 86400000))
         const id = `${r.plan_date}_${String(idx).padStart(4, '0')}_${r.sap_so || 'x'}`
         const d = new Date(r.plan_date + 'T00:00:00')
         const dow = d.getDay()
         d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow))
-        const week_start = d.toISOString().slice(0, 10)
+        const week_start = localISO(d)
         return {
           id,
           product: itemCodeToProduct(r.item_code) || (r.kva <= 160 ? 'tr.160kVA' : r.kva <= 630 ? 'tr.630kVA' : r.kva <= 2000 ? 'tr.2000kVA' : 'tr.4000kVA'),
