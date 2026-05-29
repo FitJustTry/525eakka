@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import { api } from '../../api'
 import { useApp } from '../../context/AppContext'
-import type { CuttingMachine, CuttingRate, Order } from '../../types'
+import type { CuttingMachine, CuttingRate, Order, WCConfig } from '../../types'
 import { decodeItemInfo } from '../../utils/itemCodeDecode'
 import styles from './CuttingMachines.module.css'
 
@@ -16,7 +16,27 @@ function getHrsForKva(m: CuttingMachine, kva: number, globalRates: CuttingRate[]
   return match ? match.hrs : m.hrs_per_unit
 }
 
+/** Returns true if the machine is scheduled to run on this day of week (1=Mon … 6=Sat) */
+function isMachineOn(m: CuttingMachine, dayOfWeek: number): boolean {
+  return !(m.off_days ?? []).includes(dayOfWeek)
+}
+
+/** Effective hours from WC Config (if wc_id set) or machine's own reg_hrs/ot_hrs */
+function resolveHours(m: CuttingMachine, wcConfig: Record<string, WCConfig>, isSat: boolean, dayOfWeek?: number) {
+  if (dayOfWeek !== undefined && !isMachineOn(m, dayOfWeek)) return { reg: 0, ot: 0 }
+  const wc = m.wc_id ? wcConfig[m.wc_id] : null
+  if (wc) return {
+    reg: isSat ? (wc.sat_hrs ?? 0) : (wc.hrs ?? 8),
+    ot:  isSat ? (wc.sat_ot ?? 0) : (wc.ot  ?? 4),
+  }
+  return {
+    reg: isSat ? (m.reg_hrs ?? 8) / 2 : (m.reg_hrs ?? 8),
+    ot:  isSat ? (m.ot_hrs  ?? 4) / 2 : (m.ot_hrs  ?? 4),
+  }
+}
+
 const DAY_TH = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์']
+const DAY_SHORT = ['อา','จ','อ','พ','พฤ','ศ','ส']
 const REG_PER = 5 * 8 + 1 * 4   // 44h/week regular
 const OT_PER  = 5 * 4            // 20h max OT
 
@@ -138,9 +158,12 @@ function scheduleWeekWithCarryOver(
     let carryQueue: { order: Order; remainingQty: number; isCarryOver: boolean }[] = []
 
     for (const { dStr, asgn } of assignedPerDay) {
-      const isSat = new Date(dStr + 'T00:00:00').getDay() === 6
-      const regCap = (isSat ? m.reg_hrs / 2 : m.reg_hrs) * (m.count || 1)
-      const otCap  = (isSat ? m.ot_hrs  / 2 : m.ot_hrs)  * (m.count || 1)
+      const dow = new Date(dStr + 'T00:00:00').getDay()
+      const isSat = dow === 6
+      // Machine off today? → zero capacity, everything carries over
+      const machineOff = !isMachineOn(m, dow)
+      const regCap = machineOff ? 0 : (isSat ? m.reg_hrs / 2 : m.reg_hrs) * (m.count || 1)
+      const otCap  = machineOff ? 0 : (isSat ? m.ot_hrs  / 2 : m.ot_hrs)  * (m.count || 1)
 
       // Add today's new orders ONLY after carry-over (appended to queue)
       const todayOrders = asgn.get(m.id) ?? []
@@ -202,6 +225,90 @@ function scheduleWeekWithCarryOver(
   return result
 }
 
+/** Pull-forward: machine works through all week's orders continuously, no idle time */
+function schedulePullForward(
+  weekOrders: Order[], machines: CuttingMachine[],
+  products: Record<string, { kva?: number }>, globalRates: CuttingRate[],
+  wcConfig: Record<string, WCConfig>, days: Date[], machIdx: Map<number, number>
+): Map<number, Map<string, MachineDaySched>> {
+  const result = new Map<number, Map<string, MachineDaySched>>()
+  const globalAsgn = assignOrders(weekOrders, machines, products, globalRates, new Map<number, number>(), new Map(machIdx))
+  for (const m of machines) {
+    const mMap = new Map<string, MachineDaySched>()
+    result.set(m.id, mMap)
+    const queue: { order: Order; remainingHrs: number }[] =
+      (globalAsgn.get(m.id) ?? [])
+        .sort((a, b) => (a.plan_date ?? '').localeCompare(b.plan_date ?? ''))
+        .map(o => ({ order: o, remainingHrs: o.qty * getHrsForKva(m, products[o.product]?.kva ?? o.kva ?? 0, globalRates) }))
+    let qi = 0
+    for (const d of days) {
+      const dStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+      const dow = d.getDay(); const isSat = dow === 6
+      const { reg, ot } = resolveHours(m, wcConfig, isSat, dow)
+      const regCap = reg * (m.count || 1); const otCap = ot * (m.count || 1)
+      const work: DayWork[] = []; let rem = regCap; let otUsed = 0
+      while (qi < queue.length) {
+        const avail = rem + otCap - otUsed; if (avail <= 0) break
+        const item = queue[qi]
+        const isCarryOver = (item.order.plan_date ?? '') < dStr
+        if (item.remainingHrs <= avail) {
+          const ot2 = Math.max(0, item.remainingHrs - rem); rem = Math.max(0, rem - item.remainingHrs); otUsed += ot2
+          work.push({ order: item.order, hrsWorked: item.remainingHrs, isComplete: true, isCarryOver, carriesOver: false }); qi++
+        } else {
+          const h = avail; const ot2 = Math.max(0, h - rem); rem = 0; otUsed += ot2
+          work.push({ order: item.order, hrsWorked: h, isComplete: false, isCarryOver, carriesOver: true }); item.remainingHrs -= h; break
+        }
+      }
+      mMap.set(dStr, { regHrs: regCap - Math.max(0, rem), otHrs: otUsed, otNeeded: otUsed, work, hasCarryOver: work.some(w => w.isCarryOver), carriesForward: qi < queue.length })
+    }
+  }
+  return result
+}
+
+/** Smart OT: use minimum weekday OT to avoid carry-overs; Saturday = 0 OT */
+function scheduleSmartOT(
+  assignedPerDay: { dStr: string; asgn: Map<number, Order[]> }[], machines: CuttingMachine[],
+  products: Record<string, { kva?: number }>, globalRates: CuttingRate[], wcConfig: Record<string, WCConfig>
+): Map<number, Map<string, MachineDaySched>> {
+  const result = new Map<number, Map<string, MachineDaySched>>()
+  for (const m of machines) {
+    const mMap = new Map<string, MachineDaySched>(); result.set(m.id, mMap)
+    let carryQueue: { order: Order; remainingHrs: number; isCarryOver: boolean }[] = []
+    for (const { dStr, asgn } of assignedPerDay) {
+      const dow = new Date(dStr + 'T00:00:00').getDay(); const isSat = dow === 6
+      const { reg } = resolveHours(m, wcConfig, isSat, dow)
+      const regCap = reg * (m.count || 1)
+      const maxOt = isSat ? 0 : resolveHours(m, wcConfig, false, dow).ot * (m.count || 1)
+      const todayOrders = asgn.get(m.id) ?? []
+      const fullQueue = [...carryQueue, ...todayOrders.map(o => ({ order: o, remainingHrs: o.qty * getHrsForKva(m, products[o.product]?.kva ?? o.kva ?? 0, globalRates), isCarryOver: false }))]
+      carryQueue = []; const work: DayWork[] = []; let regUsed = 0; let otUsed = 0
+      for (const item of fullQueue) {
+        const regAvail = regCap - regUsed
+        if (regAvail <= 0) { carryQueue.push({ ...item, isCarryOver: true }); continue }
+        if (item.remainingHrs <= regAvail) { regUsed += item.remainingHrs; work.push({ order: item.order, hrsWorked: item.remainingHrs, isComplete: true, isCarryOver: item.isCarryOver, carriesOver: false }) }
+        else { work.push({ order: item.order, hrsWorked: regAvail, isComplete: false, isCarryOver: item.isCarryOver, carriesOver: true }); carryQueue.push({ order: item.order, remainingHrs: item.remainingHrs - regAvail, isCarryOver: true }); regUsed = regCap }
+      }
+      if (!isSat && maxOt > 0 && carryQueue.length > 0) {
+        let otAvail = maxOt; const rescued: typeof carryQueue = []; const remaining: typeof carryQueue = []
+        for (const item of carryQueue) {
+          if (otAvail <= 0) { remaining.push(item); continue }
+          if (item.remainingHrs <= otAvail) {
+            otAvail -= item.remainingHrs; otUsed += item.remainingHrs
+            const p = work.find(w => w.order.id === item.order.id && w.carriesOver)
+            if (p) { p.hrsWorked += item.remainingHrs; p.isComplete = true; p.carriesOver = false }
+            else work.push({ order: item.order, hrsWorked: item.remainingHrs, isComplete: true, isCarryOver: item.isCarryOver, carriesOver: false })
+          } else {
+            remaining.push({ order: item.order, remainingHrs: item.remainingHrs - otAvail, isCarryOver: true }); otUsed += otAvail; otAvail = 0
+          }
+        }
+        carryQueue = remaining
+      }
+      mMap.set(dStr, { regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed, work: work.filter(w => w.hrsWorked > 0.01), hasCarryOver: fullQueue.some(q => q.isCarryOver), carriesForward: carryQueue.length > 0 })
+    }
+  }
+  return result
+}
+
 /** Hard constraint: kVA range only. max_kva ≥ 9999 = ไม่จำกัด (no upper limit). */
 function canMachineCut(m: CuttingMachine, o: { product?: string; kva?: number | null }, products: Record<string, { kva?: number }> = {}): boolean {
   const kva = products[o.product ?? '']?.kva ?? o.kva ?? 0
@@ -228,12 +335,12 @@ function machineTypeLabel(m: CuttingMachine): { label: string; color: string } {
 
 export default function CuttingMachines() {
   const { state, dispatch } = useApp()
-  const { cuttingMachines: machines, orders, products } = state
+  const { cuttingMachines: machines, orders, products, wcConfig } = state
   const [weekOffset, setWeekOffset] = useState(0)
   const [saving, setSaving] = useState<number | null>(null)
   const [selectedCell, setSelectedCell] = useState<{ machineId: number; date: string } | null>(null)
-  const [balanceMode, setBalanceMode] = useState<'daily' | 'weekly'>('daily')
-  const [viewMode, setViewMode] = useState<'table' | 'cards'>('cards')
+  const [balanceMode, setBalanceMode] = useState<'daily' | 'weekly' | 'pull' | 'smart'>('daily')
+  const [viewMode, setViewMode] = useState<'table' | 'cards' | 'pipeline'>('cards')
   const [globalRates, setGlobalRates] = useState<CuttingRate[]>([])
 
   useEffect(() => {
@@ -277,6 +384,17 @@ export default function CuttingMachines() {
     const machine = updated.find(m => m.id === id)!
     setSaving(id)
     await api.cuttingMachines.update(id, machine)
+    setSaving(null)
+  }
+
+  async function toggleOffDay(id: number, dow: number) {
+    const m = machines.find(mc => mc.id === id)!
+    const current = m.off_days ?? []
+    const next = current.includes(dow) ? current.filter(d => d !== dow) : [...current, dow]
+    const updated = machines.map(mc => mc.id === id ? { ...mc, off_days: next } : mc)
+    dispatch({ type: 'SET_CUTTING_MACHINES', machines: updated })
+    setSaving(id)
+    await api.cuttingMachines.update(id, { ...m, off_days: next })
     setSaving(null)
   }
 
@@ -334,9 +452,15 @@ export default function CuttingMachines() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [balanceMode, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}`).join(',')])
 
-  // Carry-over schedule
-  const weekSchedule = useMemo(() =>
-    scheduleWeekWithCarryOver(dailyAssignments, machines, products, globalRates),
+  // Machine index map for tiebreaker
+  const machIdx = useMemo(() => { const mi = new Map<number,number>(); machines.forEach((m,i) => mi.set(m.id,i)); return mi }, [machines.map(m=>m.id).join(',')])  // eslint-disable-line
+
+  // Schedule — algorithm depends on balanceMode
+  const weekSchedule = useMemo(() => {
+    if (balanceMode === 'pull') return schedulePullForward(weekOrders, machines, products, globalRates, wcConfig, days, new Map(machIdx))
+    if (balanceMode === 'smart') return scheduleSmartOT(dailyAssignments, machines, products, globalRates, wcConfig)
+    return scheduleWeekWithCarryOver(dailyAssignments, machines, products, globalRates)
+  },
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
@@ -392,6 +516,7 @@ export default function CuttingMachines() {
                   <th style={{ textAlign: 'center' }}>เจาะรู 22mm</th>
                   <th style={{ textAlign: 'center' }}>ชม.ปกติ/วัน</th>
                   <th style={{ textAlign: 'center' }}>OT สูงสุด/วัน</th>
+                  <th style={{ textAlign: 'center', minWidth: 160 }}>วันทำงาน (คลิกปิด)</th>
                   <th style={{ textAlign: 'left', minWidth: 180 }}>หมายเหตุ / ข้อจำกัด</th>
                   <th style={{ textAlign: 'left' }}>หม้อแปลงที่รองรับ</th>
                   <th />
@@ -494,6 +619,33 @@ export default function CuttingMachines() {
                           style={{ width: 52, color: 'var(--amber)', fontWeight: 700 }} />
                         <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 2 }}>h</span>
                       </td>
+                      {/* Day-on/off picker — Mon=1 … Sat=6 */}
+                      <td style={{ textAlign: 'center' }}>
+                        <div style={{ display: 'flex', gap: 3, justifyContent: 'center' }}>
+                          {[1,2,3,4,5,6].map(dow => {
+                            const isOff = (m.off_days ?? []).includes(dow)
+                            const label = DAY_SHORT[dow]
+                            return (
+                              <button key={dow} onClick={() => toggleOffDay(m.id, dow)}
+                                title={isOff ? `เปิด ${DAY_TH[dow]}` : `ปิด ${DAY_TH[dow]}`}
+                                style={{
+                                  width: 22, height: 22, borderRadius: 4, border: '1px solid var(--bord2)',
+                                  fontSize: 9, fontWeight: 700, cursor: 'pointer',
+                                  background: isOff ? 'rgba(224,90,78,.15)' : 'rgba(166,227,161,.15)',
+                                  color: isOff ? 'var(--red)' : 'var(--green)',
+                                  textDecoration: isOff ? 'line-through' : 'none',
+                                }}>
+                                {label}
+                              </button>
+                            )
+                          })}
+                        </div>
+                        {(m.off_days ?? []).length > 0 && (
+                          <div style={{ fontSize: 8, color: 'var(--red)', marginTop: 3 }}>
+                            ปิด: {(m.off_days ?? []).map(d => DAY_SHORT[d]).join(' ')}
+                          </div>
+                        )}
+                      </td>
                       <td>
                         <input
                           className={styles.input}
@@ -578,23 +730,23 @@ export default function CuttingMachines() {
           <span className={styles.sectionTitle}>แผนการตัดโลหะ — สัปดาห์</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 12 }}>
             <span style={{ fontSize: 10, color: 'var(--txt3)' }}>มุมมอง:</span>
-            {(['cards', 'table'] as const).map(v => (
+            {(['cards', 'table', 'pipeline'] as const).map(v => (
               <button key={v} onClick={() => setViewMode(v)} style={{
                 fontSize: 10, padding: '3px 10px', borderRadius: 12, border: '1px solid var(--bord2)', cursor: 'pointer',
                 background: viewMode === v ? 'var(--blue)' : 'var(--bg3)',
                 color: viewMode === v ? '#000' : 'var(--txt2)', fontWeight: viewMode === v ? 700 : 400,
               }}>
-                {v === 'cards' ? '📋 รายวัน' : '📊 ตาราง'}
+                {v === 'cards' ? '📋 รายวัน' : v === 'table' ? '📊 ตาราง' : '🔄 Pipeline'}
               </button>
             ))}
             <span style={{ fontSize: 10, color: 'var(--txt3)', marginLeft: 6 }}>สมดุล:</span>
-            {(['daily', 'weekly'] as const).map(mode => (
+            {(['daily', 'weekly', 'pull', 'smart'] as const).map(mode => (
               <button key={mode} onClick={() => setBalanceMode(mode)} style={{
                 fontSize: 10, padding: '3px 10px', borderRadius: 12, border: '1px solid var(--bord2)', cursor: 'pointer',
                 background: balanceMode === mode ? 'var(--blue)' : 'var(--bg3)',
                 color: balanceMode === mode ? '#000' : 'var(--txt2)', fontWeight: balanceMode === mode ? 700 : 400,
               }}>
-                {mode === 'daily' ? '📅 รายวัน' : '📆 สัปดาห์'}
+                {mode === 'daily' ? '📅 รายวัน' : mode === 'weekly' ? '📆 สัปดาห์' : mode === 'pull' ? '⏩ เติมเต็ม' : '⚡ Smart OT'}
               </button>
             ))}
           </div>
@@ -661,9 +813,18 @@ export default function CuttingMachines() {
                     {/* Machine rows */}
                     <div style={{ padding: '6px 0' }}>
                       {machines.map(m => {
+                        const dow = d.getDay()
+                        const machOff = !isMachineOn(m, dow)
                         const sched = weekSchedule.get(m.id)?.get(dStr)
+                        // Show "ปิด" row for machines that are off today
+                        if (machOff) return (
+                          <div key={m.id} style={{ display: 'flex', alignItems: 'center', padding: '4px 14px', borderBottom: '0.5px solid var(--bord)', gap: 8, opacity: 0.5 }}>
+                            <div style={{ minWidth: 140, fontSize: 10, fontWeight: 700, color: 'var(--red)' }}>🔴 {m.name}</div>
+                            <span style={{ fontSize: 9, color: 'var(--txt3)' }}>ปิดวันนี้</span>
+                          </div>
+                        )
                         if (!sched || (sched.work.length === 0 && !sched.hasCarryOver)) return null
-                        const isSat = d.getDay() === 6
+                        const isSat = dow === 6
                         const regCap = (isSat ? m.reg_hrs / 2 : m.reg_hrs) * (m.count || 1)
                         const totalH = sched.regHrs + sched.otHrs
                         const timeCol = sched.carriesForward ? 'var(--red)' : sched.otHrs > 0 ? 'var(--amber)' : 'var(--green)'

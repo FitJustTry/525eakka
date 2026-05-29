@@ -27,8 +27,10 @@ export interface CuttingMachine {
   laser: boolean; m4: boolean
   min_face_mm: number; max_face_mm: number
   drill_8mm: boolean; drill_22mm: boolean; notes: string
-  reg_hrs: number    // regular working hours per day (default 8)
-  ot_hrs: number     // max OT hours per day (default 4)
+  reg_hrs: number    // regular hours/day (fallback when no wc_id)
+  ot_hrs: number     // OT hours/day (fallback when no wc_id)
+  wc_id?: string     // links to WC Config — pulls hrs, ot, sat_hrs, sat_ot from DB
+  off_days?: number[] // weekday numbers when machine is OFF (1=Mon … 6=Sat, 0=Sun)
   rates?: CuttingRate[]   // per-kVA cutting hours (overrides hrs_per_unit when matched)
 }
 

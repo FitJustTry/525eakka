@@ -115,6 +115,80 @@ export default function PlanTab() {
         ))}
       </div>
 
+      {/* Daily plan summary — count + kVA per plan_date */}
+      {(() => {
+        const DAY_TH = ['อา','จ','อ','พ','พฤ','ศ','ส']
+        const byDay = new Map<string, { qty: number; kva: number; count: number }>()
+        orders.forEach(o => {
+          if (!o.plan_date) return
+          const key = o.plan_date
+          const kvaTotal = (o.total_kva && o.total_kva > 0) ? o.total_kva : (o.kva ?? 0) * (o.qty ?? 1)
+          if (!byDay.has(key)) byDay.set(key, { qty: 0, kva: 0, count: 0 })
+          const d = byDay.get(key)!
+          d.qty   += o.qty ?? 1
+          d.kva   += kvaTotal
+          d.count += 1
+        })
+        const days = [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+        if (!days.length) return null
+        const totalQty = days.reduce((s, [, d]) => s + d.qty, 0)
+        const totalKva = days.reduce((s, [, d]) => s + d.kva, 0)
+        return (
+          <div style={{ background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 8, overflow: 'hidden', marginBottom: 12 }}>
+            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--bord)', fontSize: 10, fontWeight: 700, color: 'var(--txt3)', textTransform: 'uppercase', letterSpacing: '.1em' }}>
+              แผนผลิตรายวัน — {totalQty} ตัว · {totalKva.toLocaleString()} kVA · {orders.length} orders
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 11 }}>
+                <thead>
+                  <tr>
+                    {(['วันที่','วัน','Orders','ตัว','kVA รวม'] as string[]).map((h, i) => (
+                      <th key={i} style={{ ...th, textAlign: i >= 2 ? 'center' : 'left', minWidth: i === 4 ? 120 : undefined }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {days.map(([date, d]) => {
+                    const dt = new Date(date + 'T00:00:00')
+                    const isSat = dt.getDay() === 6
+                    const hol = holidays[date] || factoryHolidays[date]
+                    const dayName = DAY_TH[dt.getDay()]
+                    const pct = totalKva > 0 ? d.kva / totalKva : 0
+                    return (
+                      <tr key={date} style={{ background: hol ? 'rgba(224,90,78,.04)' : isSat ? 'rgba(224,156,42,.04)' : 'transparent' }}>
+                        <td style={{ ...td, fontFamily: 'var(--mono)', color: 'var(--blue)', fontWeight: 700, whiteSpace: 'nowrap' }}>{date}</td>
+                        <td style={{ ...td, fontWeight: 600, color: isSat ? 'var(--amber)' : hol ? 'var(--red)' : 'var(--txt3)' }}>
+                          {dayName}{hol ? ` — ${hol}` : ''}
+                        </td>
+                        <td style={{ ...td, textAlign: 'center', fontFamily: 'var(--mono)', color: 'var(--txt3)' }}>{d.count}</td>
+                        <td style={{ ...td, textAlign: 'center', fontFamily: 'var(--mono)', fontWeight: 700 }}>{d.qty}</td>
+                        <td style={{ ...td }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--amber)', minWidth: 80, textAlign: 'right' }}>{d.kva.toLocaleString()}</span>
+                            <div style={{ flex: 1, height: 4, background: 'var(--bg3)', borderRadius: 2, overflow: 'hidden', minWidth: 60 }}>
+                              <div style={{ height: '100%', width: `${pct * 100}%`, background: 'var(--amber)', borderRadius: 2 }} />
+                            </div>
+                            <span style={{ fontSize: 9, color: 'var(--txt3)', minWidth: 30 }}>{(pct * 100).toFixed(0)}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr style={{ background: 'var(--bg3)', fontWeight: 700 }}>
+                    <td style={{ ...td }} colSpan={2}>รวมทั้งสัปดาห์</td>
+                    <td style={{ ...td, textAlign: 'center', fontFamily: 'var(--mono)' }}>{orders.length}</td>
+                    <td style={{ ...td, textAlign: 'center', fontFamily: 'var(--mono)', color: 'var(--blue)', fontSize: 13 }}>{totalQty}</td>
+                    <td style={{ ...td, fontFamily: 'var(--mono)', color: 'var(--amber)', fontSize: 13, paddingLeft: 88 }}>{totalKva.toLocaleString()} kVA</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Order × Dept table */}
       <div style={{ background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 8, overflow: 'hidden', marginBottom: 12 }}>
         <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--bord)', fontSize: 10, fontWeight: 700, color: 'var(--txt3)', textTransform: 'uppercase', letterSpacing: '.1em' }}>ชั่วโมงผลิตต่อ Order × แผนก</div>
