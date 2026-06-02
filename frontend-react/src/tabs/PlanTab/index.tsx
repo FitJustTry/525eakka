@@ -115,7 +115,7 @@ export default function PlanTab() {
         ))}
       </div>
 
-      {/* Daily plan summary — count + kVA per plan_date */}
+      {/* Daily plan summary — count + kVA + avg per plan_date */}
       {(() => {
         const DAY_TH = ['อา','จ','อ','พ','พฤ','ศ','ส']
         const byDay = new Map<string, { qty: number; kva: number; count: number }>()
@@ -133,54 +133,111 @@ export default function PlanTab() {
         if (!days.length) return null
         const totalQty = days.reduce((s, [, d]) => s + d.qty, 0)
         const totalKva = days.reduce((s, [, d]) => s + d.kva, 0)
+
+        // Group days into weeks (Mon–Sat)
+        const getWeekStart = (date: string) => {
+          const d = new Date(date + 'T00:00:00')
+          const dow = d.getDay()
+          d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow))
+          return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+        }
+        const weekGroups = new Map<string, [string, { qty: number; kva: number; count: number }][]>()
+        days.forEach(entry => {
+          const ws = getWeekStart(entry[0])
+          if (!weekGroups.has(ws)) weekGroups.set(ws, [])
+          weekGroups.get(ws)!.push(entry)
+        })
+        const weeks = [...weekGroups.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+
         return (
           <div style={{ background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 8, overflow: 'hidden', marginBottom: 12 }}>
             <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--bord)', fontSize: 10, fontWeight: 700, color: 'var(--txt3)', textTransform: 'uppercase', letterSpacing: '.1em' }}>
-              แผนผลิตรายวัน — {totalQty} ตัว · {totalKva.toLocaleString()} kVA · {orders.length} orders
+              แผนผลิตรายวัน — {totalQty} ตัว · {totalKva.toLocaleString()} kVA · {orders.length} orders · {weeks.length} สัปดาห์
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 11 }}>
                 <thead>
                   <tr>
-                    {(['วันที่','วัน','Orders','ตัว','kVA รวม'] as string[]).map((h, i) => (
-                      <th key={i} style={{ ...th, textAlign: i >= 2 ? 'center' : 'left', minWidth: i === 4 ? 120 : undefined }}>{h}</th>
+                    {(['วันที่','วัน','Orders','ตัว','kVA รวม','kVA เฉลี่ย/ตัว'] as string[]).map((h, i) => (
+                      <th key={i} style={{ ...th, textAlign: i >= 2 ? 'right' : 'left', minWidth: i === 4 ? 120 : undefined }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {days.map(([date, d]) => {
+                  {weeks.map(([weekStart, weekDays]) => {
+                    const wQty = weekDays.reduce((s, [, d]) => s + d.qty, 0)
+                    const wKva = weekDays.reduce((s, [, d]) => s + d.kva, 0)
+                    const wOrders = weekDays.reduce((s, [, d]) => s + d.count, 0)
+                    const weekEnd = new Date(weekStart + 'T00:00:00')
+                    weekEnd.setDate(weekEnd.getDate() + 5)
+                    const weekEndStr = `${weekEnd.getDate().toString().padStart(2,'0')}/${(weekEnd.getMonth()+1).toString().padStart(2,'0')}`
+                    const weekStartStr = `${new Date(weekStart+'T00:00:00').getDate().toString().padStart(2,'0')}/${(new Date(weekStart+'T00:00:00').getMonth()+1).toString().padStart(2,'0')}`
+                    return (
+                      <>
+                        {/* Week header row */}
+                        <tr key={`week-${weekStart}`} style={{ background: 'rgba(137,180,250,.06)', borderTop: '2px solid rgba(137,180,250,.3)' }}>
+                          <td colSpan={2} style={{ ...td, fontWeight: 700, color: 'var(--blue)', fontSize: 11 }}>
+                            📅 สัปดาห์ {weekStartStr} – {weekEndStr}
+                          </td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--txt3)' }}>{wOrders}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--amber)' }}>{wQty}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--blue)', fontWeight: 700 }}>{wKva.toLocaleString()}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--txt3)' }}>
+                            {wQty > 0 ? Math.round(wKva / wQty).toLocaleString() : '—'}
+                          </td>
+                        </tr>
+                        {/* Day rows within this week */}
+                        {weekDays.map(([date, d]) => {
                     const dt = new Date(date + 'T00:00:00')
                     const isSat = dt.getDay() === 6
                     const hol = holidays[date] || factoryHolidays[date]
                     const dayName = DAY_TH[dt.getDay()]
-                    const pct = totalKva > 0 ? d.kva / totalKva : 0
+                    const pct = wKva > 0 ? d.kva / wKva : 0
                     return (
                       <tr key={date} style={{ background: hol ? 'rgba(224,90,78,.04)' : isSat ? 'rgba(224,156,42,.04)' : 'transparent' }}>
-                        <td style={{ ...td, fontFamily: 'var(--mono)', color: 'var(--blue)', fontWeight: 700, whiteSpace: 'nowrap' }}>{date}</td>
+                        <td style={{ ...td, fontFamily: 'var(--mono)', color: 'var(--txt2)', paddingLeft: 24, whiteSpace: 'nowrap' }}>{date}</td>
                         <td style={{ ...td, fontWeight: 600, color: isSat ? 'var(--amber)' : hol ? 'var(--red)' : 'var(--txt3)' }}>
                           {dayName}{hol ? ` — ${hol}` : ''}
                         </td>
-                        <td style={{ ...td, textAlign: 'center', fontFamily: 'var(--mono)', color: 'var(--txt3)' }}>{d.count}</td>
-                        <td style={{ ...td, textAlign: 'center', fontFamily: 'var(--mono)', fontWeight: 700 }}>{d.qty}</td>
+                        <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--txt3)' }}>{d.count}</td>
+                        <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--amber)' }}>{d.qty}</td>
                         <td style={{ ...td }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--amber)', minWidth: 80, textAlign: 'right' }}>{d.kva.toLocaleString()}</span>
-                            <div style={{ flex: 1, height: 4, background: 'var(--bg3)', borderRadius: 2, overflow: 'hidden', minWidth: 60 }}>
-                              <div style={{ height: '100%', width: `${pct * 100}%`, background: 'var(--amber)', borderRadius: 2 }} />
+                            <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt2)', minWidth: 80, textAlign: 'right' }}>{d.kva.toLocaleString()}</span>
+                            <div style={{ flex: 1, height: 3, background: 'var(--bg3)', borderRadius: 2, overflow: 'hidden', minWidth: 60 }}>
+                              <div style={{ height: '100%', width: `${pct * 100}%`, background: 'var(--blue)', borderRadius: 2, opacity: 0.5 }} />
                             </div>
                             <span style={{ fontSize: 9, color: 'var(--txt3)', minWidth: 30 }}>{(pct * 100).toFixed(0)}%</span>
                           </div>
                         </td>
+                        <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--txt3)' }}>
+                          {d.qty > 0 ? Math.round(d.kva / d.qty).toLocaleString() : '—'}
+                        </td>
                       </tr>
+                    )})}
+                        {/* Week subtotal row */}
+                        <tr style={{ background: 'rgba(137,180,250,.1)', borderBottom: '2px solid rgba(137,180,250,.25)', fontWeight: 700 }}>
+                          <td colSpan={2} style={{ ...td, color: 'var(--blue)', fontSize: 10 }}>รวมสัปดาห์ {weekStartStr} – {weekEndStr}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--txt2)' }}>{wOrders}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--amber)', fontSize: 12 }}>{wQty}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--blue)', fontSize: 12 }}>{wKva.toLocaleString()}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--txt3)' }}>
+                            {wQty > 0 ? Math.round(wKva / wQty).toLocaleString() : '—'}
+                          </td>
+                        </tr>
+                      </>
                     )
                   })}
                 </tbody>
                 <tfoot>
-                  <tr style={{ background: 'var(--bg3)', fontWeight: 700 }}>
-                    <td style={{ ...td }} colSpan={2}>รวมทั้งสัปดาห์</td>
-                    <td style={{ ...td, textAlign: 'center', fontFamily: 'var(--mono)' }}>{orders.length}</td>
-                    <td style={{ ...td, textAlign: 'center', fontFamily: 'var(--mono)', color: 'var(--blue)', fontSize: 13 }}>{totalQty}</td>
-                    <td style={{ ...td, fontFamily: 'var(--mono)', color: 'var(--amber)', fontSize: 13, paddingLeft: 88 }}>{totalKva.toLocaleString()} kVA</td>
+                  <tr style={{ background: 'var(--bg3)', fontWeight: 700, borderTop: '2px solid var(--bord2)' }}>
+                    <td style={{ ...td }} colSpan={2}>รวมทั้งหมด ({weeks.length} สัปดาห์)</td>
+                    <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)' }}>{orders.length}</td>
+                    <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--amber)', fontSize: 13 }}>{totalQty}</td>
+                    <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--blue)', fontSize: 13 }}>{totalKva.toLocaleString()}</td>
+                    <td style={{ ...td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--txt3)' }}>
+                      {totalQty > 0 ? Math.round(totalKva / totalQty).toLocaleString() : '—'}
+                    </td>
                   </tr>
                 </tfoot>
               </table>

@@ -245,15 +245,350 @@ interface MachineDaySched {
 }
 
 /**
- * Simulates week day-by-day with carry-over.
- * Machine finishes current order before accepting new ones.
- * Returns Map<machineId, Map<dateStr, MachineDaySched>>
+ * ═══════════════════════════════════════════════════════════════
+ *  FASTEST SCHEDULER — 🏎 เร็วสุด (3 modes, one per OT policy)
+ * ═══════════════════════════════════════════════════════════════
+ *
+ *  Key difference from weekly shared-pool mode:
+ *    • Expands every order into INDIVIDUAL TRANSFORMER UNITS
+ *      e.g. 300kVA ×5 → five separate 1-unit slots, any machine can take any unit
+ *    • Machines can split a multi-unit order: Machine3 cuts 2, Machine5 cuts 3
+ *    • Goal: complete ALL transformers in minimum possible wall-clock time
+ *    • Doesn't care about SAP SO grouping — only cares about total completion time
+ *
+ *  Pool: all individual units sorted by processing time DESC (LPT heuristic)
+ *  Simulation: all machines run simultaneously, each pulling one unit at a time
  */
+function scheduleFastest(
+  weekOrders: Order[],
+  machines: CuttingMachine[],
+  products: Record<string, { kva?: number }>,
+  globalRates: CuttingRate[],
+  wcConfig: Record<string, WCConfig>,
+  days: Date[],
+  otPolicy: 'none' | 'smart' | 'full'
+): Map<number, Map<string, MachineDaySched>> {
+  const result = new Map<number, Map<string, MachineDaySched>>()
+  if (!machines.length || !weekOrders.length) return result
+
+  // ── Expand orders → individual units ────────────────────────
+  interface Unit { order: Order; unitIndex: number; hrs: number }
+  const allUnits: Unit[] = []
+  for (const o of weekOrders) {
+    const kva = products[o.product]?.kva ?? o.kva ?? 0
+    for (let ui = 0; ui < o.qty; ui++) {
+      const hrs = getHrsForKva(
+        machines.find(m => canMachineCut(m, o, products)) ?? machines[0],
+        kva, globalRates
+      )
+      allUnits.push({ order: o, unitIndex: ui, hrs })
+    }
+  }
+  // Sort: largest processing time first (LPT minimises makespan)
+  allUnits.sort((a, b) => b.hrs - a.hrs)
+  const pool = [...allUnits]
+  const taken = new Set<string>()  // key = orderId_unitIndex
+
+  // ── Per-machine state ────────────────────────────────────────
+  type MS = { currentUnit: Unit | null; rem: number; isCarryOver: boolean; mMap: Map<string, MachineDaySched> }
+  const mst = new Map<number, MS>()
+  machines.forEach(m => { mst.set(m.id, { currentUnit: null, rem: 0, isCarryOver: false, mMap: new Map() }); result.set(m.id, mst.get(m.id)!.mMap) })
+
+  // ── Simulate day-by-day, all machines simultaneously ─────────
+  for (let di = 0; di < days.length; di++) {
+    const d = days[di]; const dow = d.getDay(); const isSat = dow === 6
+    const dStr = fmtISO(d)
+
+    for (const m of machines) {
+      const st = mst.get(m.id)!
+      const { reg, ot } = resolveHours(m, wcConfig, isSat, dow)
+      const regCap = reg * (m.count || 1); const otCap = ot * (m.count || 1)
+      if (regCap === 0 && otCap === 0) { st.mMap.set(dStr, { regHrs:0, otHrs:0, otNeeded:0, work:[], hasCarryOver:false, carriesForward: st.rem>0 }); continue }
+
+      // OT policy
+      let effectiveOtCap = 0
+      if (otPolicy === 'full') {
+        effectiveOtCap = otCap
+      } else if (otPolicy === 'smart') {
+        // OT only when carry-over work won't finish in remaining regular days
+        // Try regular hours first — OT is truly last resort
+        const workDaysLeft = days.slice(di).filter(dd => isMachineOn(m, dd.getDay()))
+        const regLeft = workDaysLeft.reduce((s, dd) => { const { reg: r } = resolveHours(m, wcConfig, dd.getDay()===6, dd.getDay()); return s + r*(m.count||1) }, 0)
+        // Only count carry-over (in-progress order) + units this machine has exclusively
+        const carryHrs = st.rem > 0 ? st.rem : 0
+        if (carryHrs > regLeft) effectiveOtCap = Math.min(otCap, carryHrs - regLeft)
+      }
+
+      const work: DayWork[] = []; let avail = regCap + effectiveOtCap; let regUsed = 0; let otUsed = 0
+
+      while (avail > 0) {
+        if (st.rem <= 0) {
+          // Pull next eligible unit from pool
+          const idx = pool.findIndex(u => !taken.has(`${u.order.id}_${u.unitIndex}`) && canMachineCut(m, u.order, products))
+          if (idx < 0) break
+          const u = pool[idx]
+          taken.add(`${u.order.id}_${u.unitIndex}`)
+          st.currentUnit = u
+          st.rem = getHrsForKva(m, products[u.order.product]?.kva ?? u.order.kva ?? 0, globalRates)
+          st.isCarryOver = false
+        }
+        const h = Math.min(st.rem, avail)
+        const ot2 = Math.max(0, h - (regCap - regUsed))
+        regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h; st.rem -= h
+        // One unit = one DayWork entry (group same order+day into one work item if consecutive)
+        const lastW = work[work.length - 1]
+        if (lastW && lastW.order.id === st.currentUnit!.order.id && !lastW.isComplete) {
+          lastW.hrsWorked += h; lastW.isComplete = st.rem <= 0; lastW.carriesOver = st.rem > 0 && avail <= 0
+        } else {
+          work.push({ order: st.currentUnit!.order, hrsWorked: h, isComplete: st.rem <= 0, isCarryOver: st.isCarryOver, carriesOver: st.rem > 0 && avail <= 0 })
+        }
+        if (st.rem <= 0) { st.isCarryOver = false } else { st.isCarryOver = true; break }
+      }
+      const hasMore = st.rem > 0 || pool.some(u => !taken.has(`${u.order.id}_${u.unitIndex}`) && canMachineCut(m, u.order, products))
+      st.mMap.set(dStr, { regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed, work, hasCarryOver: work.some(w => w.isCarryOver), carriesForward: hasMore })
+    }
+  }
+  return result
+}
+
+/** Priority rank: หลัก=1, Fast=2, เสริม=3, other=4 */
+function catRank(o: Order): number {
+  if (o.category === 'หลัก') return 1
+  if (o.category === 'Fast')  return 2
+  if (o.category === 'เสริม') return 3
+  return 4
+}
+
+/** Sort shared pool by strategy */
+function sortPool(
+  orders: Order[], strategy: string,
+  products: Record<string, { kva?: number }>, globalRates: CuttingRate[], machines: CuttingMachine[],
+  nextWeekOrders: Order[] = []
+): Order[] {
+  const m0 = machines[0]
+  const hrs = (o: Order) => m0 ? o.qty * getHrsForKva(m0, products[o.product]?.kva ?? o.kva ?? 0, globalRates) : 0
+  const kvaOf = (o: Order) => products[o.product]?.kva ?? o.kva ?? 0
+  const pool = [...orders]
+
+  if (strategy === 'deadline') {
+    // Closest deadline first; tie → LPT
+    return pool.sort((a, b) => {
+      const da = (a.due_so || a.deadline || '9999'), db = (b.due_so || b.deadline || '9999')
+      if (da !== db) return da.localeCompare(db)
+      return hrs(b) - hrs(a)
+    })
+  }
+  if (strategy === 'priority') {
+    // หลัก → Fast → เสริม → other; within same priority → LPT
+    return pool.sort((a, b) => {
+      const ra = catRank(a), rb = catRank(b)
+      if (ra !== rb) return ra - rb
+      return hrs(b) - hrs(a)
+    })
+  }
+  if (strategy === 'interweek') {
+    // If next week has many large orders → do small ones this week first (free up big-machine capacity)
+    // If next week is light → do large ones this week first
+    const nextWeekLargeHrs = nextWeekOrders.reduce((s, o) => s + hrs(o), 0)
+    const thisWeekAvgHrs = orders.length > 0 ? orders.reduce((s, o) => s + hrs(o), 0) / orders.length : 0
+    const nextWeekHeavy = nextWeekLargeHrs > thisWeekAvgHrs * orders.length * 0.5
+    return pool.sort((a, b) => nextWeekHeavy ? hrs(a) - hrs(b) : hrs(b) - hrs(a))
+  }
+  if (strategy === 'batch_kva') {
+    // Group by kVA bucket (50, 100, 160, 250, 300, 630, 1000, 2000, 3500, 7000+)
+    // Within same bucket → LPT
+    const bucket = (kva: number) =>
+      kva <= 50 ? 0 : kva <= 100 ? 1 : kva <= 160 ? 2 : kva <= 250 ? 3 :
+      kva <= 300 ? 4 : kva <= 630 ? 5 : kva <= 1000 ? 6 :
+      kva <= 2000 ? 7 : kva <= 3500 ? 8 : 9
+    return pool.sort((a, b) => {
+      const ba = bucket(kvaOf(a)), bb = bucket(kvaOf(b))
+      if (ba !== bb) return ba - bb
+      return hrs(b) - hrs(a)
+    })
+  }
+  // Default: plan_date then LPT
+  return pool.sort((a, b) => {
+    const pd = (a.plan_date ?? '').localeCompare(b.plan_date ?? '')
+    return pd !== 0 ? pd : hrs(b) - hrs(a)
+  })
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════
+ *  UNIFIED SCHEDULER — handles all 6 modes
+ * ═══════════════════════════════════════════════════════════════
+ *
+ *  approach: 'daily'  → respect plan_date, assign per day
+ *            'weekly' → global LPT, one order at a time, ignore plan_date
+ *
+ *  otPolicy: 'none'   → reg hours only, no OT ever
+ *            'smart'  → OT only when remaining work > remaining reg capacity
+ *            'full'   → always use reg + max OT every day
+ *
+ *  Carry-over:
+ *    Unfinished orders carry to next day automatically.
+ *    End of week → stays in queue (next week picks up via includePrevCarry).
+ */
+function scheduleMode(
+  weekOrders: Order[],
+  dailyAssignments: { dStr: string; asgn: Map<number, Order[]> }[],
+  machines: CuttingMachine[],
+  products: Record<string, { kva?: number }>,
+  globalRates: CuttingRate[],
+  wcConfig: Record<string, WCConfig>,
+  days: Date[],
+  machIdx: Map<number, number>,
+  approach: 'daily' | 'weekly',
+  otPolicy: 'none' | 'smart' | 'full',
+  sortStrategy = 'plan_date',
+  nextWeekOrders: Order[] = []
+): Map<number, Map<string, MachineDaySched>> {
+  const result = new Map<number, Map<string, MachineDaySched>>()
+
+  // ── Build per-machine queues ─────────────────────────────────
+  type QItem = { order: Order; remainingHrs: number; isCarryOver: boolean }
+  const machineQueues = new Map<number, QItem[]>()
+
+  if (approach === 'weekly') {
+    // ── SHARED POOL approach ────────────────────────────────────
+    // All orders in one pool sorted by plan_date (then LPT within same date).
+    // Machines dynamically pull the next eligible order when they finish —
+    // Machine 5 can grab a 160kVA order the moment it becomes available,
+    // even if that order was "planned" for another day.
+    const sharedPool: Order[] = sortPool(weekOrders, sortStrategy, products, globalRates, machines, nextWeekOrders)
+    const taken = new Set<string>()  // order IDs already claimed by a machine
+
+    // Per-machine state: what is each machine working on right now
+    type MState = { currentOrder: Order | null; currentRem: number; isCarryOver: boolean; mMap: Map<string, MachineDaySched> }
+    const machState = new Map<number, MState>()
+    machines.forEach(m => machState.set(m.id, { currentOrder: null, currentRem: 0, isCarryOver: false, mMap: new Map() }))
+    machines.forEach(m => result.set(m.id, machState.get(m.id)!.mMap))
+
+    // Simulate ALL machines simultaneously, day by day
+    for (let di = 0; di < days.length; di++) {
+      const d = days[di]; const dow = d.getDay(); const isSat = dow === 6
+      const dStr = fmtISO(d)
+
+      for (const m of machines) {
+        const st = machState.get(m.id)!
+        const { reg, ot } = resolveHours(m, wcConfig, isSat, dow)
+        const regCap = reg * (m.count || 1); const otCap = ot * (m.count || 1)
+        if (regCap === 0 && otCap === 0) { st.mMap.set(dStr, { regHrs:0, otHrs:0, otNeeded:0, work:[], hasCarryOver:false, carriesForward: st.currentRem > 0 }); continue }
+
+        // Smart OT: check if remaining work fits in remaining regular days
+        let effectiveOtCap = 0
+        if (otPolicy === 'full') {
+          effectiveOtCap = otCap
+        } else if (otPolicy === 'smart') {
+          // OT only for carry-over that won't finish in remaining regular days
+          const workDaysLeft = days.slice(di).filter(dd => isMachineOn(m, dd.getDay()))
+          const regCapLeft = workDaysLeft.reduce((s, dd) => { const isSatDD = dd.getDay() === 6; const { reg: r } = resolveHours(m, wcConfig, isSatDD, dd.getDay()); return s + r * (m.count || 1) }, 0)
+          const carryHrs = st.currentRem > 0 ? st.currentRem : 0
+          if (carryHrs > regCapLeft) effectiveOtCap = Math.min(otCap, carryHrs - regCapLeft)
+        }
+
+        const work: DayWork[] = []; let avail = regCap + effectiveOtCap; let regUsed = 0; let otUsed = 0
+
+        while (avail > 0) {
+          if (st.currentRem <= 0) {
+            // Pull next eligible order from shared pool (drill preference as tiebreaker)
+            const eligible = sharedPool.filter(o => !taken.has(o.id) && canMachineCut(m, o, products))
+            if (!eligible.length) break
+            const next = eligible.reduce((a, b) => drillPrefers(m, b) && !drillPrefers(m, a) ? b : a)
+            taken.add(next.id)
+            st.currentOrder = next
+            st.currentRem = next.qty * getHrsForKva(m, products[next.product]?.kva ?? next.kva ?? 0, globalRates)
+            st.isCarryOver = false
+          }
+          const h = Math.min(st.currentRem, avail)
+          const ot2 = Math.max(0, h - (regCap - regUsed))
+          regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h; st.currentRem -= h
+          work.push({ order: st.currentOrder!, hrsWorked: h, isComplete: st.currentRem <= 0, isCarryOver: st.isCarryOver, carriesOver: st.currentRem > 0 && avail <= 0 })
+          if (st.currentRem <= 0) { st.isCarryOver = false }
+          else { st.isCarryOver = true; break }
+        }
+        const hasMore = st.currentRem > 0 || sharedPool.some(o => !taken.has(o.id) && canMachineCut(m, o, products))
+        st.mMap.set(dStr, { regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed, work, hasCarryOver: work.some(w => w.isCarryOver), carriesForward: hasMore })
+      }
+    }
+    return result
+  } else {
+    // Daily: start empty, add orders on their plan_date
+    machines.forEach(m => machineQueues.set(m.id, []))
+  }
+
+  // ── Simulate day-by-day (daily approach) ────────────────────
+  for (const m of machines) {
+    const mMap = new Map<string, MachineDaySched>()
+    result.set(m.id, mMap)
+    let carryItems: QItem[] = []  // carry-over for daily approach
+
+    for (let di = 0; di < days.length; di++) {
+      const d = days[di]
+      const dStr = fmtISO(d)
+      const dow = d.getDay(); const isSat = dow === 6
+      const { reg, ot } = resolveHours(m, wcConfig, isSat, dow)
+      const regCap = reg * (m.count || 1)
+      const otCap  = ot  * (m.count || 1)
+
+      // ── Compute effective OT cap ───────────────────────────
+      let effectiveOtCap = 0
+      if (otPolicy === 'full') {
+        effectiveOtCap = otCap
+      } else if (otPolicy === 'smart') {
+        // OT only for carry-over that won't finish in remaining regular days
+        const workDaysLeft = days.slice(di).filter(dd => isMachineOn(m, dd.getDay()))
+        const regCapLeft = workDaysLeft.reduce((s, dd) => {
+          const isSatDD = dd.getDay() === 6
+          const { reg: r } = resolveHours(m, wcConfig, isSatDD, dd.getDay())
+          return s + r * (m.count || 1)
+        }, 0)
+        // OT only for actual carry-over hours that won't fit in remaining regular days
+        const carryHrs = carryItems.reduce((s, c) => s + c.remainingHrs, 0)
+        if (carryHrs > regCapLeft) {
+          effectiveOtCap = Math.min(otCap, carryHrs - regCapLeft)
+        }
+      }
+
+      const work: DayWork[] = []
+      let regUsed = 0; let otUsed = 0
+      let avail = regCap + effectiveOtCap
+
+      {
+        // ── Daily: carry queue + today's new orders ───────────
+        const todayOrders = dailyAssignments[di]?.asgn.get(m.id) ?? []
+        const todayItems: QItem[] = todayOrders.map(o => ({
+          order: o, remainingHrs: o.qty * getHrsForKva(m, products[o.product]?.kva ?? o.kva ?? 0, globalRates), isCarryOver: false
+        }))
+        const fullQueue = [...carryItems, ...todayItems]
+        carryItems = []
+        for (const item of fullQueue) {
+          if (avail <= 0) { carryItems.push({ ...item, isCarryOver: true }); continue }
+          const h = Math.min(item.remainingHrs, avail)
+          const ot2 = Math.max(0, h - (regCap - regUsed))
+          regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h
+          const done = h >= item.remainingHrs
+          work.push({ order: item.order, hrsWorked: h, isComplete: done, isCarryOver: item.isCarryOver, carriesOver: !done })
+          if (!done) carryItems.push({ order: item.order, remainingHrs: item.remainingHrs - h, isCarryOver: true })
+        }
+      }
+
+      mMap.set(dStr, {
+        regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed,
+        work, hasCarryOver: work.some(w => w.isCarryOver),
+        carriesForward: approach === 'weekly' ? qi < queue.length : carryItems.length > 0,
+      })
+    }
+  }
+  return result
+}
 function scheduleWeekWithCarryOver(
   assignedPerDay: { dStr: string; asgn: Map<number, Order[]> }[],
   machines: CuttingMachine[],
   products: Record<string, { kva?: number }>,
-  globalRates: CuttingRate[]
+  globalRates: CuttingRate[],
+  noOT = false   // if true → otCap forced to 0 (daily_no_ot mode)
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
 
@@ -270,7 +605,7 @@ function scheduleWeekWithCarryOver(
       // Machine off today? → zero capacity, everything carries over
       const machineOff = !isMachineOn(m, dow)
       const regCap = machineOff ? 0 : (isSat ? m.reg_hrs / 2 : m.reg_hrs) * (m.count || 1)
-      const otCap  = machineOff ? 0 : (isSat ? m.ot_hrs  / 2 : m.ot_hrs)  * (m.count || 1)
+      const otCap  = (machineOff || noOT) ? 0 : (isSat ? m.ot_hrs / 2 : m.ot_hrs) * (m.count || 1)
 
       // Add today's new orders ONLY after carry-over (appended to queue)
       const todayOrders = asgn.get(m.id) ?? []
@@ -332,90 +667,6 @@ function scheduleWeekWithCarryOver(
   return result
 }
 
-/** Pull-forward: machine works through all week's orders continuously, no idle time */
-function schedulePullForward(
-  weekOrders: Order[], machines: CuttingMachine[],
-  products: Record<string, { kva?: number }>, globalRates: CuttingRate[],
-  wcConfig: Record<string, WCConfig>, days: Date[], machIdx: Map<number, number>
-): Map<number, Map<string, MachineDaySched>> {
-  const result = new Map<number, Map<string, MachineDaySched>>()
-  const globalAsgn = assignOrders(weekOrders, machines, products, globalRates, new Map<number, number>(), new Map(machIdx))
-  for (const m of machines) {
-    const mMap = new Map<string, MachineDaySched>()
-    result.set(m.id, mMap)
-    const queue: { order: Order; remainingHrs: number }[] =
-      (globalAsgn.get(m.id) ?? [])
-        .sort((a, b) => (a.plan_date ?? '').localeCompare(b.plan_date ?? ''))
-        .map(o => ({ order: o, remainingHrs: o.qty * getHrsForKva(m, products[o.product]?.kva ?? o.kva ?? 0, globalRates) }))
-    let qi = 0
-    for (const d of days) {
-      const dStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-      const dow = d.getDay(); const isSat = dow === 6
-      const { reg, ot } = resolveHours(m, wcConfig, isSat, dow)
-      const regCap = reg * (m.count || 1); const otCap = ot * (m.count || 1)
-      const work: DayWork[] = []; let rem = regCap; let otUsed = 0
-      while (qi < queue.length) {
-        const avail = rem + otCap - otUsed; if (avail <= 0) break
-        const item = queue[qi]
-        const isCarryOver = (item.order.plan_date ?? '') < dStr
-        if (item.remainingHrs <= avail) {
-          const ot2 = Math.max(0, item.remainingHrs - rem); rem = Math.max(0, rem - item.remainingHrs); otUsed += ot2
-          work.push({ order: item.order, hrsWorked: item.remainingHrs, isComplete: true, isCarryOver, carriesOver: false }); qi++
-        } else {
-          const h = avail; const ot2 = Math.max(0, h - rem); rem = 0; otUsed += ot2
-          work.push({ order: item.order, hrsWorked: h, isComplete: false, isCarryOver, carriesOver: true }); item.remainingHrs -= h; break
-        }
-      }
-      mMap.set(dStr, { regHrs: regCap - Math.max(0, rem), otHrs: otUsed, otNeeded: otUsed, work, hasCarryOver: work.some(w => w.isCarryOver), carriesForward: qi < queue.length })
-    }
-  }
-  return result
-}
-
-/** Smart OT: use minimum weekday OT to avoid carry-overs; Saturday = 0 OT */
-function scheduleSmartOT(
-  assignedPerDay: { dStr: string; asgn: Map<number, Order[]> }[], machines: CuttingMachine[],
-  products: Record<string, { kva?: number }>, globalRates: CuttingRate[], wcConfig: Record<string, WCConfig>
-): Map<number, Map<string, MachineDaySched>> {
-  const result = new Map<number, Map<string, MachineDaySched>>()
-  for (const m of machines) {
-    const mMap = new Map<string, MachineDaySched>(); result.set(m.id, mMap)
-    let carryQueue: { order: Order; remainingHrs: number; isCarryOver: boolean }[] = []
-    for (const { dStr, asgn } of assignedPerDay) {
-      const dow = new Date(dStr + 'T00:00:00').getDay(); const isSat = dow === 6
-      const { reg } = resolveHours(m, wcConfig, isSat, dow)
-      const regCap = reg * (m.count || 1)
-      const maxOt = isSat ? 0 : resolveHours(m, wcConfig, false, dow).ot * (m.count || 1)
-      const todayOrders = asgn.get(m.id) ?? []
-      const fullQueue = [...carryQueue, ...todayOrders.map(o => ({ order: o, remainingHrs: o.qty * getHrsForKva(m, products[o.product]?.kva ?? o.kva ?? 0, globalRates), isCarryOver: false }))]
-      carryQueue = []; const work: DayWork[] = []; let regUsed = 0; let otUsed = 0
-      for (const item of fullQueue) {
-        const regAvail = regCap - regUsed
-        if (regAvail <= 0) { carryQueue.push({ ...item, isCarryOver: true }); continue }
-        if (item.remainingHrs <= regAvail) { regUsed += item.remainingHrs; work.push({ order: item.order, hrsWorked: item.remainingHrs, isComplete: true, isCarryOver: item.isCarryOver, carriesOver: false }) }
-        else { work.push({ order: item.order, hrsWorked: regAvail, isComplete: false, isCarryOver: item.isCarryOver, carriesOver: true }); carryQueue.push({ order: item.order, remainingHrs: item.remainingHrs - regAvail, isCarryOver: true }); regUsed = regCap }
-      }
-      if (!isSat && maxOt > 0 && carryQueue.length > 0) {
-        let otAvail = maxOt; const rescued: typeof carryQueue = []; const remaining: typeof carryQueue = []
-        for (const item of carryQueue) {
-          if (otAvail <= 0) { remaining.push(item); continue }
-          if (item.remainingHrs <= otAvail) {
-            otAvail -= item.remainingHrs; otUsed += item.remainingHrs
-            const p = work.find(w => w.order.id === item.order.id && w.carriesOver)
-            if (p) { p.hrsWorked += item.remainingHrs; p.isComplete = true; p.carriesOver = false }
-            else work.push({ order: item.order, hrsWorked: item.remainingHrs, isComplete: true, isCarryOver: item.isCarryOver, carriesOver: false })
-          } else {
-            remaining.push({ order: item.order, remainingHrs: item.remainingHrs - otAvail, isCarryOver: true }); otUsed += otAvail; otAvail = 0
-          }
-        }
-        carryQueue = remaining
-      }
-      mMap.set(dStr, { regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed, work: work.filter(w => w.hrsWorked > 0.01), hasCarryOver: fullQueue.some(q => q.isCarryOver), carriesForward: carryQueue.length > 0 })
-    }
-  }
-  return result
-}
-
 /** Hard constraint: kVA range only. max_kva ≥ 9999 = ไม่จำกัด (no upper limit). */
 function canMachineCut(m: CuttingMachine, o: { product?: string; kva?: number | null }, products: Record<string, { kva?: number }> = {}): boolean {
   const kva = products[o.product ?? '']?.kva ?? o.kva ?? 0
@@ -444,6 +695,7 @@ export default function CuttingMachines() {
   const { state, dispatch } = useApp()
   const { cuttingMachines: machines, orders, products, wcConfig } = state
   const [weekOffset, setWeekOffset] = useState(0)
+  const [includePrevCarry, setIncludePrevCarry] = useState(false)
   const [planSaving, setPlanSaving] = useState(false)
   const [planSaveMsg, setPlanSaveMsg] = useState<string | null>(null)
   const [snapshots, setSnapshots] = useState<{ id: number; week_start: string; week_end: string; label: string; saved_at: string }[]>([])
@@ -451,7 +703,14 @@ export default function CuttingMachines() {
   const [viewSnap, setViewSnap] = useState<Record<string, unknown> | null>(null)
   const [saving, setSaving] = useState<number | null>(null)
   const [selectedCell, setSelectedCell] = useState<{ machineId: number; date: string } | null>(null)
-  const [balanceMode, setBalanceMode] = useState<'daily' | 'weekly' | 'pull' | 'smart'>('daily')
+  type BalanceMode =
+    | 'daily_no_ot' | 'weekly_no_ot' | 'fastest_no_ot'
+    | 'deadline_no_ot' | 'priority_no_ot' | 'interweek_no_ot' | 'batch_no_ot'
+    | 'daily_smart' | 'weekly_smart' | 'fastest_smart'
+    | 'deadline_smart' | 'priority_smart' | 'interweek_smart' | 'batch_smart'
+    | 'daily_full' | 'weekly_full' | 'fastest_full'
+    | 'deadline_full' | 'priority_full' | 'interweek_full' | 'batch_full'
+  const [balanceMode, setBalanceMode] = useState<BalanceMode>('weekly_no_ot')
   const [viewMode, setViewMode] = useState<'table' | 'cards' | 'pipeline'>('cards')
   const [globalRates, setGlobalRates] = useState<CuttingRate[]>([])
 
@@ -606,18 +865,55 @@ export default function CuttingMachines() {
   const fmtD = (d: Date) => String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0')
   const weekLabel = `${fmtD(mon)} – ${fmtD(sat)}/${String(sat.getFullYear() % 100).padStart(2, '0')}`
 
-  const weekOrders = orders.filter(o => o.plan_date && o.plan_date >= monStr && o.plan_date <= satStr)
+  const currentWeekOrders = orders.filter(o => o.plan_date && o.plan_date >= monStr && o.plan_date <= satStr)
 
   const days = Array.from({ length: 6 }, (_, i) => {
     const d = new Date(mon); d.setDate(mon.getDate() + i); return d
   })
 
-  // Machine index map for tiebreaker (built once)
+  // Machine index map — must be defined before prevCarryOrders
   const machIdx = useMemo(() => {
     const m = new Map<number, number>()
     machines.forEach((mc, i) => m.set(mc.id, i))
     return m
   }, [machines.map(m => m.id).join(',')])  // eslint-disable-line
+
+  // Previous week carry-over: simulate prev week → find orders still in queue at end of Saturday
+  const prevCarryOrders = useMemo(() => {
+    try {
+    if (!includePrevCarry || !machines.length) return [] as Order[]
+    const { mon: prevMon, sat: prevSat } = getWeekRange(weekOffset - 1)
+    const prevMonStr = fmtISO(prevMon); const prevSatStr = fmtISO(prevSat)
+    const prevOrders = orders.filter(o => o.plan_date && o.plan_date >= prevMonStr && o.plan_date <= prevSatStr)
+    if (!prevOrders.length) return [] as Order[]
+    const prevDays = Array.from({ length: 6 }, (_, i) => { const d = new Date(prevMon); d.setDate(prevMon.getDate() + i); return d })
+    // Run same scheduler for previous week
+    const prevDailyAsgn = prevDays.map(d => {
+      const dStr = fmtISO(d); const dow = d.getDay()
+      const active = machines.filter(m => isMachineOn(m, dow))
+      const asgn = assignOrders(prevOrders.filter(o => o.plan_date === dStr), active, products, globalRates, new Map(), new Map(machIdx))
+      return { dStr, asgn }
+    })
+    const prevApproach = balanceMode.startsWith('weekly') ? 'weekly' : 'daily'
+    const prevOtPolicy = balanceMode.endsWith('_no_ot') ? 'none' : balanceMode.endsWith('_smart') ? 'smart' : 'full'
+    const prevSched = scheduleMode(prevOrders, prevDailyAsgn, machines, products, globalRates, wcConfig, prevDays, new Map(machIdx), prevApproach as 'daily'|'weekly', prevOtPolicy as 'none'|'smart'|'full')
+    // Find orders that were NOT completed (still in machine queues at week end)
+    const completedIds = new Set<string>()
+    machines.forEach(m => {
+      prevDays.forEach(d => {
+        prevSched.get(m.id)?.get(fmtISO(d))?.work.forEach(w => { if (w.isComplete) completedIds.add(w.order.id) })
+      })
+    })
+    return prevOrders.filter(o => !completedIds.has(o.id))
+    } catch { return [] as Order[] }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [includePrevCarry, weekOffset, balanceMode, orders.map(o=>o.id+o.qty).join(','), machines.map(m=>m.id).join(',')])
+
+  const weekOrders = [...prevCarryOrders, ...currentWeekOrders]
+  const prevCarryQty = prevCarryOrders.reduce((s, o) => s + o.qty, 0)
+  // Next week orders (for interweek mode)
+  const { mon: nextMon, sat: nextSat } = getWeekRange(weekOffset + 1)
+  const nextWeekOrders = orders.filter(o => o.plan_date && o.plan_date >= fmtISO(nextMon) && o.plan_date <= fmtISO(nextSat))
 
   // Compute optimal daily assignments
   const dailyAssignments = useMemo(() => {
@@ -631,7 +927,7 @@ export default function CuttingMachines() {
       const dayOrds = weekOrders.filter(o => o.plan_date === dStr)
       // Daily mode: each day starts fresh (wall=0) — balance within each day
       // Weekly mode: carry forward cumulative wall — balance across the week
-      const initWall = balanceMode === 'weekly' ? new Map(cumWall) : new Map<number, number>()
+      const initWall = new Map<number, number>()  // all modes use fresh start per day (weekly approach handles order assignment differently)
       const asgn = assignOrders(dayOrds, activeMachines, products, globalRates, initWall, new Map(machIdx))
       // Always accumulate for weekly mode reference
       activeMachines.forEach(m => {
@@ -647,14 +943,27 @@ export default function CuttingMachines() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [balanceMode, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${(m.off_days??[]).join('-')}`).join(',')])
 
-  // Machine index map for tiebreaker
-  const machIdx = useMemo(() => { const mi = new Map<number,number>(); machines.forEach((m,i) => mi.set(m.id,i)); return mi }, [machines.map(m=>m.id).join(',')])  // eslint-disable-line
+
 
   // Schedule — algorithm depends on balanceMode
   const weekSchedule = useMemo(() => {
-    if (balanceMode === 'pull') return schedulePullForward(weekOrders, machines, products, globalRates, wcConfig, days, new Map(machIdx))
-    if (balanceMode === 'smart') return scheduleSmartOT(dailyAssignments, machines, products, globalRates, wcConfig)
-    return scheduleWeekWithCarryOver(dailyAssignments, machines, products, globalRates)
+    // ── ❌ ไม่ OT ─────────────────────────────────────────────────
+    const mi = new Map(machIdx)
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot)
+    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot)
+    const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
+      daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
+      deadline_no_ot: () => sm('none','deadline'), priority_no_ot: () => sm('none','priority'),
+      interweek_no_ot: () => sm('none','interweek'), batch_no_ot: () => sm('none','batch_kva'),
+      daily_smart: () => sd('smart'),   weekly_smart: () => sm('smart'),   fastest_smart: () => sf('smart'),
+      deadline_smart: () => sm('smart','deadline'), priority_smart: () => sm('smart','priority'),
+      interweek_smart: () => sm('smart','interweek'), batch_smart: () => sm('smart','batch_kva'),
+      daily_full: () => sd('full'),     weekly_full: () => sm('full'),     fastest_full: () => sf('full'),
+      deadline_full: () => sm('full','deadline'), priority_full: () => sm('full','priority'),
+      interweek_full: () => sm('full','interweek'), batch_full: () => sm('full','batch_kva'),
+    }
+    return (modeMap[balanceMode] ?? modeMap['weekly_no_ot'])()
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [balanceMode, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
@@ -681,10 +990,14 @@ export default function CuttingMachines() {
             }, 0)
           : 0
       })
-      // Count all orders (complete + in-progress) assigned to this machine
-      const totalQty = days.reduce((s, d) => {
-        const sched = weekSchedule.get(m.id)?.get(fmtISO(d))
-        return s + (sched?.work.reduce((q, w) => q + w.order.qty, 0) ?? 0)
+      // Count each order ONCE (carry-over orders appear on multiple days — use Set to deduplicate)
+      const seenOrders = new Set<string>()
+      days.forEach(d => {
+        weekSchedule.get(m.id)?.get(fmtISO(d))?.work.forEach(w => seenOrders.add(w.order.id))
+      })
+      const totalQty = [...seenOrders].reduce((s, oid) => {
+        const o = weekOrders.find(x => x.id === oid)
+        return s + (o?.qty ?? 0)
       }, 0)
       return { wallHrs, qty: totalQty, regCap: REG_PER, ot: Math.max(0, wallHrs - REG_PER), over: wallHrs > REG_PER + OT_PER }
     })
@@ -990,14 +1303,50 @@ export default function CuttingMachines() {
               </button>
             ))}
             <span style={{ fontSize: 10, color: 'var(--txt3)', marginLeft: 6 }}>สมดุล:</span>
-            {(['daily', 'weekly', 'pull', 'smart'] as const).map(mode => (
-              <button key={mode} onClick={() => setBalanceMode(mode)} style={{
-                fontSize: 10, padding: '3px 10px', borderRadius: 12, border: '1px solid var(--bord2)', cursor: 'pointer',
-                background: balanceMode === mode ? 'var(--blue)' : 'var(--bg3)',
-                color: balanceMode === mode ? '#000' : 'var(--txt2)', fontWeight: balanceMode === mode ? 700 : 400,
-              }}>
-                {mode === 'daily' ? '📅 รายวัน' : mode === 'weekly' ? '📆 สัปดาห์' : mode === 'pull' ? '⏩ เติมเต็ม' : '⚡ Smart OT'}
-              </button>
+            {/* 3 OT policies × 7 approaches = 21 modes */}
+            {([
+              { group: '❌ ไม่ OT',         col: 'var(--green)', modes: [
+                { id: 'daily_no_ot',       label: '📅 รายวัน' },
+                { id: 'weekly_no_ot',      label: '🗓 รายสัปดาห์' },
+                { id: 'fastest_no_ot',     label: '🏎 เร็วสุด' },
+                { id: 'deadline_no_ot',    label: '📅 วันส่งก่อน' },
+                { id: 'priority_no_ot',    label: '⭐ ความสำคัญ' },
+                { id: 'interweek_no_ot',   label: '🔮 สัปดาห์หน้า' },
+                { id: 'batch_no_ot',       label: '🔗 Batch kVA' },
+              ]},
+              { group: '⚠️ OT เมื่อจำเป็น', col: 'var(--amber)', modes: [
+                { id: 'daily_smart',       label: '📅 รายวัน' },
+                { id: 'weekly_smart',      label: '🗓 รายสัปดาห์' },
+                { id: 'fastest_smart',     label: '🏎 เร็วสุด' },
+                { id: 'deadline_smart',    label: '📅 วันส่งก่อน' },
+                { id: 'priority_smart',    label: '⭐ ความสำคัญ' },
+                { id: 'interweek_smart',   label: '🔮 สัปดาห์หน้า' },
+                { id: 'batch_smart',       label: '🔗 Batch kVA' },
+              ]},
+              { group: '🔥 OT เสมอ',        col: 'var(--red)',   modes: [
+                { id: 'daily_full',        label: '📅 รายวัน' },
+                { id: 'weekly_full',       label: '🗓 รายสัปดาห์' },
+                { id: 'fastest_full',      label: '🏎 เร็วสุด' },
+                { id: 'deadline_full',     label: '📅 วันส่งก่อน' },
+                { id: 'priority_full',     label: '⭐ ความสำคัญ' },
+                { id: 'interweek_full',    label: '🔮 สัปดาห์หน้า' },
+                { id: 'batch_full',        label: '🔗 Batch kVA' },
+              ]},
+            ] as const).map(cat => (
+              <div key={cat.group} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                <span style={{ fontSize: 9, color: cat.col, fontWeight: 700, whiteSpace: 'nowrap', marginRight: 2 }}>{cat.group}</span>
+                {cat.modes.map(m => (
+                  <button key={m.id} onClick={() => setBalanceMode(m.id as typeof balanceMode)} style={{
+                    fontSize: 10, padding: '3px 8px', borderRadius: 8,
+                    border: `1px solid ${balanceMode === m.id ? cat.col : 'var(--bord2)'}`,
+                    background: balanceMode === m.id ? cat.col + '22' : 'var(--bg3)',
+                    color: balanceMode === m.id ? cat.col : 'var(--txt2)',
+                    fontWeight: balanceMode === m.id ? 700 : 400, cursor: 'pointer',
+                  }}>
+                    {m.label}
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
           <div className={styles.weekNav}>
@@ -1009,8 +1358,21 @@ export default function CuttingMachines() {
             )}
           </div>
         </div>
-        {/* Save plan bar — separate row, always visible */}
+        {/* Carry-over + save bar */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 16px', background: 'var(--bg2)', borderBottom: '1px solid var(--bord)', flexShrink: 0 }}>
+          {/* Toggle carry-over from prev week */}
+          <button onClick={() => setIncludePrevCarry(v => !v)}
+            title="นำงานที่ค้างจากสัปดาห์ที่แล้วมาคำนวณด้วย"
+            style={{ fontSize: 11, padding: '4px 12px', borderRadius: 8, border: `1px solid ${includePrevCarry ? 'rgba(137,180,250,.5)' : 'var(--bord2)'}`, background: includePrevCarry ? 'rgba(137,180,250,.15)' : 'var(--bg3)', color: includePrevCarry ? 'var(--blue)' : 'var(--txt3)', cursor: 'pointer', fontWeight: includePrevCarry ? 700 : 400 }}>
+            ↩ รวมงานค้างสัปดาห์ก่อน
+          </button>
+          {includePrevCarry && prevCarryQty > 0 && (
+            <span style={{ fontSize: 10, color: 'var(--blue)', fontWeight: 600 }}>+{prevCarryQty} ตัว ยกมา</span>
+          )}
+          {includePrevCarry && prevCarryQty === 0 && (
+            <span style={{ fontSize: 10, color: 'var(--green)' }}>✓ สัปดาห์ก่อนเสร็จทุก order</span>
+          )}
+          <div style={{ width: 1, height: 20, background: 'var(--bord2)' }} />
           <button onClick={() => savePlan('')} disabled={planSaving || weekOrders.length === 0}
             style={{ fontSize: 11, padding: '5px 14px', borderRadius: 8, border: 'none', background: 'var(--green)', color: '#000', fontWeight: 700, cursor: 'pointer', opacity: (planSaving || weekOrders.length === 0) ? 0.5 : 1 }}>
             {planSaving ? 'กำลังบันทึก…' : '💾 บันทึกแผน'}
@@ -1171,7 +1533,15 @@ export default function CuttingMachines() {
             {/* Week summary */}
             <div className={styles.summary}>
               <span className={styles.dim}>สัปดาห์นี้</span>
+              <span style={{ fontSize: 9, padding: '2px 8px', borderRadius: 10, fontWeight: 600, background: 'var(--bg3)', border: '1px solid var(--bord2)', color: 'var(--txt2)' }}>
+                {(({'daily_no_ot':'❌·📅','weekly_no_ot':'❌·🗓','fastest_no_ot':'❌·🏎','deadline_no_ot':'❌·📅วันส่ง','priority_no_ot':'❌·⭐ความสำคัญ','interweek_no_ot':'❌·🔮สัปดาห์หน้า','batch_no_ot':'❌·🔗Batch','daily_smart':'⚠️·📅','weekly_smart':'⚠️·🗓','fastest_smart':'⚠️·🏎','deadline_smart':'⚠️·📅วันส่ง','priority_smart':'⚠️·⭐ความสำคัญ','interweek_smart':'⚠️·🔮สัปดาห์หน้า','batch_smart':'⚠️·🔗Batch','daily_full':'🔥·📅','weekly_full':'🔥·🗓','fastest_full':'🔥·🏎','deadline_full':'🔥·📅วันส่ง','priority_full':'🔥·⭐ความสำคัญ','interweek_full':'🔥·🔮สัปดาห์หน้า','batch_full':'🔥·🔗Batch'}) as Record<string,string>)[balanceMode] ?? balanceMode}
+              </span>
               <span style={{ fontWeight: 700 }}>{totalQtyWeek} ตัว · {weekOrders.length} orders</span>
+              {includePrevCarry && prevCarryQty > 0 && (
+                <span style={{ fontSize: 10, color: 'var(--blue)', fontWeight: 600, padding: '2px 8px', borderRadius: 10, background: 'rgba(137,180,250,.15)' }}>
+                  ↩ {prevCarryQty} ยกมาจากสัปดาห์ก่อน · แผนใหม่ {currentWeekOrders.reduce((s,o)=>s+o.qty,0)} ตัว
+                </span>
+              )}
               {totalOT > 0
                 ? <span className={styles.warn}>⚠ OT สูงสุด {totalOT.toFixed(1)}h/วัน</span>
                 : <span className={styles.ok}>✓ เสร็จในเวลาปกติทุกวัน</span>}
