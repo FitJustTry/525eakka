@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "capacity-planner",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "-s", "project/frontend", "-l", "5500"],
+      "port": 5500
+    }
+  ]
+}

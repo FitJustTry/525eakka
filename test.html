@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Coil Plan – Upload Excel or Paste (Fixed)</title>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 2rem; background: #f5f5f5; }
+        .container { max-width: 1400px; margin: auto; background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .upload-area { border: 2px dashed #ccc; padding: 1rem; margin-bottom: 1rem; text-align: center; border-radius: 8px; background: #fafafa; }
+        .upload-area input { margin: 0.5rem; }
+        textarea { width: 100%; height: 200px; font-family: monospace; font-size: 0.8rem; margin-top: 1rem; }
+        button { font-size: 1rem; padding: 8px 16px; margin: 8px 0; background: #27ae60; color: white; border: none; border-radius: 6px; cursor: pointer; }
+        .output { margin-top: 1rem; }
+        .table-wrapper { overflow-x: auto; max-height: 600px; overflow-y: auto; border: 1px solid #ddd; }
+        table { border-collapse: collapse; width: 100%; font-size: 0.75rem; }
+        th, td { border: 1px solid #ccc; padding: 6px; text-align: left; }
+        th { background: #2c3e50; color: white; position: sticky; top: 0; z-index: 10; }
+        .status { margin: 1rem 0; padding: 0.5rem; background: #eef; border-left: 4px solid #3498db; }
+        .error { background: #fee; border-left-color: #e74c3c; }
+        hr { margin: 1rem 0; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>📊 แปลงแผนลงคอยล์ – อัปโหลดไฟล์ Excel หรือวางข้อความ (แก้ไขแล้ว)</h2>
+    <div class="upload-area">
+        <strong>📁 อัปโหลดไฟล์ Excel (.xlsx, .xls)</strong><br>
+        <input type="file" id="fileInput" accept=".xlsx, .xls" />
+    </div>
+    <hr>
+    <div>
+        <strong>✏️ หรือวางข้อมูลที่ copy จาก Excel (ข้อความคั่นแท็บ)</strong><br>
+        <textarea id="rawData" placeholder="วางข้อมูลที่นี่..."></textarea><br>
+        <button id="convertBtn">แปลงเป็น CSV</button>
+    </div>
+    <div id="status" class="status"></div>
+    <div id="output"></div>
+</div>
+
+<script>
+    // For file upload: convert Excel rows to a rows array
+    function readExcelFile(file, callback) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+            // Convert each cell to a string, handling dates
+            const stringRows = rows.map(row => row.map(cell => {
+                if (cell === null || cell === undefined) return "";
+                if (typeof cell === 'object' && cell instanceof Date) {
+                    // Format as DD/MM/YYYY
+                    const d = cell;
+                    return `${d.getDate()}/${d.getMonth()+1}/${d.getFullYear()}`;
+                }
+                // If it's a number that looks like Excel date (optional)
+                if (typeof cell === 'number' && cell > 40000 && cell < 50000) {
+                    const d = XLSX.SSF.parse_date_code(cell);
+                    if (d) return `${d.d}/${d.m}/${d.y}`;
+                }
+                return String(cell).trim();
+            }));
+            callback(stringRows);
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    // For paste: convert tab-separated text to rows array
+    function textToRows(text) {
+        const lines = text.split(/\r?\n/);
+        return lines.map(line => line.split('\t').map(cell => cell.trim()));
+    }
+
+    // Main processing function (works with rows array)
+    function processRows(rows, sourceName) {
+        // Stop at "บันทึกเพิ่มเติม" or "รวมทั้งหมด"
+        let effectiveRows = [];
+        for (let row of rows) {
+            const firstCell = row[0] || "";
+            if (firstCell.includes("บันทึกเพิ่มเติม") || firstCell.includes("รวมทั้งหมด")) break;
+            effectiveRows.push(row);
+        }
+        if (effectiveRows.length === 0) {
+            throw new Error("ไม่พบข้อมูล (ไฟล์ว่างหรือไม่มีส่วนข้อมูลหลัก)");
+        }
+
+        // Find header row (contains "วันที่" and "ลำดับ")
+        let headerIdx = -1;
+        for (let i = 0; i < effectiveRows.length; i++) {
+            const row = effectiveRows[i];
+            const firstCell = row[0] || "";
+            const secondCell = row[1] || "";
+            if (firstCell.includes("วันที่") && secondCell.includes("ลำดับ")) {
+                headerIdx = i;
+                break;
+            }
+        }
+        if (headerIdx === -1) {
+            throw new Error("ไม่พบหัวตาราง (แถวที่มี 'วันที่' และ 'ลำดับ')");
+        }
+
+        const header1 = effectiveRows[headerIdx];
+        const header2 = (headerIdx+1 < effectiveRows.length) ? effectiveRows[headerIdx+1] : [];
+
+        // Combine headers
+        const combinedHeaders = [];
+        const maxLen = Math.max(header1.length, header2.length);
+        for (let i = 0; i < maxLen; i++) {
+            let h1 = (i < header1.length) ? header1[i] : "";
+            let h2 = (i < header2.length) ? header2[i] : "";
+            if (h1 === "" && h2 === "") combinedHeaders.push(`col_${i}`);
+            else if (h1 !== "" && h2 !== "") combinedHeaders.push(`${h1} ${h2}`.trim());
+            else if (h1 !== "") combinedHeaders.push(h1);
+            else combinedHeaders.push(h2);
+        }
+
+        // Helper: find column index by keywords
+        function findIndex(keywords) {
+            for (let i = 0; i < combinedHeaders.length; i++) {
+                const lower = combinedHeaders[i].toLowerCase();
+                for (let kw of keywords) {
+                    if (lower.includes(kw.toLowerCase())) return i;
+                }
+            }
+            return -1;
+        }
+
+        let importanceIdx = findIndex(["ประเภท", "ความสำคัญ"]);
+        if (importanceIdx === -1) importanceIdx = 2;
+
+        const mapping = {
+            dateIdx: findIndex(["วันที่"]),
+            seqIdx: findIndex(["ลำดับ"]),
+            importanceIdx: importanceIdx,
+            sapIdx: findIndex(["sap"]),
+            itemcodeIdx: findIndex(["item 5", "item5"]),
+            commentIdx: findIndex(["comment"]),
+            plantIdx: findIndex(["plant"]),
+            kvaIdx: findIndex(["kva"]),
+            elecIdx: findIndex(["ระบบไฟฟ้า"]),
+            customerIdx: findIndex(["ลูกค้า"]),
+            totalKvaIdx: findIndex(["total kva"]),
+            qtyIdx: findIndex(["จำนวน"]),
+            enterTestIdx: findIndex(["เข้าเทส"]),
+            cableIdx: findIndex(["cable"]),
+            controlIdx: findIndex(["control"]),
+            dueStoreIdx: findIndex(["กำหนด", "ส่งเข้าสโตร์"]),
+            dueSOIdx: findIndex(["due so"]),
+            adjustPlanIdx: findIndex(["แจ้งปรับแผนการผลิต"]),
+            dueClampIdx: findIndex(["due clamp"]),
+            dueBOXIdx: findIndex(["due box"]),
+            dueCTRLBOXIdx: findIndex(["due ctrl box"]),
+            rawMatIdx: findIndex(["raw mat"]),
+            lvIdx: findIndex(["lv"]),
+            hvIdx: findIndex(["hv"])
+        };
+
+        const dataRows = effectiveRows.slice(headerIdx + 2);
+        const getCell = (row, idx) => (idx !== -1 && idx < row.length) ? row[idx] : "";
+
+        let currentDate = "";
+        const validRows = [];
+
+        for (let row of dataRows) {
+            if (!row.length || row.every(cell => cell === "")) continue;
+
+            // Detect date in the date column
+            let dateVal = getCell(row, mapping.dateIdx);
+            // Try to parse as DD/MM/YYYY or YYYY-MM-DD
+            let parsedDate = null;
+            if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(dateVal)) {
+                parsedDate = dateVal;
+            } else if (/^\d{4}-\d{1,2}-\d{1,2}/.test(dateVal)) {
+                const parts = dateVal.split('-');
+                if (parts.length >= 3) parsedDate = `${parts[2]}/${parts[1]}/${parts[0]}`;
+            }
+            if (parsedDate) {
+                currentDate = parsedDate;
+            }
+            if (!currentDate) continue;
+
+            // Check ลำดับ is a number
+            const seqVal = getCell(row, mapping.seqIdx);
+            if (seqVal === "" || isNaN(parseFloat(seqVal))) continue;
+            if (row.some(cell => cell.includes("<<<") || cell.includes("เฉลี่ย"))) continue;
+
+            let sap = getCell(row, mapping.sapIdx);
+            let itemcode = getCell(row, mapping.itemcodeIdx);
+            let comment = getCell(row, mapping.commentIdx);
+            let plant = getCell(row, mapping.plantIdx);
+            let kva = getCell(row, mapping.kvaIdx).replace(/,/g, '');
+            let elec = getCell(row, mapping.elecIdx);
+            let customer = getCell(row, mapping.customerIdx);
+            let totalKva = getCell(row, mapping.totalKvaIdx).replace(/,/g, '');
+            let qty = getCell(row, mapping.qtyIdx).replace(/,/g, '');
+
+            let totalKvaNum = parseFloat(totalKva);
+            if (isNaN(totalKvaNum)) {
+                let kvaNum = parseFloat(kva);
+                let qtyNum = parseFloat(qty);
+                if (!isNaN(kvaNum) && !isNaN(qtyNum)) totalKva = (kvaNum * qtyNum).toString();
+            }
+
+            let enterTest = getCell(row, mapping.enterTestIdx);
+            let cableBox = getCell(row, mapping.cableIdx);
+            let control = getCell(row, mapping.controlIdx);
+            let dueStore = getCell(row, mapping.dueStoreIdx);
+            let dueSO = getCell(row, mapping.dueSOIdx);
+            let adjustPlan = getCell(row, mapping.adjustPlanIdx);
+            let dueClamp = getCell(row, mapping.dueClampIdx);
+            let dueBOX = getCell(row, mapping.dueBOXIdx);
+            let dueCTRLBOX = getCell(row, mapping.dueCTRLBOXIdx);
+            let rawMat = getCell(row, mapping.rawMatIdx);
+            let lv = getCell(row, mapping.lvIdx);
+            let hv = getCell(row, mapping.hvIdx);
+
+            let combinedDue = "";
+            if (dueBOX && dueBOX !== "-" && dueCTRLBOX && dueCTRLBOX !== "-") combinedDue = `${dueBOX} / ${dueCTRLBOX}`;
+            else if (dueBOX && dueBOX !== "-") combinedDue = dueBOX;
+            else if (dueCTRLBOX && dueCTRLBOX !== "-") combinedDue = dueCTRLBOX;
+
+            let importance = getCell(row, mapping.importanceIdx);
+            if (!importance && row.length > 2) importance = row[2];
+
+            validRows.push({
+                "วันที่": currentDate,
+                "ลำดับ": seqVal,
+                "ความสำคัญ": importance,
+                "SAPSO": sap,
+                "Itemcode": itemcode,
+                "Comment": comment,
+                "Plant": plant,
+                "KVA": kva,
+                "ระบบไฟฟ้า": elec,
+                "ลูกค้า": customer,
+                "Total KVA": totalKva,
+                "จำนวน": qty,
+                "เข้าเทส": enterTest,
+                "CableBox": cableBox,
+                "Control": control,
+                "กำหนดส่งเข้าสโตร์": dueStore,
+                "DUE SO": dueSO,
+                "แจ้งปรับแผนการผลิต": adjustPlan,
+                "Due Clamp": dueClamp,
+                "Due BOX/CTRL BOX": combinedDue,
+                "Raw Mat (M-4/LS0.70)": rawMat,
+                "LV": lv,
+                "HV": hv
+            });
+        }
+
+        if (validRows.length === 0) {
+            throw new Error("ไม่พบข้อมูลที่ถูกต้อง (ไม่มีแถวที่มีลำดับเป็นตัวเลข)");
+        }
+        return validRows;
+    }
+
+    // Render results and CSV download
+    function renderResults(validRows) {
+        const headers = [
+            "วันที่", "ลำดับ", "ความสำคัญ", "SAPSO", "Itemcode", "Comment",
+            "Plant", "KVA", "ระบบไฟฟ้า", "ลูกค้า", "Total KVA", "จำนวน",
+            "เข้าเทส", "CableBox", "Control", "กำหนดส่งเข้าสโตร์", "DUE SO",
+            "แจ้งปรับแผนการผลิต", "Due Clamp", "Due BOX/CTRL BOX",
+            "Raw Mat (M-4/LS0.70)", "LV", "HV"
+        ];
+
+        // Build CSV
+        const csvRows = [];
+        csvRows.push(headers.map(h => `"${h.replace(/"/g, '""')}"`).join(','));
+        for (const row of validRows) {
+            const values = headers.map(h => `"${String(row[h] || "").replace(/"/g, '""')}"`);
+            csvRows.push(values.join(','));
+        }
+        const csvString = "\uFEFF" + csvRows.join('\n');
+
+        // Preview table
+        let html = `<h3>📋 ข้อมูลทั้งหมด (${validRows.length} แถว)</h3><div class="table-wrapper">`;
+        html += `<table><thead><tr>`;
+        for (let h of headers) html += `<th>${h}</th>`;
+        html += `</tr></thead><tbody>`;
+        for (let row of validRows) {
+            html += `<tr>`;
+            for (let h of headers) {
+                let val = row[h] || "";
+                html += `<td title="${escapeHtml(String(val))}">${escapeHtml(String(val).substring(0, 60))}</td>`;
+            }
+            html += `</tr>`;
+        }
+        html += `</tbody></table></div>`;
+        document.getElementById('output').innerHTML = html;
+
+        // Download link
+        const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const downloadLink = document.createElement('a');
+        downloadLink.href = url;
+        downloadLink.download = 'coil_plan_cleaned.csv';
+        downloadLink.textContent = '💾 ดาวน์โหลด CSV';
+        downloadLink.style.display = 'inline-block';
+        downloadLink.style.marginTop = '1rem';
+        downloadLink.style.padding = '8px 16px';
+        downloadLink.style.backgroundColor = '#27ae60';
+        downloadLink.style.color = 'white';
+        downloadLink.style.textDecoration = 'none';
+        downloadLink.style.borderRadius = '6px';
+        const oldLink = document.getElementById('downloadLink');
+        if (oldLink) oldLink.remove();
+        downloadLink.id = 'downloadLink';
+        document.getElementById('output').appendChild(downloadLink);
+
+        document.getElementById('status').innerHTML = `✅ แปลงสำเร็จ! พบ ${validRows.length} รายการ`;
+        document.getElementById('status').className = 'status';
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        return str.replace(/[&<>]/g, m => m === '&' ? '&amp;' : m === '<' ? '&lt;' : '&gt;');
+    }
+
+    // Handle file upload
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        document.getElementById('status').innerHTML = '📖 กำลังอ่านไฟล์...';
+        document.getElementById('status').className = 'status';
+        readExcelFile(file, function(rows) {
+            try {
+                const validRows = processRows(rows, 'file');
+                renderResults(validRows);
+            } catch (err) {
+                document.getElementById('status').innerHTML = `❌ ${err.message}`;
+                document.getElementById('status').className = 'status error';
+                document.getElementById('output').innerHTML = '';
+            }
+        });
+    });
+
+    // Handle text paste
+    document.getElementById('convertBtn').addEventListener('click', function() {
+        const rawText = document.getElementById('rawData').value;
+        if (!rawText.trim()) {
+            document.getElementById('status').innerHTML = '⚠️ กรุณาวางข้อความ หรืออัปโหลดไฟล์';
+            document.getElementById('status').className = 'status error';
+            return;
+        }
+        const rows = textToRows(rawText);
+        try {
+            const validRows = processRows(rows, 'text');
+            renderResults(validRows);
+        } catch (err) {
+            document.getElementById('status').innerHTML = `❌ ${err.message}`;
+            document.getElementById('status').className = 'status error';
+            document.getElementById('output').innerHTML = '';
+        }
+    });
+</script>
+</body>
+</html>

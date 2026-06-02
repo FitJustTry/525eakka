@@ -1,0 +1,46 @@
+filters: file.folder == "CSV import"
+views:
+  - type: table
+    name: Table
+    order:
+      - file.name
+      - ID
+      - OrderNumber
+      - ProductionPlant
+      - SalesOrder
+      - MaterialOrder
+      - MaterialDescription
+      - RoutingNo
+      - ReservationNumber
+      - TargetQuantity
+      - UnitOrder
+      - OrderType
+      - BasicStartDate
+      - BasicFinishDate
+      - TimeStamp
+      - Counter
+      - OperationNumber
+      - Ltxa1
+      - WorkCenter
+      - ActivityType1
+      - ActivityType2
+      - ActivityType3
+      - ActivityType4
+      - ActivityType5
+      - ActivityType6
+      - UnitUom
+      - STDActivityType1
+      - STDActivityType2
+      - STDActivityType3
+      - STDActivityType4
+      - STDActivityType5
+      - STDActivityType6
+      - Confirm_Start
+      - Confirm_End
+      - Is_Confirm
+      - QTY_N
+      - QTY_Y
+      - Time_N
+      - Time_Y
+      - Mark_Delete
+      - Is_Active

@@ -295,6 +295,34 @@ async function initDatabase() {
       )
     `);
     await client.query(`INSERT INTO cutting_rates (id, rates) VALUES (1, '[]') ON CONFLICT DO NOTHING`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cutting_plan_snapshots (
+        id SERIAL PRIMARY KEY,
+        week_start DATE NOT NULL,
+        week_end DATE NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        plan_data JSONB NOT NULL DEFAULT '{}',
+        saved_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_cutting_plan_week ON cutting_plan_snapshots(week_start)');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS coil_machines (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT '',
+        count INTEGER NOT NULL DEFAULT 1,
+        type TEXT NOT NULL DEFAULT '',
+        min_kva INTEGER NOT NULL DEFAULT 0,
+        max_kva INTEGER NOT NULL DEFAULT 9999,
+        hrs_per_unit NUMERIC NOT NULL DEFAULT 2.0,
+        wire TEXT NOT NULL DEFAULT '',
+        hv_lv TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        off_days JSONB NOT NULL DEFAULT '[]',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
     await client.query('COMMIT');
     console.log('✅ PostgreSQL tables ready');
   } catch (err) {
@@ -843,6 +871,67 @@ app.delete('/api/cutting-machines/:id', asyncRoute(async (req, res) => {
   await pool.query('DELETE FROM cutting_machines WHERE id = $1', [req.params.id]);
   res.status(204).send();
 }));
+
+// ── Coil Machines ─────────────────────────────────────────────────────
+function rowToCoilMachine(row) {
+  return { id: row.id, name: row.name, count: toInt(row.count,1), type: row.type||'', min_kva: toInt(row.min_kva,0), max_kva: toInt(row.max_kva,9999), hrs_per_unit: toNumber(row.hrs_per_unit,2), wire: row.wire||'', hv_lv: row.hv_lv||'', notes: row.notes||'', off_days: Array.isArray(row.off_days) ? row.off_days : [], sort_order: toInt(row.sort_order,0) }
+}
+app.get('/api/coil-machines', asyncRoute(async (req, res) => {
+  const result = await pool.query('SELECT * FROM coil_machines ORDER BY sort_order, id')
+  res.json(result.rows.map(rowToCoilMachine))
+}))
+app.post('/api/coil-machines', asyncRoute(async (req, res) => {
+  const { name, count, type, min_kva, max_kva, hrs_per_unit, wire, hv_lv, notes, off_days } = req.body
+  const result = await pool.query(
+    `INSERT INTO coil_machines (name,count,type,min_kva,max_kva,hrs_per_unit,wire,hv_lv,notes,off_days,sort_order)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,(SELECT COALESCE(MAX(sort_order),0)+1 FROM coil_machines)) RETURNING *`,
+    [name||'เครื่องพัน', toInt(count,1), type||'', toInt(min_kva,0), toInt(max_kva,9999), toNumber(hrs_per_unit,2), wire||'', hv_lv||'', notes||'', JSON.stringify(Array.isArray(off_days)?off_days:[])]
+  )
+  res.status(201).json(rowToCoilMachine(result.rows[0]))
+}))
+app.put('/api/coil-machines/:id', asyncRoute(async (req, res) => {
+  const { name, count, type, min_kva, max_kva, hrs_per_unit, wire, hv_lv, notes, off_days } = req.body
+  const result = await pool.query(
+    `UPDATE coil_machines SET name=$2,count=$3,type=$4,min_kva=$5,max_kva=$6,hrs_per_unit=$7,wire=$8,hv_lv=$9,notes=$10,off_days=$11,updated_at=now() WHERE id=$1 RETURNING *`,
+    [req.params.id, name, toInt(count,1), type||'', toInt(min_kva,0), toInt(max_kva,9999), toNumber(hrs_per_unit,2), wire||'', hv_lv||'', notes||'', JSON.stringify(Array.isArray(off_days)?off_days:[])]
+  )
+  if (!result.rowCount) return res.status(404).json({ error: 'Not found' })
+  res.json(rowToCoilMachine(result.rows[0]))
+}))
+app.delete('/api/coil-machines/:id', asyncRoute(async (req, res) => {
+  await pool.query('DELETE FROM coil_machines WHERE id=$1', [req.params.id])
+  res.status(204).send()
+}))
+
+// ── Cutting Plan Snapshots ─────────────────────────────────────────────
+app.get('/api/cutting-plan-snapshots', asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    'SELECT id, week_start, week_end, label, saved_at FROM cutting_plan_snapshots ORDER BY saved_at DESC LIMIT 50'
+  )
+  res.json(result.rows)
+}))
+
+app.get('/api/cutting-plan-snapshots/:id', asyncRoute(async (req, res) => {
+  const result = await pool.query('SELECT * FROM cutting_plan_snapshots WHERE id=$1', [req.params.id])
+  if (!result.rows.length) return res.status(404).json({ error: 'Not found' })
+  res.json(result.rows[0])
+}))
+
+app.post('/api/cutting-plan-snapshots', asyncRoute(async (req, res) => {
+  const { week_start, week_end, label, plan_data } = req.body
+  if (!week_start || !week_end) return res.status(400).json({ error: 'week_start and week_end required' })
+  const result = await pool.query(
+    `INSERT INTO cutting_plan_snapshots (week_start, week_end, label, plan_data)
+     VALUES ($1,$2,$3,$4) RETURNING id, week_start, week_end, label, saved_at`,
+    [week_start, week_end, label || '', JSON.stringify(plan_data || {})]
+  )
+  res.status(201).json(result.rows[0])
+}))
+
+app.delete('/api/cutting-plan-snapshots/:id', asyncRoute(async (req, res) => {
+  await pool.query('DELETE FROM cutting_plan_snapshots WHERE id=$1', [req.params.id])
+  res.status(204).send()
+}))
 
 app.get('/api/cutting-rates', asyncRoute(async (req, res) => {
   const result = await pool.query('SELECT rates FROM cutting_rates WHERE id=1');

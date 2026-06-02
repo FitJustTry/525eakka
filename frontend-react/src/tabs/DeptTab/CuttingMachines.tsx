@@ -1,3 +1,110 @@
+/**
+ * ════════════════════════════════════════════════════════════════════
+ *  CuttingMachines.tsx — แผนการตัดโลหะ (Metal Cutting Plan)
+ * ════════════════════════════════════════════════════════════════════
+ *
+ * ── DATA FLOW ────────────────────────────────────────────────────────
+ *
+ *  accepted_orders (DB)
+ *    ↓  filtered to current week (weekOrders)
+ *  dailyAssignments  [useMemo]
+ *    └─ for each day: assignOrders(activeMachines, dayOrders)
+ *       • activeMachines = machines WHERE off_days does NOT include today
+ *       • assignOrders uses LPT greedy + tiny drill-preference bonus
+ *       • result: Map<machineId, Order[]> per day
+ *    ↓
+ *  weekSchedule  [useMemo]  ← algorithm selected by balanceMode
+ *    └─ scheduleWeekWithCarryOver  (daily / weekly)
+ *    └─ schedulePullForward        (⏩ เติมเต็ม)
+ *    └─ scheduleSmartOT            (⚡ Smart OT)
+ *       result: Map<machineId, Map<dateStr, MachineDaySched>>
+ *
+ * ── KEY FUNCTIONS ────────────────────────────────────────────────────
+ *
+ *  getHrsForKva(m, kva, globalRates)
+ *    → exact-match kVA in globalRates table → if not found, m.hrs_per_unit
+ *    → globalRates loaded from /api/cutting-rates (saved in DB)
+ *    → load from SAP: /api/sap-routing/rates-by-kva?wc_id=EE3102
+ *       reads MaterialDescription to extract kVA, averages std_hrs
+ *
+ *  isMachineOn(m, dayOfWeek)
+ *    → returns false if dayOfWeek ∈ m.off_days  (1=Mon … 6=Sat)
+ *    → used in dailyAssignments to exclude machine from that day
+ *
+ *  resolveHours(m, wcConfig, isSat, dayOfWeek?)
+ *    → if off_days includes dayOfWeek: {reg:0, ot:0}
+ *    → if m.wc_id set: pull hrs/ot/sat_hrs/sat_ot from wcConfig[m.wc_id]
+ *    → else: m.reg_hrs / m.ot_hrs  (Saturday = ÷2 by default)
+ *
+ *  canMachineCut(m, order, products)
+ *    → kVA range only (m.min_kva … m.max_kva)
+ *    → max_kva ≥ 9999 = ไม่จำกัด
+ *    → drill type is SOFT preference, not a hard filter
+ *
+ *  drillPrefers(m, order)
+ *    → m.drill_8mm=true AND typeCode∈{1,2,3} → prefers Oil orders
+ *    → m.drill_22mm=true AND typeCode=4      → prefers Cast Resin orders
+ *    → used as tiebreaker (DRILL_BONUS=0.0001h) in assignOrders
+ *
+ * ── SCHEDULING ALGORITHMS ────────────────────────────────────────────
+ *
+ *  All algorithms use HOURS (not units) for carry-over.
+ *  An order needing 21h/unit spans multiple days continuously.
+ *
+ *  scheduleWeekWithCarryOver (📅 รายวัน / 📆 สัปดาห์)
+ *    • Processes dailyAssignments day-by-day
+ *    • Machine off that day → regCap=0, otCap=0 → all work carries forward
+ *    • Carry-over queue: remainingHrs per order item
+ *    • DAILY mode: each day starts fresh (initWall=0)
+ *    • WEEKLY mode: cumulative wall time carried across days (balance week)
+ *
+ *  schedulePullForward (⏩ เติมเต็ม)
+ *    • Global LPT assignment for ALL week orders at once
+ *    • Machine processes queue continuously — when done early, pulls next
+ *      future-day orders (no idle time)
+ *    • Orders pulled before their plan_date are flagged "pulled"
+ *
+ *  scheduleSmartOT (⚡ Smart OT)
+ *    • Try to fit all work in regular hours first (0 OT)
+ *    • Weekday overflow → add exactly the minimum OT needed (up to max)
+ *    • Saturday → force otCap=0 (no Saturday OT)
+ *    • Shows minimum OT budget to avoid carry-overs
+ *
+ * ── DISPLAY LOGIC ────────────────────────────────────────────────────
+ *
+ *  Card view (📋 รายวัน)  &  Table view (📊 ตาราง)  use IDENTICAL data:
+ *    • dayWalls: from weekSchedule.sched.regHrs + sched.otHrs
+ *    • Cells built from weekSchedule.work[] items (NOT raw asgn)
+ *    • Off-day machine → 🔴 ปิดวันนี้
+ *    • Carry-over from yesterday → ↩ badge
+ *    • Work continues tomorrow → → badge
+ *    • Click cell → full detail (SAP SO, kVA, customer, deadline, hours)
+ *
+ *  mTotals (weekly header per machine)
+ *    • Sums wallHrs and qty from weekSchedule across all days
+ *
+ * ── TO EXTEND ────────────────────────────────────────────────────────
+ *
+ *  Add a new scheduling mode:
+ *    1. Add value to balanceMode type: 'daily' | 'weekly' | 'pull' | 'smart' | 'NEW'
+ *    2. Write scheduleXxx(assignedPerDay, machines, ...) → Map<id, Map<date, MachineDaySched>>
+ *    3. Add case in weekSchedule useMemo
+ *    4. Add button in toggle section
+ *
+ *  Add per-machine cutting rate override:
+ *    • Currently globalRates applies to ALL machines
+ *    • To add per-machine: add m.rates?: CuttingRate[] and check in getHrsForKva
+ *      before falling back to globalRates → m.hrs_per_unit
+ *
+ *  Change kVA→hours lookup:
+ *    → Edit getHrsForKva() — currently exact-match only, returns m.hrs_per_unit if not found
+ *    → To add interpolation: find nearest lower kVA entry
+ *
+ *  Change drill assignment priority:
+ *    → Edit DRILL_BONUS constant (0.0001h = tiebreaker only)
+ *    → Increase to give drill machines stronger preference at cost of balance
+ * ════════════════════════════════════════════════════════════════════
+ */
 import { useState, useMemo, useEffect } from 'react'
 import { api } from '../../api'
 import { useApp } from '../../context/AppContext'
@@ -337,6 +444,11 @@ export default function CuttingMachines() {
   const { state, dispatch } = useApp()
   const { cuttingMachines: machines, orders, products, wcConfig } = state
   const [weekOffset, setWeekOffset] = useState(0)
+  const [planSaving, setPlanSaving] = useState(false)
+  const [planSaveMsg, setPlanSaveMsg] = useState<string | null>(null)
+  const [snapshots, setSnapshots] = useState<{ id: number; week_start: string; week_end: string; label: string; saved_at: string }[]>([])
+  const [showSnapshots, setShowSnapshots] = useState(false)
+  const [viewSnap, setViewSnap] = useState<Record<string, unknown> | null>(null)
   const [saving, setSaving] = useState<number | null>(null)
   const [selectedCell, setSelectedCell] = useState<{ machineId: number; date: string } | null>(null)
   const [balanceMode, setBalanceMode] = useState<'daily' | 'weekly' | 'pull' | 'smart'>('daily')
@@ -350,6 +462,86 @@ export default function CuttingMachines() {
   async function saveGlobalRates(rates: CuttingRate[]) {
     setGlobalRates(rates)
     await fetch('/api/cutting-rates', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rates) })
+  }
+
+  // ── Plan snapshot ────────────────────────────────────────────
+  async function savePlan(label: string) {
+    setPlanSaving(true); setPlanSaveMsg(null)
+    try {
+      const res = await fetch('/api/cutting-plan-snapshots', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          week_start: fmtISO(mon), week_end: fmtISO(sat),
+          label: label || weekLabel,
+          plan_data: {
+            // ── Calculation parameters (inputs) ──────────────
+            balanceMode,
+            cutting_rates: globalRates,       // ⏱ เวลาตัดโลหะตามขนาด
+            machines: machines.map(m => ({    // machine config at time of save
+              id: m.id, name: m.name, count: m.count,
+              min_kva: m.min_kva, max_kva: m.max_kva,
+              hrs_per_unit: m.hrs_per_unit,
+              laser: m.laser, m4: m.m4,
+              min_face_mm: m.min_face_mm, max_face_mm: m.max_face_mm,
+              drill_8mm: m.drill_8mm, drill_22mm: m.drill_22mm,
+              reg_hrs: m.reg_hrs, ot_hrs: m.ot_hrs,
+              off_days: m.off_days ?? [],
+              wc_id: m.wc_id ?? '',
+            })),
+            // ── Calculation output ────────────────────────────
+            summary: {
+              totalQtyWeek: weekData.totalQtyWeek,
+              totalKvaWeek: weekData.totalKvaWeek,
+              bottleneckWall: weekData.bottleneckWall,
+              totalOT: weekData.totalOT,
+            },
+            dayRows: weekData.dayRows.map(r => ({
+              dStr: r.dStr,
+              dayScheduledQty: r.dayScheduledQty,
+              dayKva: r.dayKva,
+              dayFinish: r.dayFinish,
+              machineCells: r.machineCells.map(mc => ({
+                machineId: mc.m.id, machineName: mc.m.name,
+                machOff: mc.machOff, wall: mc.wall, capH: mc.capH,
+                otHrs: mc.sched?.otHrs ?? 0,
+                carriesForward: mc.sched?.carriesForward ?? false,
+                work: mc.work.map(w => ({
+                  sap_so: w.order.sap_so, customer: w.order.customer,
+                  kva: products[w.order.product]?.kva ?? w.order.kva,
+                  qty: w.order.qty, hrsWorked: w.hrsWorked,
+                  isComplete: w.isComplete, carriesOver: w.carriesOver,
+                  isCarryOver: w.isCarryOver,
+                })),
+              })),
+            })),
+          }
+        })
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const saved = await res.json()
+      setPlanSaveMsg(`✅ บันทึกแล้ว — ${weekLabel}`)
+      setSnapshots(prev => [saved, ...prev])
+    } catch (e) { setPlanSaveMsg(`❌ ${e instanceof Error ? e.message : String(e)}`) }
+    setPlanSaving(false)
+    setTimeout(() => setPlanSaveMsg(null), 4000)
+  }
+
+  async function loadSnapshots() {
+    const res = await fetch('/api/cutting-plan-snapshots')
+    setSnapshots(await res.json())
+    setShowSnapshots(true)
+  }
+
+  async function viewSnapshot(id: number) {
+    const res = await fetch(`/api/cutting-plan-snapshots/${id}`)
+    const snap = await res.json()
+    setViewSnap({ ...snap.plan_data, _label: snap.label, _saved_at: snap.saved_at, _week: `${snap.week_start} – ${snap.week_end}` })
+    setShowSnapshots(false)
+  }
+
+  async function deleteSnapshot(id: number) {
+    await fetch(`/api/cutting-plan-snapshots/${id}`, { method: 'DELETE' })
+    setSnapshots(prev => prev.filter(s => s.id !== id))
   }
 
   // ── CRUD ────────────────────────────────────────────────────
@@ -433,13 +625,16 @@ export default function CuttingMachines() {
     machines.forEach(m => cumWall.set(m.id, 0))
     return days.map(d => {
       const dStr = fmtISO(d)
+      const dow = d.getDay()
+      // Only assign to machines that are ON today
+      const activeMachines = machines.filter(m => isMachineOn(m, dow))
       const dayOrds = weekOrders.filter(o => o.plan_date === dStr)
       // Daily mode: each day starts fresh (wall=0) — balance within each day
       // Weekly mode: carry forward cumulative wall — balance across the week
       const initWall = balanceMode === 'weekly' ? new Map(cumWall) : new Map<number, number>()
-      const asgn = assignOrders(dayOrds, machines, products, globalRates, initWall, new Map(machIdx))
+      const asgn = assignOrders(dayOrds, activeMachines, products, globalRates, initWall, new Map(machIdx))
       // Always accumulate for weekly mode reference
-      machines.forEach(m => {
+      activeMachines.forEach(m => {
         const mOrd = asgn.get(m.id) ?? []
         const w = mOrd.reduce((a, o) => {
           const kva = products[o.product]?.kva ?? o.kva ?? 0
@@ -450,7 +645,7 @@ export default function CuttingMachines() {
       return { dStr, asgn }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [balanceMode, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}`).join(',')])
+  }, [balanceMode, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${(m.off_days??[]).join('-')}`).join(',')])
 
   // Machine index map for tiebreaker
   const machIdx = useMemo(() => { const mi = new Map<number,number>(); machines.forEach((m,i) => mi.set(m.id,i)); return mi }, [machines.map(m=>m.id).join(',')])  // eslint-disable-line
@@ -462,28 +657,83 @@ export default function CuttingMachines() {
     return scheduleWeekWithCarryOver(dailyAssignments, machines, products, globalRates)
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
+  [balanceMode, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
-  // Weekly totals per machine from assignments
-  const mTotals = machines.map(m => {
-    let wallHrs = 0, qty = 0
-    dailyAssignments.forEach(({ asgn }) => {
-      const mOrd = asgn.get(m.id) ?? []
-      const dayQty = mOrd.reduce((a, o) => a + o.qty, 0)
-      const dayHrs = mOrd.reduce((a, o) => {
-        const kva = products[o.product]?.kva ?? o.kva ?? 0
-        return a + o.qty * getHrsForKva(m, kva, globalRates)
+  /**
+   * SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
+   * All views (card, table, pipeline) read from weekData only.
+   * No view calculates anything independently.
+   */
+  const weekData = useMemo(() => {
+    // ── Per-machine weekly totals ──────────────────────────────
+    const mTotals = machines.map(m => {
+      let wallHrs = 0, qty = 0
+      days.forEach(d => {
+        const dStr = fmtISO(d)
+        const sched = weekSchedule.get(m.id)?.get(dStr)
+        if (!sched) return
+        wallHrs += sched.regHrs + sched.otHrs
+        qty += sched.work.filter(w => w.isComplete).length > 0
+          ? sched.work.filter(w => w.isComplete).reduce((s, w) => {
+              const kva = products[w.order.product]?.kva ?? w.order.kva ?? 0
+              const hrsEach = getHrsForKva(m, kva, globalRates)
+              return s + (hrsEach > 0 ? w.hrsWorked / hrsEach : 0)
+            }, 0)
+          : 0
+      })
+      // Count all orders (complete + in-progress) assigned to this machine
+      const totalQty = days.reduce((s, d) => {
+        const sched = weekSchedule.get(m.id)?.get(fmtISO(d))
+        return s + (sched?.work.reduce((q, w) => q + w.order.qty, 0) ?? 0)
       }, 0)
-      wallHrs += m.count > 0 ? dayHrs / m.count : dayHrs
-      qty += dayQty
+      return { wallHrs, qty: totalQty, regCap: REG_PER, ot: Math.max(0, wallHrs - REG_PER), over: wallHrs > REG_PER + OT_PER }
     })
-    return { wallHrs, qty, regCap: REG_PER, maxCap: REG_PER + OT_PER, ot: Math.max(0, wallHrs - REG_PER), over: wallHrs > REG_PER + OT_PER }
-  })
 
-  const bottleneckWall = mTotals.reduce((a, t) => Math.max(a, t.wallHrs), 0)
-  const totalQtyWeek   = mTotals.reduce((a, t) => a + t.qty, 0)
-  const totalOT        = Math.max(0, bottleneckWall - REG_PER)
-  const summaryStatus  = bottleneckWall > REG_PER + OT_PER ? 'over' : totalOT > 0 ? 'warn' : 'ok'
+    // ── Per-day data for each machine ──────────────────────────
+    const dayRows = days.map((d, di) => {
+      const dStr = fmtISO(d)
+      const dow = d.getDay()
+      const isSat = dow === 6
+      const dayOrders = weekOrders.filter(o => o.plan_date === dStr)
+      const dayScheduledQty = dayOrders.reduce((a, o) => a + o.qty, 0)
+      const dayKva = dayOrders.reduce((a, o) => a + ((o.total_kva ?? 0) > 0 ? (o.total_kva ?? 0) : (o.kva ?? 0) * (o.qty ?? 1)), 0)
+      const unassigned = dayOrders.filter(o => machines.every(m => !canMachineCut(m, o, products)))
+
+      const machineCells = machines.map(m => {
+        const machOff = !isMachineOn(m, dow)
+        const sched = weekSchedule.get(m.id)?.get(dStr)
+        const work = sched?.work ?? []
+        const wall = machOff ? 0 : (sched ? sched.regHrs + sched.otHrs : 0)
+        const { reg: capH } = resolveHours(m, wcConfig, isSat, dow)
+        const grp: Record<number, { drilled: boolean; partial: boolean }> = {}
+        work.forEach(w => {
+          const kva = products[w.order.product]?.kva ?? w.order.kva ?? 0
+          if (!grp[kva]) grp[kva] = { drilled: drillPrefers(m, w.order), partial: !w.isComplete }
+          if (!w.isComplete) grp[kva].partial = true
+        })
+        return { m, machOff, sched, work, wall, capH, grp }
+      })
+
+      const dayCarryQty = machineCells.reduce((a, mc) => a + mc.work.filter(w => w.isCarryOver).reduce((s, w) => s + w.order.qty, 0), 0)
+      const dayWalls = machineCells.map(mc => mc.wall)
+      const dayFinish = Math.max(...dayWalls, 0)
+      const { reg: dayCapHrs } = machines[0] ? resolveHours(machines[0], wcConfig, isSat, dow) : { reg: isSat ? 4 : 8 }
+      const finishCol = dayFinish === 0 ? 'var(--txt3)' : dayFinish <= dayCapHrs ? 'var(--green)' : dayFinish <= dayCapHrs * 2 ? 'var(--amber)' : 'var(--red)'
+
+      return { dStr, d, di, dow, isSat, dayOrders, dayScheduledQty, dayKva, dayCarryQty, unassigned, machineCells, dayWalls, dayFinish, dayCapHrs, finishCol }
+    })
+
+    const bottleneckWall = mTotals.reduce((a, t) => Math.max(a, t.wallHrs), 0)
+    const totalQtyWeek   = mTotals.reduce((a, t) => a + t.qty, 0)
+    const totalKvaWeek   = weekOrders.reduce((a, o) => a + ((o.total_kva ?? 0) > 0 ? (o.total_kva ?? 0) : (o.kva ?? 0) * (o.qty ?? 1)), 0)
+    const totalOT        = Math.max(0, bottleneckWall - REG_PER)
+    const summaryStatus  = bottleneckWall > REG_PER + OT_PER ? 'over' : totalOT > 0 ? 'warn' : 'ok'
+
+    return { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, summaryStatus }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weekSchedule, weekOrders.map(o=>o.id+o.qty).join(','), machines.map(m=>`${m.id}${(m.off_days??[]).join('-')}`).join(',')])
+
+  const { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, summaryStatus } = weekData
 
   // ── Render ───────────────────────────────────────────────────
   return (
@@ -759,6 +1009,158 @@ export default function CuttingMachines() {
             )}
           </div>
         </div>
+        {/* Save plan bar — separate row, always visible */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 16px', background: 'var(--bg2)', borderBottom: '1px solid var(--bord)', flexShrink: 0 }}>
+          <button onClick={() => savePlan('')} disabled={planSaving || weekOrders.length === 0}
+            style={{ fontSize: 11, padding: '5px 14px', borderRadius: 8, border: 'none', background: 'var(--green)', color: '#000', fontWeight: 700, cursor: 'pointer', opacity: (planSaving || weekOrders.length === 0) ? 0.5 : 1 }}>
+            {planSaving ? 'กำลังบันทึก…' : '💾 บันทึกแผน'}
+          </button>
+          <button onClick={loadSnapshots}
+            style={{ fontSize: 10, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--bord2)', background: 'var(--bg3)', color: 'var(--txt2)', cursor: 'pointer' }}>
+            📋 ดูแผนที่บันทึก
+          </button>
+          {planSaveMsg && <span style={{ fontSize: 10, color: planSaveMsg.startsWith('✅') ? 'var(--green)' : 'var(--red)' }}>{planSaveMsg}</span>}
+          <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 'auto' }}>บันทึกแผนเพื่อดูย้อนหลัง — รวมค่า machine config + rates + schedule output</span>
+        </div>
+
+        {/* Saved plans panel */}
+        {showSnapshots && (
+          <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--bord)', background: 'var(--bg2)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ fontWeight: 700, fontSize: 12 }}>📋 แผนที่บันทึกไว้</span>
+              <button onClick={() => setShowSnapshots(false)} style={{ fontSize: 11, marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--txt3)' }}>✕ ปิด</button>
+            </div>
+            {snapshots.length === 0 ? (
+              <div style={{ fontSize: 11, color: 'var(--txt3)' }}>ยังไม่มีแผนที่บันทึก</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {snapshots.map(s => (
+                  <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 10px', background: 'var(--bg3)', borderRadius: 6, border: '1px solid var(--bord)', fontSize: 11 }}>
+                    <span style={{ fontFamily: 'var(--mono)', color: 'var(--blue)', fontWeight: 700 }}>{s.week_start} – {s.week_end}</span>
+                    <span style={{ color: 'var(--txt2)' }}>{s.label}</span>
+                    <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 'auto' }}>{new Date(s.saved_at).toLocaleString('th-TH')}</span>
+                    <button onClick={() => viewSnapshot(s.id)} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 5, border: '1px solid rgba(137,180,250,.3)', background: 'rgba(137,180,250,.1)', color: 'var(--blue)', cursor: 'pointer' }}>ดู</button>
+                    <button onClick={() => deleteSnapshot(s.id)} style={{ fontSize: 10, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--red)', padding: '0 4px' }}>🗑</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Saved plan viewer */}
+        {viewSnap && (() => {
+          const snap = viewSnap as Record<string, unknown>
+          type SavedCell = { machineId: number; machineName: string; machOff: boolean; wall: number; capH: number; otHrs: number; carriesForward: boolean; work: {sap_so:string;customer:string;kva:number;qty:number;hrsWorked:number;isComplete:boolean;carriesOver:boolean}[] }
+          type SavedDay = { dStr: string; dayScheduledQty: number; dayKva: number; dayFinish: number; machineCells: SavedCell[] }
+          type SavedMachine = { id: number; name: string; count: number; min_kva: number; max_kva: number; hrs_per_unit: number; laser: boolean; m4: boolean; min_face_mm: number; max_face_mm: number; drill_8mm: boolean; drill_22mm: boolean; reg_hrs: number; ot_hrs: number; off_days: number[]; wc_id: string }
+          type SavedRate = { kva: number; hrs: number }
+          const snapMachines = snap.machines as SavedMachine[]
+          const snapRates = snap.cutting_rates as SavedRate[]
+          const snapDays = snap.dayRows as SavedDay[]
+          const snapSummary = snap.summary as { totalQtyWeek: number; totalKvaWeek: number; bottleneckWall: number; totalOT: number }
+          const snapBalance = snap.balanceMode as string
+          const modeLabel = snapBalance === 'pull' ? '⏩ เติมเต็ม' : snapBalance === 'smart' ? '⚡ Smart OT' : snapBalance === 'weekly' ? '📆 สัปดาห์' : '📅 รายวัน'
+          return (
+            <div style={{ border: '2px solid var(--blue)', borderRadius: 10, margin: '0 0 12px', overflow: 'hidden' }}>
+              {/* Viewer header */}
+              <div style={{ background: 'rgba(137,180,250,.1)', padding: '10px 16px', borderBottom: '1px solid var(--bord)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontWeight: 700, fontSize: 13, color: 'var(--blue)' }}>📋 {String(snap._label || snap._week)}</span>
+                <span style={{ fontSize: 10, color: 'var(--txt3)' }}>{String(snap._week)}</span>
+                <span style={{ fontSize: 9, padding: '2px 7px', borderRadius: 8, background: 'rgba(137,180,250,.2)', color: 'var(--blue)' }}>{modeLabel}</span>
+                <span style={{ fontSize: 10, color: 'var(--txt3)', marginLeft: 'auto' }}>บันทึก: {String(snap._saved_at || '').slice(0,16)}</span>
+                <button onClick={() => setViewSnap(null)} style={{ fontSize: 12, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--txt3)', marginLeft: 8 }}>✕ ปิด</button>
+              </div>
+
+              {/* Calculation inputs */}
+              <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--bord)', background: 'var(--bg2)' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--txt3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>พารามิเตอร์ที่ใช้คำนวณ</div>
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  {/* Machines */}
+                  <div style={{ flex: '2 1 400px' }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 4 }}>เครื่องตัด</div>
+                    <table style={{ borderCollapse: 'collapse', fontSize: 9, width: '100%' }}>
+                      <thead><tr style={{ background: 'var(--bg3)' }}>
+                        {['เครื่อง','จำนวน','kVA','h/ตัว','Laser','M4','8mm','22mm','Reg h','OT h','วันปิด'].map(h => (
+                          <th key={h} style={{ padding: '3px 5px', textAlign: 'center', color: 'var(--txt3)', borderBottom: '1px solid var(--bord)', whiteSpace: 'nowrap' }}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {snapMachines?.map(m => (
+                          <tr key={m.id}>
+                            <td style={{ padding: '2px 5px', fontWeight: 700 }}>{m.name}</td>
+                            <td style={{ padding: '2px 5px', textAlign: 'center' }}>{m.count}</td>
+                            <td style={{ padding: '2px 5px', fontFamily: 'var(--mono)', fontSize: 8 }}>{m.min_kva}–{m.max_kva >= 9999 ? '∞' : m.max_kva}</td>
+                            <td style={{ padding: '2px 5px', textAlign: 'center', color: 'var(--amber)', fontFamily: 'var(--mono)' }}>{m.hrs_per_unit}</td>
+                            <td style={{ padding: '2px 5px', textAlign: 'center' }}>{m.laser ? '✅' : '❌'}</td>
+                            <td style={{ padding: '2px 5px', textAlign: 'center' }}>{m.m4 ? '✅' : '❌'}</td>
+                            <td style={{ padding: '2px 5px', textAlign: 'center' }}>{m.drill_8mm ? '✅' : '❌'}</td>
+                            <td style={{ padding: '2px 5px', textAlign: 'center' }}>{m.drill_22mm ? '✅' : '❌'}</td>
+                            <td style={{ padding: '2px 5px', textAlign: 'center', color: 'var(--green)', fontFamily: 'var(--mono)' }}>{m.reg_hrs}h</td>
+                            <td style={{ padding: '2px 5px', textAlign: 'center', color: 'var(--amber)', fontFamily: 'var(--mono)' }}>{m.ot_hrs}h</td>
+                            <td style={{ padding: '2px 5px', textAlign: 'center', color: m.off_days?.length ? 'var(--red)' : 'var(--txt3)', fontSize: 8 }}>
+                              {m.off_days?.length ? m.off_days.map(d => DAY_SHORT[d]).join(' ') : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {/* Rates */}
+                  <div style={{ flex: '1 1 150px', minWidth: 120 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 4 }}>⏱ เวลาตัดตามขนาด</div>
+                    {!snapRates?.length ? <div style={{ fontSize: 9, color: 'var(--txt3)' }}>ใช้ h/ตัว default</div> : snapRates.map((r, i) => (
+                      <div key={i} style={{ fontSize: 9, fontFamily: 'var(--mono)' }}>
+                        <span style={{ color: 'var(--blue)' }}>{r.kva.toLocaleString()}kVA</span> → <span style={{ color: 'var(--amber)' }}>{r.hrs}h</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Output: day plan */}
+              <div style={{ padding: '10px 16px' }}>
+                <div style={{ display: 'flex', gap: 10, marginBottom: 8, flexWrap: 'wrap', fontSize: 10 }}>
+                  <span style={{ fontWeight: 700 }}>ผลการคำนวณ</span>
+                  <span style={{ color: 'var(--txt3)' }}>{snapSummary?.totalQtyWeek} ตัว · {snapSummary?.totalKvaWeek?.toLocaleString()} kVA</span>
+                  {(snapSummary?.totalOT ?? 0) > 0 && <span style={{ color: 'var(--amber)' }}>⚠ OT {snapSummary.totalOT.toFixed(1)}h</span>}
+                  <span style={{ color: 'var(--txt3)', fontFamily: 'var(--mono)' }}>เสร็จสุด {snapSummary?.bottleneckWall?.toFixed(1)}h</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {snapDays?.map(r => {
+                    const dt = new Date(r.dStr + 'T00:00:00')
+                    return (
+                      <div key={r.dStr} style={{ border: '1px solid var(--bord)', borderRadius: 6, overflow: 'hidden' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px', background: 'var(--bg2)', borderBottom: '1px solid var(--bord)', fontSize: 10 }}>
+                          <span style={{ fontWeight: 700 }}>{DAY_TH[dt.getDay()]} {r.dStr.slice(5)}</span>
+                          <span style={{ color: 'var(--txt3)' }}>{r.dayScheduledQty} ตัว · {r.dayKva?.toLocaleString()} kVA</span>
+                          <span style={{ fontFamily: 'var(--mono)', color: r.dayFinish <= 8 ? 'var(--green)' : 'var(--amber)', marginLeft: 'auto' }}>เสร็จใน {r.dayFinish?.toFixed(1)}h</span>
+                        </div>
+                        <div style={{ padding: '4px 0' }}>
+                          {r.machineCells?.map((mc, mi) => mc.machOff ? (
+                            <div key={mi} style={{ padding: '2px 10px', fontSize: 9, color: 'var(--red)', opacity: 0.6 }}>🔴 {mc.machineName} ปิด</div>
+                          ) : mc.work.length === 0 ? null : (
+                            <div key={mi} style={{ display: 'flex', padding: '3px 10px', gap: 8, fontSize: 9 }}>
+                              <span style={{ minWidth: 100, fontWeight: 700 }}>{mc.machineName}</span>
+                              <span style={{ fontFamily: 'var(--mono)', color: mc.wall <= mc.capH ? 'var(--green)' : 'var(--amber)' }}>{mc.wall?.toFixed(1)}h</span>
+                              <div style={{ flex: 1, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                {mc.work.map((w, wi) => (
+                                  <span key={wi} style={{ fontFamily: 'var(--mono)', color: (w.kva ?? 0) <= 400 ? 'var(--blue)' : (w.kva ?? 0) <= 3500 ? 'var(--amber)' : 'var(--red)' }}>
+                                    {w.sap_so || '—'} {(w.kva??0).toLocaleString()}kVA×{w.qty} {w.hrsWorked?.toFixed(1)}h{w.isComplete ? '✓' : '→'}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          )
+        })()}
 
         {machines.length === 0 ? (
           <p className={styles.empty}>เพิ่มเครื่องตัดโลหะก่อน</p>
@@ -777,24 +1179,11 @@ export default function CuttingMachines() {
 
             {/* ── CARD VIEW ── */}
             {viewMode === 'cards' && <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {dailyAssignments.map(({ dStr, asgn }, di) => {
-                const d = days[di]
-                const dayOrders = weekOrders.filter(o => o.plan_date === dStr)
+              {dayRows.map(row => {
+                const { dStr, d, isSat, dayOrders, dayScheduledQty, dayKva, dayCarryQty, unassigned, machineCells, dayFinish, dayCapHrs, finishCol } = row
                 if (dayOrders.length === 0) return null
-                const isSat = d.getDay() === 6
                 const isToday = dStr === fmtISO(new Date())
-                const dayWalls = machines.map(m => {
-                  const h = (asgn.get(m.id) ?? []).reduce((a, o) => {
-                    const kva = products[o.product]?.kva ?? o.kva ?? 0
-                    return a + o.qty * getHrsForKva(m, kva, globalRates)
-                  }, 0)
-                  return m.count > 0 ? h / m.count : h
-                })
-                const dayFinish = Math.max(...dayWalls, 0)
-                const dayCapHrs = isSat ? 4 : 8
-                const finishCol = dayFinish === 0 ? 'var(--txt3)' : dayFinish <= dayCapHrs ? 'var(--green)' : dayFinish <= dayCapHrs * 2 ? 'var(--amber)' : 'var(--red)'
-                const unassigned = dayOrders.filter(o => machines.every(m => !canMachineCut(m, o, products)))
-                const totalQty = [...asgn.values()].flat().reduce((a, o) => a + o.qty, 0)
+                const totalQty = dayScheduledQty
 
                 return (
                   <div key={dStr} style={{ border: `1px solid ${isToday ? 'var(--blue)' : 'var(--bord)'}`, borderRadius: 8, overflow: 'hidden' }}>
@@ -810,23 +1199,17 @@ export default function CuttingMachines() {
                       </span>
                     </div>
 
-                    {/* Machine rows */}
+                    {/* Machine rows — data from weekData.machineCells (same source for all views) */}
                     <div style={{ padding: '6px 0' }}>
-                      {machines.map(m => {
-                        const dow = d.getDay()
-                        const machOff = !isMachineOn(m, dow)
-                        const sched = weekSchedule.get(m.id)?.get(dStr)
-                        // Show "ปิด" row for machines that are off today
+                      {machineCells.map(({ m, machOff, sched, work, wall, capH, grp }) => {
                         if (machOff) return (
                           <div key={m.id} style={{ display: 'flex', alignItems: 'center', padding: '4px 14px', borderBottom: '0.5px solid var(--bord)', gap: 8, opacity: 0.5 }}>
                             <div style={{ minWidth: 140, fontSize: 10, fontWeight: 700, color: 'var(--red)' }}>🔴 {m.name}</div>
                             <span style={{ fontSize: 9, color: 'var(--txt3)' }}>ปิดวันนี้</span>
                           </div>
                         )
-                        if (!sched || (sched.work.length === 0 && !sched.hasCarryOver)) return null
-                        const isSat = dow === 6
-                        const regCap = (isSat ? m.reg_hrs / 2 : m.reg_hrs) * (m.count || 1)
-                        const totalH = sched.regHrs + sched.otHrs
+                        if (!sched || (work.length === 0 && !sched.hasCarryOver)) return null
+                        const totalH = wall
                         const timeCol = sched.carriesForward ? 'var(--red)' : sched.otHrs > 0 ? 'var(--amber)' : 'var(--green)'
                         return (
                           <div key={m.id} style={{ display: 'flex', alignItems: 'flex-start', padding: '6px 14px', borderBottom: '0.5px solid var(--bord)', gap: 0 }}>
@@ -837,7 +1220,7 @@ export default function CuttingMachines() {
                                 {sched.hasCarryOver && <span style={{ fontSize: 8, marginLeft: 4, color: 'var(--blue)', background: 'rgba(137,180,250,.15)', padding: '1px 4px', borderRadius: 4 }}>↩ ต่อจากเมื่อวาน</span>}
                               </div>
                               <div style={{ fontSize: 9, fontFamily: 'var(--mono)', color: timeCol, fontWeight: 600 }}>
-                                {totalH.toFixed(1)}h / {regCap}h
+                                {totalH.toFixed(1)}h / {capH}h
                                 {sched.otHrs > 0 && <span style={{ color: 'var(--amber)', marginLeft: 4 }}>+OT {sched.otHrs.toFixed(1)}h</span>}
                                 {sched.carriesForward && <span style={{ color: 'var(--red)', marginLeft: 4 }}>→ พรุ่งนี้</span>}
                               </div>
@@ -931,16 +1314,10 @@ export default function CuttingMachines() {
                     </tr>
                   </thead>
                   <tbody>
-                    {dailyAssignments.map(({ dStr, asgn }, di) => {
-                      const d = days[di]
-                      const dayOrders = weekOrders.filter(o => o.plan_date === dStr)
-                      const isSat = d.getDay() === 6
+                    {dayRows.map(row => {
+                      const { dStr, d, isSat, dayOrders, dayScheduledQty, dayCarryQty, unassigned: dayUnassigned2, machineCells, dayFinish, dayCapHrs, finishCol } = row
                       const isToday = dStr === fmtISO(new Date())
-                      const dayWalls = machines.map(m => { const h = (asgn.get(m.id) ?? []).reduce((a, o) => { const kva2 = products[o.product]?.kva ?? o.kva ?? 0; return a + o.qty * getHrsForKva(m, kva2, globalRates) }, 0); return m.count > 0 ? h / m.count : h })
-                      const dayFinish = Math.max(...dayWalls, 0)
-                      const dayCapHrs = isSat ? 4 : 8
-                      const dayTotalQty = [...asgn.values()].flat().reduce((a, o) => a + o.qty, 0)
-                      const finishCol = dayFinish === 0 ? 'var(--txt3)' : dayFinish <= dayCapHrs ? 'var(--green)' : dayFinish <= dayCapHrs * 2 ? 'var(--amber)' : 'var(--red)'
+                      const dayTotalQty = dayScheduledQty
                       return (
                         <tr key={dStr} className={isToday ? styles.today : isSat ? styles.saturday : ''}>
                           <td>
@@ -954,42 +1331,46 @@ export default function CuttingMachines() {
                               </div>
                             ))}
                           </td>
-                          {machines.map((m, mi) => {
-                            const mOrders = asgn.get(m.id) ?? []
-                            const qty = mOrders.reduce((a, o) => a + o.qty, 0)
-                            const wall = dayWalls[mi]
-                            const capH = isSat ? 4 : 8
-                            const col = qty === 0 ? 'var(--txt3)' : wall <= capH ? 'var(--green)' : wall <= capH * 2 ? 'var(--amber)' : 'var(--red)'
+                          {machineCells.map(({ m, machOff, sched, work, wall, capH, grp: cellGrp }, mi) => {
+                            if (machOff) return (
+                              <td key={m.id} style={{ verticalAlign: 'top', borderLeft: '1px solid var(--bord)', background: 'rgba(224,90,78,.04)', textAlign: 'center', color: 'var(--red)', fontSize: 9, fontWeight: 700, padding: 6 }}>
+                                🔴 ปิด
+                              </td>
+                            )
+                            const grp = cellGrp
+                            const col = work.length === 0 ? 'var(--txt3)' : wall <= capH ? 'var(--green)' : wall <= capH * 2 ? 'var(--amber)' : 'var(--red)'
                             const isSelected = selectedCell?.machineId === m.id && selectedCell?.date === dStr
-                            const grp: Record<number, { qty: number; drilled: boolean }> = {}
-                            mOrders.forEach(o => {
-                              const kva = products[o.product]?.kva ?? o.kva ?? 0
-                              if (!grp[kva]) grp[kva] = { qty: 0, drilled: drillPrefers(m, o) }
-                              grp[kva].qty += o.qty
-                            })
                             return (
-                              <td key={m.id} style={{ verticalAlign: 'top', borderLeft: '1px solid var(--bord)', cursor: mOrders.length > 0 ? 'pointer' : 'default', background: isSelected ? 'rgba(137,180,250,.08)' : undefined }}
-                                onClick={() => mOrders.length > 0 && setSelectedCell(isSelected ? null : { machineId: m.id, date: dStr })}>
-                                {mOrders.length === 0 ? <span className={styles.dim}>—</span> : (
+                              <td key={m.id} style={{ verticalAlign: 'top', borderLeft: '1px solid var(--bord)', cursor: work.length > 0 ? 'pointer' : 'default', background: isSelected ? 'rgba(137,180,250,.08)' : undefined }}
+                                onClick={() => work.length > 0 && setSelectedCell(isSelected ? null : { machineId: m.id, date: dStr })}>
+                                {work.length === 0 ? <span className={styles.dim}>—</span> : (
                                   <>
+                                    {sched?.hasCarryOver && <span style={{ fontSize: 7, color: 'var(--blue)', display: 'block', marginBottom: 2 }}>↩ ต่อ</span>}
                                     <div className={styles.chips} style={{ marginBottom: 3 }}>
                                       {Object.entries(grp).sort((a, b) => +a[0] - +b[0]).map(([kva, g]) => (
-                                        <span key={kva} className={styles.chip} style={{ color: +kva <= 400 ? 'var(--blue)' : +kva <= 3500 ? 'var(--amber)' : 'var(--red)' }}>
-                                          {(+kva).toLocaleString()}kVA×{g.qty}{g.drilled ? '🔩' : ''}
+                                        <span key={kva} className={styles.chip} style={{ color: +kva <= 400 ? 'var(--blue)' : +kva <= 3500 ? 'var(--amber)' : 'var(--red)', opacity: g.partial ? 0.7 : 1 }}>
+                                          {(+kva).toLocaleString()}kVA{g.drilled ? '🔩' : ''}{g.partial ? '→' : ''}
                                         </span>
                                       ))}
                                     </div>
-                                    <div style={{ fontSize: 9, color: col, fontWeight: 600 }}>{qty} ตัว · {wall.toFixed(1)}h</div>
+                                    <div style={{ fontSize: 9, color: col, fontWeight: 600 }}>
+                                      {wall.toFixed(1)}h
+                                      {sched?.otHrs ? <span style={{ color: 'var(--amber)', marginLeft: 4 }}>+OT {sched.otHrs.toFixed(1)}h</span> : ''}
+                                      {sched?.carriesForward && <span style={{ color: 'var(--red)', marginLeft: 4 }}>→</span>}
+                                    </div>
                                     {isSelected && (
                                       <div style={{ marginTop: 4, borderTop: '1px solid var(--bord)', paddingTop: 4 }}>
-                                        {mOrders.map((o, idx) => {
-                                          const kva = products[o.product]?.kva ?? o.kva ?? 0
+                                        {work.map((w, idx) => {
+                                          const kva = products[w.order.product]?.kva ?? w.order.kva ?? 0
+                                          const totalH = w.order.qty * getHrsForKva(m, kva, globalRates)
                                           return (
                                             <div key={idx} style={{ fontSize: 9, display: 'flex', gap: 4, marginBottom: 2 }}>
-                                              <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt3)', fontSize: 8 }}>{o.sap_so || o.id.slice(-8)}</span>
-                                              <span style={{ fontFamily: 'var(--mono)', color: 'var(--blue)' }}>{kva.toLocaleString()}kVA</span>
-                                              <span style={{ color: 'var(--txt3)' }}>×{o.qty}</span>
-                                              {(() => { const kva3 = products[o.product]?.kva ?? o.kva ?? 0; return <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', color: 'var(--txt3)' }}>{(o.qty * getHrsForKva(m, kva3, globalRates)).toFixed(1)}h</span> })()}
+                                              {w.isCarryOver && <span style={{ color: 'var(--blue)', fontSize: 7 }}>↩</span>}
+                                              <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt3)', fontSize: 8 }}>{w.order.sap_so || w.order.id.slice(-8)}</span>
+                                              <span style={{ fontFamily: 'var(--mono)', color: 'var(--blue)' }}>{kva.toLocaleString()}kVA ×{w.order.qty}</span>
+                                              <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', color: w.carriesOver ? 'var(--red)' : 'var(--green)', fontWeight: 700 }}>
+                                                {w.hrsWorked.toFixed(1)}h{totalH > 0 ? `/${totalH.toFixed(1)}h` : ''}{w.isComplete ? ' ✓' : ' →'}
+                                              </span>
                                             </div>
                                           )
                                         })}
@@ -1038,6 +1419,108 @@ export default function CuttingMachines() {
                 </table>
               </div>
             )}
+
+            {/* ── PIPELINE VIEW — horizontal timeline per machine ── */}
+            {viewMode === 'pipeline' && (() => {
+              // Build timeline segments from weekSchedule (same data as card/table)
+              const COLORS = ['#89b4fa','#fab387','#a6e3a1','#cba6f7','#f38ba8','#f9e2af','#94e2d5','#89dceb']
+              const orderColor = new Map<string, string>()
+              let ci = 0
+              weekOrders.forEach(o => { if (!orderColor.has(o.id)) orderColor.set(o.id, COLORS[ci++ % COLORS.length]) })
+
+              // Day layout: width proportional to regular hours
+              const dayRegHrs = days.map(d => {
+                const isSat = d.getDay() === 6
+                const m0 = machines[0]
+                if (!m0) return isSat ? 4 : 8
+                return resolveHours(m0, wcConfig, isSat, d.getDay()).reg || (isSat ? 4 : 8)
+              })
+              const totalHrs = dayRegHrs.reduce((a, h) => a + h, 0) || 1
+              const dayStart = dayRegHrs.reduce<number[]>((acc, h, i) => { acc.push(i === 0 ? 0 : acc[i-1] + dayRegHrs[i-1]); return acc }, [])
+
+              interface Seg { order: Order; start: number; dur: number; isCarryOver: boolean; carriesOver: boolean; isComplete: boolean }
+              const machineSegs = machines.map(m => {
+                const segs: Seg[] = []
+                days.forEach((d, di) => {
+                  const dStr = fmtISO(d)
+                  const sched = weekSchedule.get(m.id)?.get(dStr)
+                  if (!sched) return
+                  let within = 0
+                  sched.work.forEach(w => {
+                    segs.push({ order: w.order, start: dayStart[di] + within, dur: w.hrsWorked, isCarryOver: w.isCarryOver, carriesOver: w.carriesOver, isComplete: w.isComplete })
+                    within += w.hrsWorked
+                  })
+                })
+                return { m, segs }
+              })
+
+              return (
+                <div style={{ overflowX: 'auto', paddingBottom: 8 }}>
+                  {/* Day ruler */}
+                  <div style={{ display: 'flex', marginLeft: 130, marginBottom: 4 }}>
+                    {days.map((d, di) => {
+                      const isSat = d.getDay() === 6
+                      const off = machines.filter(m => !isMachineOn(m, d.getDay()))
+                      return (
+                        <div key={di} style={{ width: `${dayRegHrs[di]/totalHrs*100}%`, flexShrink: 0, textAlign: 'center', fontSize: 9, color: isSat ? 'var(--amber)' : 'var(--txt3)', borderLeft: '1px solid var(--bord)', paddingTop: 2 }}>
+                          {DAY_SHORT[d.getDay()]} {fmtD(d)}
+                          {off.length > 0 && <span style={{ color: 'var(--red)', marginLeft: 3 }}>🔴{off.length}</span>}
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {/* Machine rows */}
+                  {machineSegs.map(({ m, segs }) => {
+                    const t = mTotals[machines.indexOf(m)]
+                    const col = t.over ? 'var(--red)' : t.ot > 0 ? 'var(--amber)' : 'var(--green)'
+                    return (
+                      <div key={m.id} style={{ display: 'flex', alignItems: 'center', marginBottom: 5 }}>
+                        <div style={{ width: 130, flexShrink: 0, paddingRight: 8 }}>
+                          <div style={{ fontSize: 10, fontWeight: 700 }}>{m.name}</div>
+                          <div style={{ fontSize: 8, color: col, fontFamily: 'var(--mono)' }}>{t.qty}ตัว·{t.wallHrs.toFixed(1)}h</div>
+                        </div>
+                        <div style={{ flex: 1, position: 'relative', height: 32, background: 'var(--bg3)', borderRadius: 4, border: '1px solid var(--bord)', overflow: 'hidden' }}>
+                          {/* Day dividers + off-day shading */}
+                          {days.map((d, di) => (
+                            <div key={di} style={{ position: 'absolute', left: `${dayStart[di]/totalHrs*100}%`, top: 0, bottom: 0, width: `${dayRegHrs[di]/totalHrs*100}%`,
+                              background: !isMachineOn(m, d.getDay()) ? 'rgba(224,90,78,.15)' : undefined,
+                              borderLeft: di > 0 ? '1px dashed var(--bord2)' : undefined, zIndex: 1 }}>
+                              {!isMachineOn(m, d.getDay()) && <span style={{ fontSize: 7, color: 'var(--red)', position: 'absolute', top: 2, left: 2 }}>🔴</span>}
+                            </div>
+                          ))}
+                          {/* Order segments */}
+                          {segs.map((seg, si) => {
+                            const kva = products[seg.order.product]?.kva ?? seg.order.kva ?? 0
+                            const color = orderColor.get(seg.order.id) ?? '#89b4fa'
+                            const left = seg.start / totalHrs * 100
+                            const width = Math.max(seg.dur / totalHrs * 100, 0.3)
+                            return (
+                              <div key={si} title={`${seg.order.sap_so||seg.order.id.slice(-6)} · ${kva.toLocaleString()}kVA×${seg.order.qty} · ${seg.dur.toFixed(1)}h${seg.isCarryOver?' (↩)':''}${seg.carriesOver?' →':seg.isComplete?' ✓':''}`}
+                                style={{ position: 'absolute', left: `${left}%`, width: `${width}%`, top: 2, bottom: 2, borderRadius: 3, zIndex: 2,
+                                  background: color, opacity: seg.isCarryOver ? 0.7 : 0.9,
+                                  borderLeft: seg.isCarryOver ? '3px solid rgba(0,0,0,.3)' : undefined,
+                                  borderRight: seg.carriesOver ? '3px solid rgba(0,0,0,.4)' : undefined,
+                                  display: 'flex', alignItems: 'center', overflow: 'hidden', paddingLeft: 2 }}>
+                                <span style={{ fontSize: 7, color: '#11111b', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'var(--mono)' }}>
+                                  {kva >= 1000 ? `${kva/1000}k` : kva}{seg.isComplete ? '✓' : seg.carriesOver ? '→' : ''} {seg.dur.toFixed(1)}h
+                                </span>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+                  <div style={{ marginLeft: 130, fontSize: 9, color: 'var(--txt3)', marginTop: 4, display: 'flex', gap: 12 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: '#89b4fa', display: 'inline-block' }}/>งานใหม่</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: '#89b4fa', opacity: 0.7, borderLeft: '3px solid rgba(0,0,0,.3)', display: 'inline-block' }}/>ต่อจากเมื่อวาน</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: '#89b4fa', borderRight: '3px solid rgba(0,0,0,.4)', display: 'inline-block' }}/>ยังไม่เสร็จ→</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: 'rgba(224,90,78,.15)', display: 'inline-block' }}/>🔴 ปิด</span>
+                  </div>
+                </div>
+              )
+            })()}
           </>
         )}
       </div>

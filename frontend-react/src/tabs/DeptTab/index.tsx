@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useApp } from '../../context/AppContext'
 import CuttingMachines from './CuttingMachines'
+import CoilMachines from './CoilMachines'
 
 type DeptId = 'core' | 'coil' | 'inner' | 'outer'
 
@@ -34,6 +35,7 @@ const DEPTS: { id: DeptId; label: string; color: string; wcs: string[] }[] = [
 export default function DeptTab() {
   const [dept, setDept] = useState<DeptId>('core')
   const [showCutting, setShowCutting] = useState(false)
+  const [showCoil, setShowCoil] = useState(false)
 
   const current = DEPTS.find(d => d.id === dept)!
 
@@ -43,7 +45,7 @@ export default function DeptTab() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 15, fontWeight: 600, marginRight: 4 }}>🏭 แผนก</div>
         {DEPTS.map(d => (
-          <button key={d.id} onClick={() => setDept(d.id)}
+          <button key={d.id} onClick={() => { setDept(d.id); setShowCutting(false); setShowCoil(false) }}
             style={{
               fontSize: 12, padding: '6px 18px', borderRadius: 20,
               border: `1.5px solid ${dept === d.id ? d.color : 'var(--bord)'}`,
@@ -55,21 +57,39 @@ export default function DeptTab() {
             {d.label}
           </button>
         ))}
-        <button onClick={() => setShowCutting(v => !v)}
-          style={{
-            marginLeft: 'auto', fontSize: 11, padding: '5px 12px', borderRadius: 20,
-            border: `1px solid ${showCutting ? 'var(--amber)' : 'var(--bord)'}`,
-            background: showCutting ? 'rgba(224,156,42,.12)' : 'var(--bg3)',
-            color: showCutting ? 'var(--amber)' : 'var(--txt3)',
-            cursor: 'pointer',
-          }}>
-          🔧 เครื่องตัดโลหะ
-        </button>
+        {/* แผนกเหล็กแกน → show cutting machines */}
+        {dept === 'core' && (
+          <button onClick={() => setShowCutting(v => !v)}
+            style={{
+              marginLeft: 'auto', fontSize: 11, padding: '5px 12px', borderRadius: 20,
+              border: `1px solid ${showCutting ? 'var(--amber)' : 'var(--bord)'}`,
+              background: showCutting ? 'rgba(224,156,42,.12)' : 'var(--bg3)',
+              color: showCutting ? 'var(--amber)' : 'var(--txt3)',
+              cursor: 'pointer',
+            }}>
+            🔧 เครื่องตัดโลหะ
+          </button>
+        )}
+        {/* แผนกพันคอยล์ → show coil machines */}
+        {dept === 'coil' && (
+          <button onClick={() => setShowCoil(v => !v)}
+            style={{
+              marginLeft: 'auto', fontSize: 11, padding: '5px 12px', borderRadius: 20,
+              border: `1px solid ${showCoil ? 'var(--green)' : 'var(--bord)'}`,
+              background: showCoil ? 'rgba(166,227,161,.12)' : 'var(--bg3)',
+              color: showCoil ? 'var(--green)' : 'var(--txt3)',
+              cursor: 'pointer',
+            }}>
+            🌀 เครื่องพันคอยล์
+          </button>
+        )}
       </div>
 
-      {showCutting
+      {dept === 'core' && showCutting
         ? <CuttingMachines />
-        : <DeptContent dept={current} />
+        : dept === 'coil' && showCoil
+          ? <CoilMachines />
+          : <DeptContent dept={current} />
       }
     </div>
   )
