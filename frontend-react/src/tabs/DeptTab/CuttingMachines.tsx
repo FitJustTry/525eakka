@@ -172,7 +172,9 @@ function assignOrders(
   products: Record<string, { kva?: number }>,
   globalRates: CuttingRate[],
   initWall: Map<number, number> = new Map(),
-  machIdx: Map<number, number> = new Map()
+  machIdx: Map<number, number> = new Map(),
+  strictWire = false,
+  requireDrill = false
 ): Map<number, Order[]> {
   const assigned = new Map<number, Order[]>()
   const wall     = new Map<number, number>()
@@ -182,7 +184,7 @@ function assignOrders(
     if (!machIdx.has(m.id)) machIdx.set(m.id, i)
   })
 
-  const el = (o: Order) => machines.filter(m => canMachineCut(m, o, products))
+  const el = (o: Order) => machines.filter(m => canMachineCut(m, o, products, strictWire, requireDrill))
 
   // Sort: exclusive orders first, then LPT (largest wall contribution first)
   const sorted = [...dayOrders].sort((a, b) => {
@@ -200,13 +202,14 @@ function assignOrders(
     // Drill bonus: prefer drill machine when load is equal.
     // Index bonus: higher-index machines preferred on ties → round-robin effect.
     const best = eligible.reduce((a, m) => {
-      const sa = (wall.get(a.id) ?? 0) - (drillPrefers(a, o) ? DRILL_BONUS : 0) - (machIdx.get(a.id) ?? 0) * INDEX_BONUS
-      const sm = (wall.get(m.id) ?? 0) - (drillPrefers(m, o) ? DRILL_BONUS : 0) - (machIdx.get(m.id) ?? 0) * INDEX_BONUS
+      const pref = (mc: CuttingMachine) => (drillPrefers(mc, o) ? DRILL_BONUS : 0) + (wirePrefers(mc, o) ? DRILL_BONUS : 0)
+      const sa = (wall.get(a.id) ?? 0) - pref(a) - (machIdx.get(a.id) ?? 0) * INDEX_BONUS
+      const sm = (wall.get(m.id) ?? 0) - pref(m) - (machIdx.get(m.id) ?? 0) * INDEX_BONUS
       return sm < sa ? m : a
     })
 
     assigned.get(best.id)!.push(o)
-    const kva = products[o.product ?? '']?.kva ?? o.kva ?? 0
+    const kva = o.kva ?? products[o.product ?? '']?.kva ?? 0
     wall.set(best.id, (wall.get(best.id) ?? 0) + (o.qty * getHrsForKva(best, kva, globalRates)) / (best.count || 1))
   }
   return assigned
@@ -266,7 +269,9 @@ function scheduleFastest(
   globalRates: CuttingRate[],
   wcConfig: Record<string, WCConfig>,
   days: Date[],
-  otPolicy: 'none' | 'smart' | 'full'
+  otPolicy: 'none' | 'smart' | 'full',
+  strictWire = false,
+  requireDrill = false
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
   if (!machines.length || !weekOrders.length) return result
@@ -275,10 +280,10 @@ function scheduleFastest(
   interface Unit { order: Order; unitIndex: number; hrs: number }
   const allUnits: Unit[] = []
   for (const o of weekOrders) {
-    const kva = products[o.product]?.kva ?? o.kva ?? 0
+    const kva = o.kva ?? products[o.product]?.kva ?? 0
     for (let ui = 0; ui < o.qty; ui++) {
       const hrs = getHrsForKva(
-        machines.find(m => canMachineCut(m, o, products)) ?? machines[0],
+        machines.find(m => canMachineCut(m, o, products, strictWire, requireDrill)) ?? machines[0],
         kva, globalRates
       )
       allUnits.push({ order: o, unitIndex: ui, hrs })
@@ -321,30 +326,33 @@ function scheduleFastest(
 
       const work: DayWork[] = []; let avail = regCap + effectiveOtCap; let regUsed = 0; let otUsed = 0
 
-      while (avail > 0) {
-        if (st.rem <= 0) {
+      while (avail > 0.001) {
+        if (st.rem <= 0.001) {
+          st.rem = 0
           // Pull next eligible unit from pool
-          const idx = pool.findIndex(u => !taken.has(`${u.order.id}_${u.unitIndex}`) && canMachineCut(m, u.order, products))
+          const idx = pool.findIndex(u => !taken.has(`${u.order.id}_${u.unitIndex}`) && canMachineCut(m, u.order, products, strictWire, requireDrill))
           if (idx < 0) break
           const u = pool[idx]
           taken.add(`${u.order.id}_${u.unitIndex}`)
           st.currentUnit = u
-          st.rem = getHrsForKva(m, products[u.order.product]?.kva ?? u.order.kva ?? 0, globalRates)
+          st.rem = getHrsForKva(m, u.order.kva ?? products[u.order.product]?.kva ?? 0, globalRates)
           st.isCarryOver = false
         }
         const h = Math.min(st.rem, avail)
         const ot2 = Math.max(0, h - (regCap - regUsed))
         regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h; st.rem -= h
+        const done = st.rem <= 0.001
+        if (done) st.rem = 0
         // One unit = one DayWork entry (group same order+day into one work item if consecutive)
         const lastW = work[work.length - 1]
         if (lastW && lastW.order.id === st.currentUnit!.order.id && !lastW.isComplete) {
-          lastW.hrsWorked += h; lastW.isComplete = st.rem <= 0; lastW.carriesOver = st.rem > 0 && avail <= 0
+          lastW.hrsWorked += h; lastW.isComplete = done; lastW.carriesOver = !done && avail <= 0.001
         } else {
-          work.push({ order: st.currentUnit!.order, hrsWorked: h, isComplete: st.rem <= 0, isCarryOver: st.isCarryOver, carriesOver: st.rem > 0 && avail <= 0 })
+          work.push({ order: st.currentUnit!.order, hrsWorked: h, isComplete: done, isCarryOver: st.isCarryOver, carriesOver: !done && avail <= 0.001 })
         }
-        if (st.rem <= 0) { st.isCarryOver = false } else { st.isCarryOver = true; break }
+        if (done) { st.isCarryOver = false } else { st.isCarryOver = true; break }
       }
-      const hasMore = st.rem > 0 || pool.some(u => !taken.has(`${u.order.id}_${u.unitIndex}`) && canMachineCut(m, u.order, products))
+      const hasMore = st.rem > 0.001 || pool.some(u => !taken.has(`${u.order.id}_${u.unitIndex}`) && canMachineCut(m, u.order, products, strictWire, requireDrill))
       st.mMap.set(dStr, { regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed, work, hasCarryOver: work.some(w => w.isCarryOver), carriesForward: hasMore })
     }
   }
@@ -366,8 +374,8 @@ function sortPool(
   nextWeekOrders: Order[] = []
 ): Order[] {
   const m0 = machines[0]
-  const hrs = (o: Order) => m0 ? o.qty * getHrsForKva(m0, products[o.product]?.kva ?? o.kva ?? 0, globalRates) : 0
-  const kvaOf = (o: Order) => products[o.product]?.kva ?? o.kva ?? 0
+  const hrs = (o: Order) => m0 ? o.qty * getHrsForKva(m0, o.kva ?? products[o.product]?.kva ?? 0, globalRates) : 0
+  const kvaOf = (o: Order) => o.kva ?? products[o.product]?.kva ?? 0
   const pool = [...orders]
 
   if (strategy === 'deadline') {
@@ -442,7 +450,9 @@ function scheduleMode(
   approach: 'daily' | 'weekly',
   otPolicy: 'none' | 'smart' | 'full',
   sortStrategy = 'plan_date',
-  nextWeekOrders: Order[] = []
+  nextWeekOrders: Order[] = [],
+  strictWire = false,
+  requireDrill = false
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
 
@@ -474,41 +484,48 @@ function scheduleMode(
         const st = machState.get(m.id)!
         const { reg, ot } = resolveHours(m, wcConfig, isSat, dow)
         const regCap = reg * (m.count || 1); const otCap = ot * (m.count || 1)
-        if (regCap === 0 && otCap === 0) { st.mMap.set(dStr, { regHrs:0, otHrs:0, otNeeded:0, work:[], hasCarryOver:false, carriesForward: st.currentRem > 0 }); continue }
+        if (regCap === 0 && otCap === 0) {
+          // Machine is off — carry-over stays with this machine (resumes next working day)
+          st.mMap.set(dStr, { regHrs:0, otHrs:0, otNeeded:0, work:[], hasCarryOver:false, carriesForward: st.currentRem > 0.001 })
+          continue
+        }
 
         // Smart OT: check if remaining work fits in remaining regular days
         let effectiveOtCap = 0
         if (otPolicy === 'full') {
           effectiveOtCap = otCap
         } else if (otPolicy === 'smart') {
-          // OT only for carry-over that won't finish in remaining regular days
           const workDaysLeft = days.slice(di).filter(dd => isMachineOn(m, dd.getDay()))
           const regCapLeft = workDaysLeft.reduce((s, dd) => { const isSatDD = dd.getDay() === 6; const { reg: r } = resolveHours(m, wcConfig, isSatDD, dd.getDay()); return s + r * (m.count || 1) }, 0)
-          const carryHrs = st.currentRem > 0 ? st.currentRem : 0
+          const carryHrs = st.currentRem > 0.001 ? st.currentRem : 0
           if (carryHrs > regCapLeft) effectiveOtCap = Math.min(otCap, carryHrs - regCapLeft)
         }
 
         const work: DayWork[] = []; let avail = regCap + effectiveOtCap; let regUsed = 0; let otUsed = 0
 
-        while (avail > 0) {
-          if (st.currentRem <= 0) {
-            // Pull next eligible order from shared pool (drill preference as tiebreaker)
-            const eligible = sharedPool.filter(o => !taken.has(o.id) && canMachineCut(m, o, products))
+        while (avail > 0.001) {
+          if (st.currentRem <= 0.001) {
+            st.currentRem = 0
+            // Pull next eligible order from shared pool (drill + wire preference as tiebreaker)
+            const eligible = sharedPool.filter(o => !taken.has(o.id) && canMachineCut(m, o, products, strictWire, requireDrill))
             if (!eligible.length) break
-            const next = eligible.reduce((a, b) => drillPrefers(m, b) && !drillPrefers(m, a) ? b : a)
+            const score = (o: Order) => (drillPrefers(m, o) ? 1 : 0) + (wirePrefers(m, o) ? 1 : 0)
+            const next = eligible.reduce((a, b) => score(b) > score(a) ? b : a)
             taken.add(next.id)
             st.currentOrder = next
-            st.currentRem = next.qty * getHrsForKva(m, products[next.product]?.kva ?? next.kva ?? 0, globalRates)
+            st.currentRem = next.qty * getHrsForKva(m, next.kva ?? products[next.product]?.kva ?? 0, globalRates)
             st.isCarryOver = false
           }
           const h = Math.min(st.currentRem, avail)
           const ot2 = Math.max(0, h - (regCap - regUsed))
           regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h; st.currentRem -= h
-          work.push({ order: st.currentOrder!, hrsWorked: h, isComplete: st.currentRem <= 0, isCarryOver: st.isCarryOver, carriesOver: st.currentRem > 0 && avail <= 0 })
-          if (st.currentRem <= 0) { st.isCarryOver = false }
+          const done = st.currentRem <= 0.001
+          if (done) st.currentRem = 0
+          work.push({ order: st.currentOrder!, hrsWorked: h, isComplete: done, isCarryOver: st.isCarryOver, carriesOver: !done && avail <= 0.001 })
+          if (done) { st.isCarryOver = false }
           else { st.isCarryOver = true; break }
         }
-        const hasMore = st.currentRem > 0 || sharedPool.some(o => !taken.has(o.id) && canMachineCut(m, o, products))
+        const hasMore = st.currentRem > 0.001 || sharedPool.some(o => !taken.has(o.id) && canMachineCut(m, o, products, strictWire, requireDrill))
         st.mMap.set(dStr, { regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed, work, hasCarryOver: work.some(w => w.isCarryOver), carriesForward: hasMore })
       }
     }
@@ -559,18 +576,19 @@ function scheduleMode(
         // ── Daily: carry queue + today's new orders ───────────
         const todayOrders = dailyAssignments[di]?.asgn.get(m.id) ?? []
         const todayItems: QItem[] = todayOrders.map(o => ({
-          order: o, remainingHrs: o.qty * getHrsForKva(m, products[o.product]?.kva ?? o.kva ?? 0, globalRates), isCarryOver: false
+          order: o, remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates), isCarryOver: false
         }))
         const fullQueue = [...carryItems, ...todayItems]
         carryItems = []
         for (const item of fullQueue) {
-          if (avail <= 0) { carryItems.push({ ...item, isCarryOver: true }); continue }
+          if (avail <= 0.001) { carryItems.push({ ...item, isCarryOver: true }); continue }
           const h = Math.min(item.remainingHrs, avail)
           const ot2 = Math.max(0, h - (regCap - regUsed))
           regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h
-          const done = h >= item.remainingHrs
+          const rem = item.remainingHrs - h
+          const done = rem <= 0.001
           work.push({ order: item.order, hrsWorked: h, isComplete: done, isCarryOver: item.isCarryOver, carriesOver: !done })
-          if (!done) carryItems.push({ order: item.order, remainingHrs: item.remainingHrs - h, isCarryOver: true })
+          if (!done) carryItems.push({ order: item.order, remainingHrs: rem, isCarryOver: true })
         }
       }
 
@@ -625,7 +643,7 @@ function scheduleWeekWithCarryOver(
           carryQueue.push({ ...item, isCarryOver: true })
           continue
         }
-        const kva = products[item.order.product]?.kva ?? item.order.kva ?? 0
+        const kva = item.order.kva ?? products[item.order.product]?.kva ?? 0
         const hrsEach = getHrsForKva(m, kva, globalRates)
         const totalHrs = item.remainingQty * hrsEach
 
@@ -668,11 +686,36 @@ function scheduleWeekWithCarryOver(
 }
 
 /** Hard constraint: kVA range only. max_kva ≥ 9999 = ไม่จำกัด (no upper limit). */
-function canMachineCut(m: CuttingMachine, o: { product?: string; kva?: number | null }, products: Record<string, { kva?: number }> = {}): boolean {
-  const kva = products[o.product ?? '']?.kva ?? o.kva ?? 0
+/** Detect required cutting type from raw_mat field:
+ *  'laser' = LS steel (LS0.70, LS0.80) → needs laser=true
+ *  'm4'    = M-4 silicon steel         → needs m4=true
+ *  'any'   = unknown / not specified   → no constraint
+ */
+function detectWireType(rawMat?: string): 'laser' | 'm4' | 'any' {
+  if (!rawMat || rawMat === '—' || rawMat.trim() === '') return 'any'
+  const r = rawMat.toUpperCase().trim()
+  if (r.startsWith('LS')) return 'laser'
+  if (r.includes('M - 4') || r.includes('M-4') || r === 'M4') return 'm4'
+  return 'any'
+}
+
+function canMachineCut(
+  m: CuttingMachine,
+  o: { product?: string; kva?: number | null; raw_mat?: string },
+  products: Record<string, { kva?: number }> = {},
+  strictWire = false,
+  requireDrill = false
+): boolean {
+  const kva = o.kva ?? products[o.product ?? '']?.kva ?? 0
   if (kva < m.min_kva) return false
-  if (m.max_kva >= 9999) return true   // ไม่จำกัด — no upper bound
-  return kva <= m.max_kva
+  if (m.max_kva < 9999 && kva > m.max_kva) return false
+  if (strictWire) {
+    const wt = detectWireType(o.raw_mat)
+    if (wt === 'laser' && !m.laser) return false
+    if (wt === 'm4'    && !m.m4)    return false
+  }
+  if (requireDrill && kva >= 315 && !m.drill_8mm && !m.drill_22mm) return false
+  return true
 }
 
 /** Returns true if this machine prefers this order (drill type matches). */
@@ -682,6 +725,19 @@ function drillPrefers(m: CuttingMachine, o: { item_code?: string }): boolean {
   if (typeCode === '4') return m.drill_22mm
   if (['1','2','3'].includes(typeCode)) return m.drill_8mm
   return false
+}
+
+/** Soft wire preference: LS raw_mat prefers laser machine, M-4 raw_mat prefers m4 machine. Tiebreaker only. */
+function wirePrefers(m: CuttingMachine, o: { raw_mat?: string }): boolean {
+  const wt = detectWireType(o.raw_mat)
+  if (wt === 'laser') return m.laser
+  if (wt === 'm4')    return m.m4
+  return false
+}
+
+/** Display name: uses stored name if it contains a digit, else appends #id so unnamed machines are identifiable. */
+function mLabel(m: { id: number; name: string }): string {
+  return m.name && /\d/.test(m.name) ? m.name : `${m.name || 'เครื่องตัด'} #${m.id}`
 }
 
 function machineTypeLabel(m: CuttingMachine): { label: string; color: string } {
@@ -696,6 +752,7 @@ export default function CuttingMachines() {
   const { cuttingMachines: machines, orders, products, wcConfig } = state
   const [weekOffset, setWeekOffset] = useState(0)
   const [includePrevCarry, setIncludePrevCarry] = useState(false)
+  const [showWireData, setShowWireData] = useState(true)   // show Raw Mat / LV / HV in order cards
   const [planSaving, setPlanSaving] = useState(false)
   const [planSaveMsg, setPlanSaveMsg] = useState<string | null>(null)
   const [snapshots, setSnapshots] = useState<{ id: number; week_start: string; week_end: string; label: string; saved_at: string }[]>([])
@@ -713,6 +770,8 @@ export default function CuttingMachines() {
   const [balanceMode, setBalanceMode] = useState<BalanceMode>('weekly_no_ot')
   const [viewMode, setViewMode] = useState<'table' | 'cards' | 'pipeline'>('cards')
   const [globalRates, setGlobalRates] = useState<CuttingRate[]>([])
+  const [strictWire,   setStrictWire]   = useState(false)
+  const [requireDrill, setRequireDrill] = useState(false)
 
   useEffect(() => {
     fetch('/api/cutting-rates').then(r => r.json()).then(setGlobalRates).catch(() => {})
@@ -724,6 +783,57 @@ export default function CuttingMachines() {
   }
 
   // ── Plan snapshot ────────────────────────────────────────────
+  function exportPlanCSV() {
+    const rows: string[][] = []
+    // Header
+    rows.push(['Date', 'Day', 'Machine', 'SAP SO', 'kVA', 'Qty', 'Type', 'Customer', 'Raw Mat', 'Hours Worked', 'Total Hrs', 'Status', 'Carry Over'])
+
+    weekData.dayRows.forEach(row => {
+      const { d, machineCells } = row
+      const dateStr = fmtISO(d)
+      const dayName = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]
+      machineCells.forEach(({ m, machOff, work }) => {
+        if (machOff) {
+          rows.push([dateStr, dayName, mLabel(m), '', '', '', '', '', '', '', '', 'CLOSED', ''])
+          return
+        }
+        if (work.length === 0) return
+        work.forEach(w => {
+          const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
+          const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates)
+          const { typeCode } = decodeItemInfo(w.order.item_code ?? '')
+          const typeLabel = typeCode === '4' ? 'CR' : ['1','2','3'].includes(typeCode) ? 'Oil' : ''
+          const wt = detectWireType(w.order.raw_mat)
+          const wireLabel = wt === 'laser' ? 'Laser' : wt === 'm4' ? 'M4' : ''
+          rows.push([
+            dateStr,
+            dayName,
+            mLabel(m),
+            w.order.sap_so ?? w.order.id,
+            String(kva),
+            String(w.order.qty),
+            typeLabel,
+            w.order.customer ?? '',
+            `${w.order.raw_mat ?? ''}${wireLabel ? ` (${wireLabel})` : ''}`,
+            w.hrsWorked.toFixed(2),
+            totalHrs.toFixed(2),
+            w.isComplete ? 'Done' : 'In Progress',
+            w.carriesOver ? 'Yes' : 'No',
+          ])
+        })
+      })
+    })
+
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `cutting-plan-${fmtISO(mon)}_${fmtISO(sat)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   async function savePlan(label: string) {
     setPlanSaving(true); setPlanSaveMsg(null)
     try {
@@ -766,7 +876,7 @@ export default function CuttingMachines() {
                 carriesForward: mc.sched?.carriesForward ?? false,
                 work: mc.work.map(w => ({
                   sap_so: w.order.sap_so, customer: w.order.customer,
-                  kva: products[w.order.product]?.kva ?? w.order.kva,
+                  kva: w.order.kva ?? products[w.order.product]?.kva,
                   qty: w.order.qty, hrsWorked: w.hrsWorked,
                   isComplete: w.isComplete, carriesOver: w.carriesOver,
                   isCarryOver: w.isCarryOver,
@@ -928,12 +1038,12 @@ export default function CuttingMachines() {
       // Daily mode: each day starts fresh (wall=0) — balance within each day
       // Weekly mode: carry forward cumulative wall — balance across the week
       const initWall = new Map<number, number>()  // all modes use fresh start per day (weekly approach handles order assignment differently)
-      const asgn = assignOrders(dayOrds, activeMachines, products, globalRates, initWall, new Map(machIdx))
+      const asgn = assignOrders(dayOrds, activeMachines, products, globalRates, initWall, new Map(machIdx), strictWire, requireDrill)
       // Always accumulate for weekly mode reference
       activeMachines.forEach(m => {
         const mOrd = asgn.get(m.id) ?? []
         const w = mOrd.reduce((a, o) => {
-          const kva = products[o.product]?.kva ?? o.kva ?? 0
+          const kva = o.kva ?? products[o.product]?.kva ?? 0
           return a + (o.qty * getHrsForKva(m, kva, globalRates)) / (m.count || 1)
         }, 0)
         cumWall.set(m.id, (cumWall.get(m.id) ?? 0) + w)
@@ -941,7 +1051,7 @@ export default function CuttingMachines() {
       return { dStr, asgn }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [balanceMode, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${(m.off_days??[]).join('-')}`).join(',')])
+  }, [balanceMode, strictWire, requireDrill, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${+m.laser}${+m.m4}${(m.off_days??[]).join('-')}`).join(',')])
 
 
 
@@ -949,9 +1059,9 @@ export default function CuttingMachines() {
   const weekSchedule = useMemo(() => {
     // ── ❌ ไม่ OT ─────────────────────────────────────────────────
     const mi = new Map(machIdx)
-    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders)
-    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot)
-    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot)
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill)
+    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill)
     const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
       daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
       deadline_no_ot: () => sm('none','deadline'), priority_no_ot: () => sm('none','priority'),
@@ -966,7 +1076,7 @@ export default function CuttingMachines() {
     return (modeMap[balanceMode] ?? modeMap['weekly_no_ot'])()
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [balanceMode, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
+  [balanceMode, strictWire, requireDrill, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
   /**
    * SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
@@ -984,7 +1094,7 @@ export default function CuttingMachines() {
         wallHrs += sched.regHrs + sched.otHrs
         qty += sched.work.filter(w => w.isComplete).length > 0
           ? sched.work.filter(w => w.isComplete).reduce((s, w) => {
-              const kva = products[w.order.product]?.kva ?? w.order.kva ?? 0
+              const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
               const hrsEach = getHrsForKva(m, kva, globalRates)
               return s + (hrsEach > 0 ? w.hrsWorked / hrsEach : 0)
             }, 0)
@@ -1010,7 +1120,7 @@ export default function CuttingMachines() {
       const dayOrders = weekOrders.filter(o => o.plan_date === dStr)
       const dayScheduledQty = dayOrders.reduce((a, o) => a + o.qty, 0)
       const dayKva = dayOrders.reduce((a, o) => a + ((o.total_kva ?? 0) > 0 ? (o.total_kva ?? 0) : (o.kva ?? 0) * (o.qty ?? 1)), 0)
-      const unassigned = dayOrders.filter(o => machines.every(m => !canMachineCut(m, o, products)))
+      const unassigned = dayOrders.filter(o => machines.every(m => !canMachineCut(m, o, products, strictWire, requireDrill)))
 
       const machineCells = machines.map(m => {
         const machOff = !isMachineOn(m, dow)
@@ -1020,7 +1130,7 @@ export default function CuttingMachines() {
         const { reg: capH } = resolveHours(m, wcConfig, isSat, dow)
         const grp: Record<number, { drilled: boolean; partial: boolean }> = {}
         work.forEach(w => {
-          const kva = products[w.order.product]?.kva ?? w.order.kva ?? 0
+          const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
           if (!grp[kva]) grp[kva] = { drilled: drillPrefers(m, w.order), partial: !w.isComplete }
           if (!w.isComplete) grp[kva].partial = true
         })
@@ -1030,10 +1140,22 @@ export default function CuttingMachines() {
       const dayCarryQty = machineCells.reduce((a, mc) => a + mc.work.filter(w => w.isCarryOver).reduce((s, w) => s + w.order.qty, 0), 0)
       const dayWalls = machineCells.map(mc => mc.wall)
       const dayFinish = Math.max(...dayWalls, 0)
-      const { reg: dayCapHrs } = machines[0] ? resolveHours(machines[0], wcConfig, isSat, dow) : { reg: isSat ? 4 : 8 }
+      // Use first ACTIVE machine (not a closed one) for day capacity reference
+      const activeMachineRef = machines.find(m => isMachineOn(m, dow)) ?? machines[0]
+      const { reg: dayCapHrs } = activeMachineRef ? resolveHours(activeMachineRef, wcConfig, isSat, dow) : { reg: isSat ? 4 : 8 }
       const finishCol = dayFinish === 0 ? 'var(--txt3)' : dayFinish <= dayCapHrs ? 'var(--green)' : dayFinish <= dayCapHrs * 2 ? 'var(--amber)' : 'var(--red)'
 
-      return { dStr, d, di, dow, isSat, dayOrders, dayScheduledQty, dayKva, dayCarryQty, unassigned, machineCells, dayWalls, dayFinish, dayCapHrs, finishCol }
+      // Actual orders/units worked today (from machine cells, not plan_date)
+      // In weekly shared pool, "Friday" orders may have been processed on Monday-Thursday
+      const actualOrderIds = new Set<string>()
+      machineCells.forEach(mc => mc.work.forEach(w => actualOrderIds.add(w.order.id)))
+      const actualQty = [...actualOrderIds].reduce((s, oid) => {
+        const o = weekOrders.find(x => x.id === oid)
+        return s + (o?.qty ?? 0)
+      }, 0)
+      const actualOrderCount = actualOrderIds.size
+
+      return { dStr, d, di, dow, isSat, dayOrders, dayScheduledQty, dayKva, dayCarryQty, unassigned, machineCells, dayWalls, dayFinish, dayCapHrs, finishCol, actualQty, actualOrderCount }
     })
 
     const bottleneckWall = mTotals.reduce((a, t) => Math.max(a, t.wallHrs), 0)
@@ -1044,7 +1166,7 @@ export default function CuttingMachines() {
 
     return { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, summaryStatus }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weekSchedule, weekOrders.map(o=>o.id+o.qty).join(','), machines.map(m=>`${m.id}${(m.off_days??[]).join('-')}`).join(',')])
+  }, [weekSchedule, strictWire, requireDrill, weekOrders.map(o=>o.id+o.qty).join(','), machines.map(m=>`${m.id}${(m.off_days??[]).join('-')}`).join(',')])
 
   const { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, summaryStatus } = weekData
 
@@ -1302,7 +1424,7 @@ export default function CuttingMachines() {
                 {v === 'cards' ? '📋 รายวัน' : v === 'table' ? '📊 ตาราง' : '🔄 Pipeline'}
               </button>
             ))}
-            <span style={{ fontSize: 10, color: 'var(--txt3)', marginLeft: 6 }}>สมดุล:</span>
+            <span style={{ fontSize: 10, color: 'var(--txt3)', marginLeft: 6 }}>Balance:</span>
             {/* 3 OT policies × 7 approaches = 21 modes */}
             {([
               { group: '❌ ไม่ OT',         col: 'var(--green)', modes: [
@@ -1360,6 +1482,24 @@ export default function CuttingMachines() {
         </div>
         {/* Carry-over + save bar */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 16px', background: 'var(--bg2)', borderBottom: '1px solid var(--bord)', flexShrink: 0 }}>
+          {/* Wire data toggle */}
+          <button onClick={() => setShowWireData(v => !v)}
+            title="แสดง Raw Mat / LV / HV ในแต่ละ order"
+            style={{ fontSize: 11, padding: '4px 12px', borderRadius: 8, border: `1px solid ${showWireData ? 'rgba(137,180,250,.5)' : 'var(--bord2)'}`, background: showWireData ? 'rgba(137,180,250,.15)' : 'var(--bg3)', color: showWireData ? 'var(--blue)' : 'var(--txt3)', cursor: 'pointer', fontWeight: showWireData ? 700 : 400 }}>
+            📐 Wire Data
+          </button>
+          {/* Wire Match toggle */}
+          <button onClick={() => setStrictWire(v => !v)}
+            title={strictWire ? 'Wire Match ON: LS→laser machine, M-4→M4 machine (click to disable)' : 'Wire Match OFF: soft preference only (click to enable strict matching)'}
+            style={{ fontSize: 11, padding: '4px 12px', borderRadius: 8, border: `1px solid ${strictWire ? 'rgba(250,179,135,.6)' : 'var(--bord2)'}`, background: strictWire ? 'rgba(250,179,135,.15)' : 'var(--bg3)', color: strictWire ? 'var(--amber)' : 'var(--txt3)', cursor: 'pointer', fontWeight: strictWire ? 700 : 400 }}>
+            {strictWire ? '🔒 Wire Match' : '🔓 Wire Match'}
+          </button>
+          {/* Drill required toggle */}
+          <button onClick={() => setRequireDrill(v => !v)}
+            title={requireDrill ? 'เจาะ ≥315kVA ON: งาน ≥315kVA ต้องใช้เครื่องที่มีสว่านเจาะ (click to disable)' : 'เจาะ ≥315kVA OFF: ไม่บังคับ (click to enable)'}
+            style={{ fontSize: 11, padding: '4px 12px', borderRadius: 8, border: `1px solid ${requireDrill ? 'rgba(166,227,161,.6)' : 'var(--bord2)'}`, background: requireDrill ? 'rgba(166,227,161,.12)' : 'var(--bg3)', color: requireDrill ? 'var(--green)' : 'var(--txt3)', cursor: 'pointer', fontWeight: requireDrill ? 700 : 400 }}>
+            {requireDrill ? '🔩 เจาะ ≥315kVA' : '🔩 เจาะ ≥315kVA'}
+          </button>
           {/* Toggle carry-over from prev week */}
           <button onClick={() => setIncludePrevCarry(v => !v)}
             title="นำงานที่ค้างจากสัปดาห์ที่แล้วมาคำนวณด้วย"
@@ -1376,6 +1516,11 @@ export default function CuttingMachines() {
           <button onClick={() => savePlan('')} disabled={planSaving || weekOrders.length === 0}
             style={{ fontSize: 11, padding: '5px 14px', borderRadius: 8, border: 'none', background: 'var(--green)', color: '#000', fontWeight: 700, cursor: 'pointer', opacity: (planSaving || weekOrders.length === 0) ? 0.5 : 1 }}>
             {planSaving ? 'กำลังบันทึก…' : '💾 บันทึกแผน'}
+          </button>
+          <button onClick={exportPlanCSV} disabled={weekOrders.length === 0}
+            title="Export schedule to CSV (Date, Machine, SAP SO, kVA, Hours…)"
+            style={{ fontSize: 11, padding: '5px 14px', borderRadius: 8, border: '1px solid var(--bord2)', background: 'var(--bg3)', color: 'var(--txt2)', fontWeight: 600, cursor: 'pointer', opacity: weekOrders.length === 0 ? 0.5 : 1 }}>
+            📤 Export CSV
           </button>
           <button onClick={loadSnapshots}
             style={{ fontSize: 10, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--bord2)', background: 'var(--bg3)', color: 'var(--txt2)', cursor: 'pointer' }}>
@@ -1450,7 +1595,7 @@ export default function CuttingMachines() {
                       <tbody>
                         {snapMachines?.map(m => (
                           <tr key={m.id}>
-                            <td style={{ padding: '2px 5px', fontWeight: 700 }}>{m.name}</td>
+                            <td style={{ padding: '2px 5px', fontWeight: 700 }}>{mLabel(m)}</td>
                             <td style={{ padding: '2px 5px', textAlign: 'center' }}>{m.count}</td>
                             <td style={{ padding: '2px 5px', fontFamily: 'var(--mono)', fontSize: 8 }}>{m.min_kva}–{m.max_kva >= 9999 ? '∞' : m.max_kva}</td>
                             <td style={{ padding: '2px 5px', textAlign: 'center', color: 'var(--amber)', fontFamily: 'var(--mono)' }}>{m.hrs_per_unit}</td>
@@ -1550,10 +1695,17 @@ export default function CuttingMachines() {
             {/* ── CARD VIEW ── */}
             {viewMode === 'cards' && <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {dayRows.map(row => {
-                const { dStr, d, isSat, dayOrders, dayScheduledQty, dayKva, dayCarryQty, unassigned, machineCells, dayFinish, dayCapHrs, finishCol } = row
-                if (dayOrders.length === 0) return null
+                const { dStr, d, isSat, dayOrders, dayScheduledQty, dayKva, dayCarryQty, unassigned, machineCells, dayFinish, dayCapHrs, finishCol, actualQty, actualOrderCount } = row
+                // Show day only if there are orders planned OR machines actually working
+                const hasActualWork = machineCells.some(mc => mc.work.length > 0)
+                if (dayOrders.length === 0 && !hasActualWork) return null
                 const isToday = dStr === fmtISO(new Date())
-                const totalQty = dayScheduledQty
+                // Show planned count when all orders are being worked today;
+                // show actual count when weekly pool pre-processed orders to earlier days
+                const showPlanned = actualOrderCount === dayOrders.length || dayOrders.length === 0
+                const displayQty = showPlanned ? dayScheduledQty : actualQty
+                const displayOrders = showPlanned ? dayOrders.length : actualOrderCount
+                const plannedNote = !showPlanned ? ` (แผน ${dayOrders.length} orders)` : ''
 
                 return (
                   <div key={dStr} style={{ border: `1px solid ${isToday ? 'var(--blue)' : 'var(--bord)'}`, borderRadius: 8, overflow: 'hidden' }}>
@@ -1562,7 +1714,9 @@ export default function CuttingMachines() {
                       <span style={{ fontWeight: 700, fontSize: 12, color: isToday ? 'var(--blue)' : isSat ? 'var(--txt2)' : 'var(--txt)' }}>
                         {DAY_TH[d.getDay()]} {fmtD(d)}{isToday ? ' ◀ วันนี้' : ''}
                       </span>
-                      <span style={{ fontSize: 10, color: 'var(--txt3)' }}>{totalQty} ตัว · {dayOrders.length} orders</span>
+                      <span style={{ fontSize: 10, color: 'var(--txt3)' }}>
+                        {displayQty} ตัว · {displayOrders} orders{plannedNote}
+                      </span>
                       <span style={{ fontSize: 11, fontWeight: 700, color: finishCol, fontFamily: 'var(--mono)', marginLeft: 'auto' }}>
                         เสร็จใน {dayFinish.toFixed(1)}h
                         {dayFinish > dayCapHrs && <span style={{ fontSize: 9, marginLeft: 4 }}>⚠ OT {(dayFinish - dayCapHrs).toFixed(1)}h</span>}
@@ -1574,7 +1728,7 @@ export default function CuttingMachines() {
                       {machineCells.map(({ m, machOff, sched, work, wall, capH, grp }) => {
                         if (machOff) return (
                           <div key={m.id} style={{ display: 'flex', alignItems: 'center', padding: '4px 14px', borderBottom: '0.5px solid var(--bord)', gap: 8, opacity: 0.5 }}>
-                            <div style={{ minWidth: 140, fontSize: 10, fontWeight: 700, color: 'var(--red)' }}>🔴 {m.name}</div>
+                            <div style={{ minWidth: 140, fontSize: 10, fontWeight: 700, color: 'var(--red)' }}>🔴 {mLabel(m)}</div>
                             <span style={{ fontSize: 9, color: 'var(--txt3)' }}>ปิดวันนี้</span>
                           </div>
                         )
@@ -1586,7 +1740,7 @@ export default function CuttingMachines() {
                             {/* Machine name + time */}
                             <div style={{ minWidth: 140, flexShrink: 0 }}>
                               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt)' }}>
-                                {m.name}
+                                {mLabel(m)}
                                 {sched.hasCarryOver && <span style={{ fontSize: 8, marginLeft: 4, color: 'var(--blue)', background: 'rgba(137,180,250,.15)', padding: '1px 4px', borderRadius: 4 }}>↩ ต่อจากเมื่อวาน</span>}
                               </div>
                               <div style={{ fontSize: 9, fontFamily: 'var(--mono)', color: timeCol, fontWeight: 600 }}>
@@ -1598,22 +1752,38 @@ export default function CuttingMachines() {
                             {/* Work items */}
                             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
                               {sched.work.map((w, wi) => {
-                                const kva = products[w.order.product]?.kva ?? w.order.kva ?? 0
+                                const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
                                 const { typeCode } = decodeItemInfo(w.order.item_code ?? '')
                                 const kvaCol = kva <= 400 ? 'var(--blue)' : kva <= 3500 ? 'var(--amber)' : 'var(--red)'
                                 const typeLabel = typeCode === '4' ? 'CR' : ['1','2','3'].includes(typeCode) ? 'Oil' : ''
                                 return (
-                                  <div key={wi} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10 }}>
-                                    {w.isCarryOver && <span style={{ fontSize: 8, color: 'var(--blue)' }}>↩</span>}
-                                    <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt3)', fontSize: 9, minWidth: 110 }}>{w.order.sap_so || w.order.id.slice(-10)}</span>
-                                    <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: kvaCol }}>{kva.toLocaleString()}kVA</span>
-                                    <span style={{ color: w.carriesOver ? 'var(--red)' : 'var(--txt3)' }}>
-                                      {w.qtyDone}/{w.order.qty} ตัว
-                                      {w.carriesOver && <span style={{ fontSize: 8, marginLeft: 3 }}>→ต่อ</span>}
-                                    </span>
-                                    {typeLabel && <span style={{ fontSize: 8, padding: '1px 4px', borderRadius: 4, background: typeCode === '4' ? 'rgba(250,179,135,.2)' : 'rgba(137,180,250,.15)', color: typeCode === '4' ? 'var(--amber)' : 'var(--blue)' }}>{typeLabel}</span>}
-                                    {drillPrefers(m, w.order) && <span style={{ fontSize: 9 }}>🔩</span>}
-                                    <span style={{ color: 'var(--txt3)', marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 9 }}>{w.hrsWorked.toFixed(1)}h</span>
+                                  <div key={wi}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10 }}>
+                                      {w.isCarryOver && <span style={{ fontSize: 8, color: 'var(--blue)' }}>↩</span>}
+                                      <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt3)', fontSize: 9, minWidth: 110 }}>{w.order.sap_so || w.order.id.slice(-10)}</span>
+                                      <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: kvaCol }}>{kva.toLocaleString()}kVA ×{w.order.qty}</span>
+                                      {typeLabel && <span style={{ fontSize: 8, padding: '1px 4px', borderRadius: 4, background: typeCode === '4' ? 'rgba(250,179,135,.2)' : 'rgba(137,180,250,.15)', color: typeCode === '4' ? 'var(--amber)' : 'var(--blue)' }}>{typeLabel}</span>}
+                                      {drillPrefers(m, w.order) && <span style={{ fontSize: 9 }}>🔩</span>}
+                                      <span style={{ color: 'var(--txt3)', marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 9 }}>{w.hrsWorked.toFixed(1)}h{w.isComplete ? ' ✓' : w.carriesOver ? ' →' : ''}</span>
+                                    </div>
+                                    {showWireData && (w.order.raw_mat || w.order.lv || w.order.hv) && (
+                                      <div style={{ display: 'flex', gap: 6, paddingLeft: 16, paddingBottom: 2, fontSize: 8, color: 'var(--txt3)', flexWrap: 'wrap', alignItems: 'center' }}>
+                                        {w.order.raw_mat && (() => {
+                                          const wt = detectWireType(w.order.raw_mat)
+                                          const matched = wt === 'laser' ? m.laser : wt === 'm4' ? m.m4 : true
+                                          const badge = wt === 'laser' ? '🔆 Laser' : wt === 'm4' ? '⬛ M-4' : ''
+                                          return (
+                                            <span style={{ fontWeight: 700, color: wt === 'any' ? 'var(--txt2)' : matched ? 'var(--green)' : 'var(--red)',
+                                              padding: '1px 5px', borderRadius: 4, background: wt === 'any' ? 'var(--bg3)' : matched ? 'rgba(166,227,161,.15)' : 'rgba(224,90,78,.12)',
+                                              border: `1px solid ${wt === 'any' ? 'var(--bord)' : matched ? 'rgba(166,227,161,.4)' : 'rgba(224,90,78,.3)'}` }}>
+                                              📐 {w.order.raw_mat}{badge ? ` ${badge}` : ''}{wt !== 'any' ? (matched ? ' ✓' : ' ✕') : ''}
+                                            </span>
+                                          )
+                                        })()}
+                                        {w.order.lv && w.order.lv !== '—' && <span>LV: <span style={{ fontFamily: 'var(--mono)', color: 'var(--blue)' }}>{w.order.lv}</span></span>}
+                                        {w.order.hv && w.order.hv !== '—' && <span>HV: <span style={{ fontFamily: 'var(--mono)', color: 'var(--amber)' }}>{w.order.hv}</span></span>}
+                                      </div>
+                                    )}
                                   </div>
                                 )
                               })}
@@ -1623,7 +1793,7 @@ export default function CuttingMachines() {
                       })}
                       {/* Unassigned */}
                       {unassigned.map((o, i) => {
-                        const kva = products[o.product]?.kva ?? o.kva ?? 0
+                        const kva = o.kva ?? products[o.product]?.kva ?? 0
                         return (
                           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 14px', fontSize: 10, color: 'var(--red)' }}>
                             <div style={{ minWidth: 140, flexShrink: 0, fontSize: 11, fontWeight: 700 }}>⚠ ไม่มีเครื่อง</div>
@@ -1644,12 +1814,12 @@ export default function CuttingMachines() {
                         <div style={{ padding: '5px 14px', background: 'rgba(250,179,135,.06)', borderTop: '1px dashed var(--bord)', fontSize: 10 }}>
                           {otMachines.length > 0 && (
                             <span style={{ color: 'var(--amber)', marginRight: 12 }}>
-                              ⚠ OT แนะนำ: {otMachines.map(m => `${m.name} +${(weekSchedule.get(m.id)!.get(dStr)!.otNeeded).toFixed(1)}h`).join(', ')}
+                              ⚠ OT แนะนำ: {otMachines.map(m => `${mLabel(m)} +${(weekSchedule.get(m.id)!.get(dStr)!.otNeeded).toFixed(1)}h`).join(', ')}
                             </span>
                           )}
                           {carryMachines.length > 0 && (
                             <span style={{ color: 'var(--red)' }}>
-                              ↩ งานค้าง: {carryMachines.map(m => m.name).join(', ')} → ต่อวันถัดไป
+                              ↩ งานค้าง: {carryMachines.map(m => mLabel(m)).join(', ')} → ต่อวันถัดไป
                             </span>
                           )}
                         </div>
@@ -1673,7 +1843,7 @@ export default function CuttingMachines() {
                         const typeInfo = machineTypeLabel(m)
                         return (
                           <th key={m.id} style={{ textAlign: 'center', minWidth: 150, borderLeft: '1px solid var(--bord)' }}>
-                            <div style={{ fontWeight: 700 }}>{m.name}</div>
+                            <div style={{ fontWeight: 700 }}>{mLabel(m)}</div>
                             <div style={{ fontSize: 9, padding: '1px 6px', borderRadius: 8, display: 'inline-block', marginTop: 2, background: `${typeInfo.color}22`, color: typeInfo.color, fontWeight: 600 }}>{typeInfo.label}</div>
                             <div style={{ fontSize: 9, color: 'var(--txt3)', fontWeight: 400, marginTop: 2 }}>{m.min_kva}–{m.max_kva >= 9999 ? '∞' : m.max_kva}kVA · {m.hrs_per_unit}h/ตัว</div>
                             <div style={{ fontSize: 9, color: col, fontWeight: 600, marginTop: 2 }}>{t.qty} ตัว · {t.wallHrs.toFixed(1)}h{t.ot > 0 ? ` · OT ${t.ot.toFixed(1)}h` : ''}</div>
@@ -1697,7 +1867,7 @@ export default function CuttingMachines() {
                             <div style={{ fontSize: 9, color: 'var(--txt3)' }}>{dayOrders.length} orders · {dayOrders.reduce((a, o) => a + o.qty, 0)} ตัว</div>
                             {dayOrders.filter(o => machines.every(m => !canMachineCut(m, o, products))).map((o, i) => (
                               <div key={i} style={{ fontSize: 8, color: 'var(--red)', fontFamily: 'var(--mono)', padding: '1px 4px', borderRadius: 4, background: 'rgba(224,90,78,.1)', marginTop: 2 }}>
-                                ⚠ {(products[o.product]?.kva ?? o.kva ?? 0).toLocaleString()}kVA ×{o.qty}
+                                ⚠ {(o.kva ?? products[o.product]?.kva ?? 0).toLocaleString()}kVA ×{o.qty}
                               </div>
                             ))}
                           </td>
@@ -1715,35 +1885,57 @@ export default function CuttingMachines() {
                                 onClick={() => work.length > 0 && setSelectedCell(isSelected ? null : { machineId: m.id, date: dStr })}>
                                 {work.length === 0 ? <span className={styles.dim}>—</span> : (
                                   <>
-                                    {sched?.hasCarryOver && <span style={{ fontSize: 7, color: 'var(--blue)', display: 'block', marginBottom: 2 }}>↩ ต่อ</span>}
-                                    <div className={styles.chips} style={{ marginBottom: 3 }}>
-                                      {Object.entries(grp).sort((a, b) => +a[0] - +b[0]).map(([kva, g]) => (
-                                        <span key={kva} className={styles.chip} style={{ color: +kva <= 400 ? 'var(--blue)' : +kva <= 3500 ? 'var(--amber)' : 'var(--red)', opacity: g.partial ? 0.7 : 1 }}>
-                                          {(+kva).toLocaleString()}kVA{g.drilled ? '🔩' : ''}{g.partial ? '→' : ''}
-                                        </span>
-                                      ))}
+                                    {/* Summary line */}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4, flexWrap: 'wrap' }}>
+                                      {sched?.hasCarryOver && <span style={{ fontSize: 8, color: 'var(--blue)', background: 'rgba(137,180,250,.12)', padding: '1px 4px', borderRadius: 4 }}>↩ ต่อ</span>}
+                                      <span style={{ fontSize: 9, fontFamily: 'var(--mono)', color: col, fontWeight: 700 }}>
+                                        {wall.toFixed(1)}h / {capH}h
+                                      </span>
+                                      {sched?.otHrs ? <span style={{ fontSize: 8, color: 'var(--amber)', fontWeight: 600 }}>+OT {sched.otHrs.toFixed(1)}h</span> : ''}
+                                      {sched?.carriesForward && <span style={{ fontSize: 8, color: 'var(--red)' }}>→ พรุ่งนี้</span>}
                                     </div>
-                                    <div style={{ fontSize: 9, color: col, fontWeight: 600 }}>
-                                      {wall.toFixed(1)}h
-                                      {sched?.otHrs ? <span style={{ color: 'var(--amber)', marginLeft: 4 }}>+OT {sched.otHrs.toFixed(1)}h</span> : ''}
-                                      {sched?.carriesForward && <span style={{ color: 'var(--red)', marginLeft: 4 }}>→</span>}
-                                    </div>
-                                    {isSelected && (
-                                      <div style={{ marginTop: 4, borderTop: '1px solid var(--bord)', paddingTop: 4 }}>
-                                        {work.map((w, idx) => {
-                                          const kva = products[w.order.product]?.kva ?? w.order.kva ?? 0
-                                          const totalH = w.order.qty * getHrsForKva(m, kva, globalRates)
-                                          return (
-                                            <div key={idx} style={{ fontSize: 9, display: 'flex', gap: 4, marginBottom: 2 }}>
-                                              {w.isCarryOver && <span style={{ color: 'var(--blue)', fontSize: 7 }}>↩</span>}
-                                              <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt3)', fontSize: 8 }}>{w.order.sap_so || w.order.id.slice(-8)}</span>
-                                              <span style={{ fontFamily: 'var(--mono)', color: 'var(--blue)' }}>{kva.toLocaleString()}kVA ×{w.order.qty}</span>
-                                              <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', color: w.carriesOver ? 'var(--red)' : 'var(--green)', fontWeight: 700 }}>
-                                                {w.hrsWorked.toFixed(1)}h{totalH > 0 ? `/${totalH.toFixed(1)}h` : ''}{w.isComplete ? ' ✓' : ' →'}
+                                    {/* Order rows — always visible, no click needed */}
+                                    {work.map((w, idx) => {
+                                      const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
+                                      const kvaCol = kva <= 400 ? 'var(--blue)' : kva <= 3500 ? 'var(--amber)' : 'var(--red)'
+                                      const { typeCode: tc } = decodeItemInfo(w.order.item_code ?? '')
+                                      const typeLabel = tc === '4' ? 'CR' : ['1','2','3'].includes(tc) ? 'Oil' : ''
+                                      const totalH = w.order.qty * getHrsForKva(m, kva, globalRates)
+                                      const wireType = detectWireType(w.order.raw_mat)
+                                      const wireMatch = wireType === 'laser' ? m.laser : wireType === 'm4' ? m.m4 : true
+                                      return (
+                                        <div key={idx} style={{ borderBottom: idx < work.length - 1 ? '0.5px solid var(--bord)' : 'none', paddingBottom: 3, marginBottom: 3 }}>
+                                          {/* Row 1: SAP SO + kVA + status */}
+                                          <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 9 }}>
+                                            {w.isCarryOver && <span style={{ color: 'var(--blue)', fontSize: 7 }}>↩</span>}
+                                            <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt3)', fontSize: 8, minWidth: 80 }}>{w.order.sap_so || w.order.id.slice(-8)}</span>
+                                            <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: kvaCol }}>{kva.toLocaleString()}kVA</span>
+                                            <span style={{ color: 'var(--txt3)', fontSize: 8 }}>×{w.order.qty}</span>
+                                            {typeLabel && <span style={{ fontSize: 7, padding: '0 3px', borderRadius: 3, background: tc === '4' ? 'rgba(250,179,135,.2)' : 'rgba(137,180,250,.12)', color: tc === '4' ? 'var(--amber)' : 'var(--blue)' }}>{typeLabel}</span>}
+                                            {drillPrefers(m, w.order) && <span style={{ fontSize: 9 }}>🔩</span>}
+                                            <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 9, fontWeight: 700, color: w.carriesOver ? 'var(--red)' : w.isComplete ? 'var(--green)' : 'var(--amber)' }}>
+                                              {w.hrsWorked.toFixed(1)}h{totalH > 0 ? `/${totalH.toFixed(1)}h` : ''}{w.isComplete ? '✓' : '→'}
+                                            </span>
+                                          </div>
+                                          {/* Row 2: customer + wire data */}
+                                          <div style={{ display: 'flex', gap: 5, fontSize: 8, color: 'var(--txt3)', marginTop: 1, flexWrap: 'wrap' }}>
+                                            {w.order.customer && <span style={{ color: 'var(--txt2)', fontWeight: 600 }}>{w.order.customer}</span>}
+                                            {showWireData && w.order.raw_mat && w.order.raw_mat !== '—' && (
+                                              <span style={{ color: wireType === 'any' ? 'var(--txt3)' : wireMatch ? 'var(--green)' : 'var(--red)', fontWeight: wireType !== 'any' ? 600 : 400 }}>
+                                                📐 {w.order.raw_mat}{wireType !== 'any' ? (wireMatch ? ' ✓' : ' ✕') : ''}
                                               </span>
-                                            </div>
-                                          )
-                                        })}
+                                            )}
+                                            {showWireData && w.order.lv && w.order.lv !== '—' && <span>LV:<span style={{ fontFamily: 'var(--mono)', color: 'var(--blue)', marginLeft: 2 }}>{w.order.lv}</span></span>}
+                                            {showWireData && w.order.hv && w.order.hv !== '—' && <span>HV:<span style={{ fontFamily: 'var(--mono)', color: 'var(--amber)', marginLeft: 2 }}>{w.order.hv}</span></span>}
+                                          </div>
+                                        </div>
+                                      )
+                                    })}
+                                    {isSelected && (
+                                      <div style={{ marginTop: 4, borderTop: '1px solid rgba(137,180,250,.3)', paddingTop: 4, fontSize: 8, color: 'var(--txt3)' }}>
+                                        {work.filter(w => w.order.comment && w.order.comment !== '-').map((w, idx) => (
+                                          <div key={idx} style={{ fontStyle: 'italic' }}>{w.order.sap_so}: {w.order.comment}</div>
+                                        ))}
                                       </div>
                                     )}
                                   </>
@@ -1847,7 +2039,7 @@ export default function CuttingMachines() {
                     return (
                       <div key={m.id} style={{ display: 'flex', alignItems: 'center', marginBottom: 5 }}>
                         <div style={{ width: 130, flexShrink: 0, paddingRight: 8 }}>
-                          <div style={{ fontSize: 10, fontWeight: 700 }}>{m.name}</div>
+                          <div style={{ fontSize: 10, fontWeight: 700 }}>{mLabel(m)}</div>
                           <div style={{ fontSize: 8, color: col, fontFamily: 'var(--mono)' }}>{t.qty}ตัว·{t.wallHrs.toFixed(1)}h</div>
                         </div>
                         <div style={{ flex: 1, position: 'relative', height: 32, background: 'var(--bg3)', borderRadius: 4, border: '1px solid var(--bord)', overflow: 'hidden' }}>
@@ -1861,7 +2053,7 @@ export default function CuttingMachines() {
                           ))}
                           {/* Order segments */}
                           {segs.map((seg, si) => {
-                            const kva = products[seg.order.product]?.kva ?? seg.order.kva ?? 0
+                            const kva = seg.order.kva ?? products[seg.order.product]?.kva ?? 0
                             const color = orderColor.get(seg.order.id) ?? '#89b4fa'
                             const left = seg.start / totalHrs * 100
                             const width = Math.max(seg.dur / totalHrs * 100, 0.3)
