@@ -32,6 +32,9 @@ export interface CuttingMachine {
   wc_id?: string     // links to WC Config — pulls hrs, ot, sat_hrs, sat_ot from DB
   off_days?: number[] // weekday numbers when machine is OFF (1=Mon … 6=Sat, 0=Sun)
   rates?: CuttingRate[]   // per-kVA cutting hours (overrides hrs_per_unit when matched)
+  time_mul?: number      // speed multiplier: final_hrs = base_hrs × time_mul + tmc_hrs  (default 1.0)
+  tmc_hrs?: number       // fixed TMC fallback hours (when no tmc_rates entry matches)   (default 0)
+  tmc_rates?: CuttingRate[]  // per-kVA TMC hours for Cast Resin — overrides tmc_hrs when matched
 }
 
 export interface ItemCode { description: string; category: string }

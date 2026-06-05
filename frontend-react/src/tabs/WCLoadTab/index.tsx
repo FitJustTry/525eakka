@@ -80,7 +80,7 @@ function getFlowType(typeCode: string, kva: number): FlowType {
 
 function computeOrderRow(order: Order, products: Record<string, Product>, opts: ComputeOpts): OrderRow {
   const info = decodeItemInfo(order.item_code ?? '')
-  const resolvedKva = info.kva || order.kva
+  const resolvedKva = (info.kva && !isNaN(info.kva) ? info.kva : null) ?? (order.kva && !isNaN(order.kva) ? order.kva : 0)
   const productKey = resolveProductKey(order.item_code ?? '', order.kva)
   const product = products[productKey]
   const qty = order.qty
@@ -101,9 +101,10 @@ function computeOrderRow(order: Order, products: Record<string, Product>, opts: 
         opSteps.push({ wc: op.wc, wcName: op.name, hrsPerUnit: op.hrs, totalHrs: 0, zpGroup: zp, source: 'base', label: '(ข้าม — Cast Resin)', skipped: true })
         continue
       }
-      const total = op.hrs * qty
+      const safeHrs = isNaN(op.hrs) || op.hrs == null ? 0 : op.hrs
+      const total = safeHrs * qty
       wcHours[op.wc] = (wcHours[op.wc] ?? 0) + total
-      opSteps.push({ wc: op.wc, wcName: op.name, hrsPerUnit: op.hrs, totalHrs: total, zpGroup: zp, source: 'base', label: '', skipped: false })
+      opSteps.push({ wc: op.wc, wcName: op.name, hrsPerUnit: safeHrs, totalHrs: total, zpGroup: zp, source: 'base', label: '', skipped: false })
     }
 
     // 2. Cast Resin replacement ops (ZP16 EE3403)
@@ -177,14 +178,14 @@ function FlowCard({ row }: { row: OrderRow }) {
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, fontWeight: 700, color: flowColor }}>{FLOW_LABEL[row.flowType]}</span>
         <span style={{ fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--txt3)' }}>{row.order.item_code || '—'}</span>
-        <span style={{ fontSize: 10, color: 'var(--txt2)' }}>{row.decodedKva.toLocaleString()} kVA</span>
+        <span style={{ fontSize: 10, color: 'var(--txt2)' }}>{(row.decodedKva || 0).toLocaleString()} kVA</span>
         <span style={{ fontSize: 10, color: 'var(--txt2)' }}>{row.typeName}</span>
         <span style={{ fontSize: 10, color: 'var(--txt3)' }}>{row.hvLabel}</span>
         {row.isSpecial   && <Tag text="S Special" color="var(--purple)" bg="rgba(180,101,232,.15)" />}
         {row.isAluminum  && <Tag text="Aluminum" color="var(--txt2)" bg="var(--bg3)" />}
         {row.isCastResin && <Tag text="Cast Resin" color="var(--amber)" bg="rgba(224,156,42,.15)" />}
         <span style={{ marginLeft: 'auto', fontSize: 11, fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--txt)' }}>
-          {row.totalStdHrs.toFixed(2)} std hrs × {row.order.qty} unit
+          {(isNaN(row.totalStdHrs) ? 0 : row.totalStdHrs).toFixed(2)} std hrs × {row.order.qty} unit
         </span>
       </div>
 
@@ -234,7 +235,7 @@ function FlowCard({ row }: { row: OrderRow }) {
         <tfoot>
           <tr style={{ borderTop: '1px solid var(--bord2)', background: 'var(--bg3)' }}>
             <td colSpan={5} style={{ padding: '4px 8px', fontWeight: 700, fontSize: 10, color: 'var(--txt2)' }}>รวม std hrs</td>
-            <td style={{ padding: '4px 8px', fontFamily: 'var(--mono)', textAlign: 'right', fontWeight: 700, color: 'var(--txt)', fontSize: 12 }}>{row.totalStdHrs.toFixed(2)}</td>
+            <td style={{ padding: '4px 8px', fontFamily: 'var(--mono)', textAlign: 'right', fontWeight: 700, color: 'var(--txt)', fontSize: 12 }}>{(isNaN(row.totalStdHrs) ? 0 : row.totalStdHrs).toFixed(2)}</td>
             <td />
           </tr>
         </tfoot>
@@ -495,7 +496,7 @@ export default function WCLoadTab() {
                                 <span style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--txt3)', minWidth:100 }}>{row.order.item_code || '—'}</span>
 
                                 {/* kVA */}
-                                <span style={{ fontFamily:'var(--mono)', fontWeight:700, color:'var(--blue)', fontSize:11 }}>{row.decodedKva.toLocaleString()} kVA</span>
+                                <span style={{ fontFamily:'var(--mono)', fontWeight:700, color:'var(--blue)', fontSize:11 }}>{(row.decodedKva || 0).toLocaleString()} kVA</span>
 
                                 {/* Type */}
                                 <span style={{ fontSize:10, color:'var(--txt2)' }}>{row.typeName}</span>
@@ -512,7 +513,7 @@ export default function WCLoadTab() {
                                 {!row.productKey && <Tag text="!Product" color="var(--red)"    bg="rgba(224,90,78,.15)" />}
 
                                 <span style={{ marginLeft:'auto', fontFamily:'var(--mono)', fontWeight:700, fontSize:12 }}>
-                                  {row.totalStdHrs.toFixed(2)} h
+                                  {(isNaN(row.totalStdHrs) ? 0 : row.totalStdHrs).toFixed(2)} h
                                 </span>
                                 <span style={{ fontFamily:'var(--mono)', color:'var(--amber)', fontSize:11 }}>× {row.order.qty}u</span>
                               </div>

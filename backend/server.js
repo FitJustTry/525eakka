@@ -229,6 +229,9 @@ async function initDatabase() {
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS ot_hrs NUMERIC NOT NULL DEFAULT 4`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS wc_id TEXT NOT NULL DEFAULT ''`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS off_days JSONB NOT NULL DEFAULT '[]'`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS time_mul NUMERIC NOT NULL DEFAULT 1`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS tmc_hrs NUMERIC NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS tmc_rates JSONB NOT NULL DEFAULT '[]'`);
     await client.query(`UPDATE cutting_machines SET laser = laser_m4 WHERE laser = false AND laser_m4 = true`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS coil_plan (
@@ -829,6 +832,9 @@ function rowToCuttingMachine(row) {
     ot_hrs: toNumber(row.ot_hrs, 4),
     wc_id: row.wc_id || '',
     off_days: Array.isArray(row.off_days) ? row.off_days : [],
+    time_mul: toNumber(row.time_mul, 1),
+    tmc_hrs: toNumber(row.tmc_hrs, 0),
+    tmc_rates: Array.isArray(row.tmc_rates) ? row.tmc_rates : [],
   };
 }
 
@@ -838,30 +844,32 @@ app.get('/api/cutting-machines', asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/cutting-machines', asyncRoute(async (req, res) => {
-  const { name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes, rates, reg_hrs, ot_hrs, wc_id, off_days } = req.body;
+  const { name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes, rates, reg_hrs, ot_hrs, wc_id, off_days, time_mul, tmc_hrs, tmc_rates } = req.body;
   const result = await pool.query(
-    `INSERT INTO cutting_machines (name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes, rates, reg_hrs, ot_hrs, wc_id, off_days, sort_order)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,(SELECT COALESCE(MAX(sort_order),0)+1 FROM cutting_machines))
+    `INSERT INTO cutting_machines (name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes, rates, reg_hrs, ot_hrs, wc_id, off_days, time_mul, tmc_hrs, tmc_rates, sort_order)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,(SELECT COALESCE(MAX(sort_order),0)+1 FROM cutting_machines))
      RETURNING *`,
     [name||'เครื่องตัด', toInt(count,1), toInt(min_kva,50), toInt(max_kva,1000), toNumber(hrs_per_unit,2.5),
      !!laser, !!m4, toInt(min_face_mm,1), toInt(max_face_mm,9999), !!drill_8mm, !!drill_22mm, notes||'',
      JSON.stringify(Array.isArray(rates) ? rates : []), toNumber(reg_hrs,8), toNumber(ot_hrs,4), wc_id||'',
-     JSON.stringify(Array.isArray(off_days) ? off_days : [])]
+     JSON.stringify(Array.isArray(off_days) ? off_days : []), toNumber(time_mul,1), toNumber(tmc_hrs,0),
+     JSON.stringify(Array.isArray(tmc_rates) ? tmc_rates : [])]
   );
   res.status(201).json(rowToCuttingMachine(result.rows[0]));
 }));
 
 app.put('/api/cutting-machines/:id', asyncRoute(async (req, res) => {
-  const { name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes, rates, reg_hrs, ot_hrs, wc_id, off_days } = req.body;
+  const { name, count, min_kva, max_kva, hrs_per_unit, laser, m4, min_face_mm, max_face_mm, drill_8mm, drill_22mm, notes, rates, reg_hrs, ot_hrs, wc_id, off_days, time_mul, tmc_hrs, tmc_rates } = req.body;
   const result = await pool.query(
     `UPDATE cutting_machines SET name=$2, count=$3, min_kva=$4, max_kva=$5, hrs_per_unit=$6,
      laser=$7, m4=$8, min_face_mm=$9, max_face_mm=$10, drill_8mm=$11, drill_22mm=$12, notes=$13, rates=$14,
-     reg_hrs=$15, ot_hrs=$16, wc_id=$17, off_days=$18, updated_at=now()
+     reg_hrs=$15, ot_hrs=$16, wc_id=$17, off_days=$18, time_mul=$19, tmc_hrs=$20, tmc_rates=$21, updated_at=now()
      WHERE id=$1 RETURNING *`,
     [req.params.id, name, toInt(count,1), toInt(min_kva,50), toInt(max_kva,1000), toNumber(hrs_per_unit,2.5),
      !!laser, !!m4, toInt(min_face_mm,1), toInt(max_face_mm,9999), !!drill_8mm, !!drill_22mm, notes||'',
      JSON.stringify(Array.isArray(rates) ? rates : []), toNumber(reg_hrs,8), toNumber(ot_hrs,4), wc_id||'',
-     JSON.stringify(Array.isArray(off_days) ? off_days : [])]
+     JSON.stringify(Array.isArray(off_days) ? off_days : []), toNumber(time_mul,1), toNumber(tmc_hrs,0),
+     JSON.stringify(Array.isArray(tmc_rates) ? tmc_rates : [])]
   );
   if (!result.rowCount) return res.status(404).json({ error: 'Machine not found' });
   res.json(rowToCuttingMachine(result.rows[0]));
@@ -1104,19 +1112,35 @@ app.get('/api/sap-routing', asyncRoute(async (req, res) => {
 
 app.get('/api/sap-routing/catalog', asyncRoute(async (req, res) => {
   const result = await pool.query(`
-    SELECT material_code, wc_id,
+    SELECT material_code,
+           MAX(extra->>'MaterialDescription') AS material_desc,
+           MAX(plant) AS plant,
+           wc_id,
            MAX(operation) AS operation,
-           ROUND(AVG(std_hrs)::numeric, 4) AS avg_std_hrs
+           ROUND(AVG(std_hrs)::numeric, 4) AS avg_std_hrs,
+           COUNT(*) AS row_count,
+           SUM(std_hrs) AS total_hrs
     FROM sap_routing
     GROUP BY material_code, wc_id
     ORDER BY material_code, wc_id
   `);
   const catalog = {};
   for (const row of result.rows) {
-    if (!catalog[row.material_code]) catalog[row.material_code] = { mat: row.material_code, ops: [] };
-    catalog[row.material_code].ops.push(['', row.wc_id, row.operation, parseFloat(row.avg_std_hrs)]);
+    if (!catalog[row.material_code]) {
+      catalog[row.material_code] = {
+        mat: row.material_code,
+        desc: row.material_desc || '',
+        plant: row.plant || '',
+        total_hrs: 0,
+        ops: []
+      };
+    }
+    const hrs = parseFloat(row.avg_std_hrs);
+    catalog[row.material_code].ops.push({ wc: row.wc_id, op: row.operation, hrs, rows: parseInt(row.row_count) });
+    catalog[row.material_code].total_hrs += hrs;
   }
-  res.json(Object.values(catalog));
+  const out = Object.values(catalog).map(c => ({ ...c, total_hrs: Math.round(c.total_hrs * 100) / 100 }));
+  res.json(out);
 }));
 
 // Extract kVA from MaterialDescription e.g. "เหล็กแกน 50KVA ..." → 50
@@ -1154,6 +1178,64 @@ app.get('/api/sap-routing/rates-by-kva', asyncRoute(async (req, res) => {
     .map(([kva, v]) => ({ kva: parseInt(kva), hrs: Math.round(v.sum / v.count * 100) / 100, count: v.count }))
     .sort((a, b) => a.kva - b.kva)
   res.json(rates)
+}));
+
+// GET /api/sap-routing/by-kva?kva=3500
+// Returns all routing operations for materials whose MaterialDescription contains that kVA
+// Groups by wc_id + operation, averages std_hrs across all matching materials
+app.get('/api/sap-routing/by-kva', asyncRoute(async (req, res) => {
+  const kva = parseInt(req.query.kva)
+  if (!kva) return res.status(400).json({ error: 'kva required' })
+  const result = await pool.query(`
+    SELECT wc_id,
+           MAX(operation) AS operation,
+           ROUND(AVG(std_hrs)::numeric, 4) AS avg_hrs,
+           COUNT(DISTINCT material_code) AS material_count,
+           COUNT(*) AS row_count
+    FROM sap_routing
+    WHERE (extra->>'MaterialDescription') ~* ($1::text || '\\s*kva')
+    GROUP BY wc_id
+    ORDER BY avg_hrs DESC
+  `, [kva])
+  const total = result.rows.reduce((s, r) => s + parseFloat(r.avg_hrs), 0)
+  res.json({ kva, ops: result.rows.map(r => ({ wc: r.wc_id, op: r.operation, hrs: parseFloat(r.avg_hrs), materials: parseInt(r.material_count) })), total_hrs: Math.round(total * 100) / 100 })
+}));
+
+// GET /api/sap-routing/search?q=xxx
+// Search by order_no, material_code, or MaterialDescription — returns grouped by material_code
+app.get('/api/sap-routing/search', asyncRoute(async (req, res) => {
+  const q = (req.query.q ?? '').trim()
+  if (!q) return res.json([])
+  const result = await pool.query(`
+    SELECT material_code,
+           MAX(extra->>'MaterialDescription') AS material_desc,
+           MAX(plant) AS plant,
+           wc_id,
+           MAX(operation) AS operation,
+           ROUND(AVG(std_hrs)::numeric, 4) AS avg_hrs,
+           COUNT(*) AS row_count,
+           array_agg(DISTINCT order_no ORDER BY order_no) AS order_nos
+    FROM sap_routing
+    WHERE order_no ILIKE $1
+       OR material_code ILIKE $1
+       OR (extra->>'MaterialDescription') ILIKE $1
+       OR wc_id ILIKE $1
+       OR operation ILIKE $1
+    GROUP BY material_code, wc_id
+    ORDER BY material_code, wc_id
+    LIMIT 200
+  `, [`%${q}%`])
+  const catalog = {}
+  for (const row of result.rows) {
+    if (!catalog[row.material_code]) {
+      catalog[row.material_code] = { mat: row.material_code, desc: row.material_desc || '', plant: row.plant || '', total_hrs: 0, order_nos: row.order_nos ?? [], ops: [] }
+    }
+    const hrs = parseFloat(row.avg_hrs)
+    catalog[row.material_code].ops.push({ wc: row.wc_id, op: row.operation, hrs, rows: parseInt(row.row_count) })
+    catalog[row.material_code].total_hrs += hrs
+  }
+  const out = Object.values(catalog).map(c => ({ ...c, total_hrs: Math.round(c.total_hrs * 100) / 100 }))
+  res.json(out)
 }));
 
 app.get('/api/sap-routing/summary', asyncRoute(async (req, res) => {

@@ -184,7 +184,11 @@ Unfinished orders at end of Saturday stay in queue.
 | `ot_hrs` | Max OT hours/day |
 | `wc_id` | Links to WC Config → uses its hrs/ot/sat_hrs/sat_ot |
 | `off_days` | Days machine is OFF — gets 0 capacity, shown 🔴 ปิด |
-| `laser`, `m4` | Stored but NOT currently used in scheduling |
+| `laser` | Machine has laser wire cutter — used by Wire Match toggle |
+| `m4` | Machine can cut M-4 profile wire — used by Wire Match toggle |
+| `time_mul` | Speed multiplier (default 1.0) — scales kVA rate: 1.2 = 20% slower, 0.9 = 10% faster |
+| `tmc_hrs` | Fixed overhead hours per order (default 0) — also the **sole** cutting time for Cast Resin |
+| `rates[]` | Per-machine kVA→hours table — overrides global rates for this machine only |
 
 ---
 
@@ -279,19 +283,96 @@ All 3 views read IDENTICAL data from weekData.dayRows.machineCells
 
 | File | Key changes |
 |------|-------------|
-| `DeptTab/CuttingMachines.tsx` | All 21 modes, shared pool, smart OT, off_days, save/load plans |
+| `DeptTab/CuttingMachines.tsx` | All 21 modes, shared pool, smart OT, off_days, save/load plans, Wire Match, Drill toggle, TMC/time_mul, per-machine rates, Cast Resin logic, export CSV |
 | `DeptTab/CoilMachines.tsx` | New: coil winding machine config |
 | `DeptTab/index.tsx` | 🌀 เครื่องพันคอยล์ button for แผนกพันคอยล์ |
 | `PlanTab/index.tsx` | Daily kVA summary table, week grouping with subtotals |
 | `ImportTab/index.tsx` | Fixed timezone in `localISO()` |
-| `types.ts` | Added off_days, wc_id, reg_hrs, ot_hrs, CuttingRate to CuttingMachine |
-| `backend/server.js` | cutting_rates, cutting_plan_snapshots, coil_machines tables + endpoints; DATE timezone fix |
+| `utils/itemCodeDecode.ts` | Fixed `decodeKva` to accept full item code; exports typeCode |
+| `tabs/TranscodeTab/index.tsx` | Fixed `decodeKva(CDEF)` → `decodeKva(code)` bug |
+| `types.ts` | Added off_days, wc_id, reg_hrs, ot_hrs, time_mul, tmc_hrs, CuttingRate to CuttingMachine |
+| `backend/server.js` | cutting_rates, cutting_plan_snapshots, coil_machines tables; time_mul, tmc_hrs columns; DATE timezone fix |
+
+---
+
+## Cutting Time Formula
+
+`getHrsForKva(machine, kVA, globalRates, itemCode)` — called for every order on every machine:
+
+```
+1. Cast Resin check (itemCode[1] === '4')
+   → return machine.tmc_hrs                    ← fixed TMC only, no kVA rate
+
+2. Resolve base rate (Oil and all other types)
+   machine.rates[kVA] exists?  → base = machine rate   ← machine-specific, checked first
+   globalRates[kVA] exists?    → base = global rate    ← SAP EE3102 table
+   otherwise                   → base = machine.hrs_per_unit
+
+3. Apply machine adjustments
+   return base × machine.time_mul + machine.tmc_hrs
+```
+
+---
+
+## Wire Match Toggle (🔒 Wire Match)
+
+When ON, `canMachineCut()` enforces wire type compatibility:
+
+```
+detectWireType(order.raw_mat):
+  starts with "LS"          → 'laser'
+  contains "M - 4" or "M-4" → 'm4'
+  otherwise                  → 'any'
+
+if wireType === 'laser' and machine.laser === false  → BLOCKED
+if wireType === 'm4'    and machine.m4   === false   → BLOCKED
+```
+
+When OFF: wire type is a soft tiebreaker only (`wirePrefers` adds DRILL_BONUS = 0.0001h to score).
+
+---
+
+## Drill Required Toggle (🔩 เจาะ ≥315kVA)
+
+When ON, `canMachineCut()` enforces drill requirement for large orders:
+
+```
+if order.kVA >= 315 and machine.drill_8mm === false and machine.drill_22mm === false
+    → BLOCKED
+```
+
+When OFF: drill is a soft tiebreaker only.
+
+---
+
+## kVA Value Priority
+
+```
+order.kva                          ← checked first (most specific)
+?? products[order.product]?.kva    ← product catalog (uses bucket: tr.630kVA = any ≤630kVA)
+?? 0
+```
+
+`order.kva` takes priority because a 500kVA transformer has `product="tr.630kVA"` (bucket), but its cutting time must use the 500kVA rate, not 630kVA.
+
+---
+
+## Per-Machine Rates
+
+Each machine can have its own kVA→hours table (`machine.rates[]`). This overrides the global rate for that specific kVA on that machine only. Set via **⏱ เวลาตัดโลหะตามขนาด (รายเครื่อง)** section.
+
+---
+
+## Export CSV (📤 Export CSV)
+
+Downloads the full weekly schedule with columns:
+`Date, Day, Machine, SAP SO, kVA, Qty, Type, Customer, Raw Mat, Hours Worked, Total Hrs, Status, Carry Over`
 
 ---
 
 ## Pending / Known Issues
 
-- `laser` and `m4` fields stored but not used in scheduling → should map to transformer types
 - ⭐ ความสำคัญ mode is "week-first" — may need "day-first" variant
 - 🔮 สัปดาห์หน้า logic is heuristic (50% threshold) — could be tuned
 - Pipeline view (🔄) shows correctly but could be improved with time axis scale
+- TMC for Cast Resin defaults to 0 — user must set machine tmc_hrs for CR orders to have non-zero cutting time

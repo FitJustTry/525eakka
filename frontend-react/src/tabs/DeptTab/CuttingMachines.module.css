@@ -94,9 +94,9 @@
 }
 
 .table td {
-  padding: 7px 10px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--bord);
-  vertical-align: middle;
+  vertical-align: top;
   color: var(--txt);
 }
 

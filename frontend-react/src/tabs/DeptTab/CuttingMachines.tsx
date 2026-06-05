@@ -106,6 +106,7 @@
  * ════════════════════════════════════════════════════════════════════
  */
 import { useState, useMemo, useEffect } from 'react'
+import * as XLSX from 'xlsx'
 import { api } from '../../api'
 import { useApp } from '../../context/AppContext'
 import type { CuttingMachine, CuttingRate, Order, WCConfig } from '../../types'
@@ -117,10 +118,20 @@ import styles from './CuttingMachines.module.css'
  * Exact match only — if the kVA has a defined rate, use it.
  * Everything else uses m.hrs_per_unit (machine default).
  */
-function getHrsForKva(m: CuttingMachine, kva: number, globalRates: CuttingRate[]): number {
-  const rates = globalRates.length > 0 ? globalRates : (m.rates ?? [])
-  const match = rates.find(r => r.kva === kva)
-  return match ? match.hrs : m.hrs_per_unit
+function getHrsForKva(m: CuttingMachine, kva: number, globalRates: CuttingRate[], itemCode?: string): number {
+  // Cast Resin (item code position 1 = '4') — use TMC rate table first, then tmc_hrs fallback
+  if (itemCode && itemCode[1] === '4') {
+    const tmcMatch = (m.tmc_rates ?? []).find(r => r.kva === kva)  // kVA-specific TMC rate
+    if (tmcMatch) return tmcMatch.hrs
+    if ((m.tmc_hrs ?? 0) > 0) return m.tmc_hrs!                    // single-value fallback
+    // No TMC configured → fall through to normal kVA rate
+  }
+  // Priority: machine-specific rate → global rate → hrs_per_unit
+  const machineMatch = (m.rates ?? []).find(r => r.kva === kva)
+  if (machineMatch) return machineMatch.hrs * (m.time_mul ?? 1) + (m.tmc_hrs ?? 0)
+  const globalMatch = globalRates.find(r => r.kva === kva)
+  const base = globalMatch ? globalMatch.hrs : m.hrs_per_unit
+  return base * (m.time_mul ?? 1) + (m.tmc_hrs ?? 0)
 }
 
 /** Returns true if the machine is scheduled to run on this day of week (1=Mon … 6=Sat) */
@@ -210,7 +221,7 @@ function assignOrders(
 
     assigned.get(best.id)!.push(o)
     const kva = o.kva ?? products[o.product ?? '']?.kva ?? 0
-    wall.set(best.id, (wall.get(best.id) ?? 0) + (o.qty * getHrsForKva(best, kva, globalRates)) / (best.count || 1))
+    wall.set(best.id, (wall.get(best.id) ?? 0) + (o.qty * getHrsForKva(best, kva, globalRates, o.item_code)) / (best.count || 1))
   }
   return assigned
 }
@@ -237,8 +248,8 @@ function getWeekRange(offset: number) {
 // ── Carry-over scheduler ──────────────────────────────────────────────────────
 interface DayWork {
   order: Order
-  qtyDone: number      // units cut today
   hrsWorked: number    // hours used today
+  isComplete: boolean  // order fully done
   isCarryOver: boolean // started on a previous day
   carriesOver: boolean // not finished — continues tomorrow
 }
@@ -284,7 +295,7 @@ function scheduleFastest(
     for (let ui = 0; ui < o.qty; ui++) {
       const hrs = getHrsForKva(
         machines.find(m => canMachineCut(m, o, products, strictWire, requireDrill)) ?? machines[0],
-        kva, globalRates
+        kva, globalRates, o.item_code
       )
       allUnits.push({ order: o, unitIndex: ui, hrs })
     }
@@ -329,13 +340,18 @@ function scheduleFastest(
       while (avail > 0.001) {
         if (st.rem <= 0.001) {
           st.rem = 0
-          // Pull next eligible unit from pool
-          const idx = pool.findIndex(u => !taken.has(`${u.order.id}_${u.unitIndex}`) && canMachineCut(m, u.order, products, strictWire, requireDrill))
-          if (idx < 0) break
-          const u = pool[idx]
-          taken.add(`${u.order.id}_${u.unitIndex}`)
-          st.currentUnit = u
-          st.rem = getHrsForKva(m, u.order.kva ?? products[u.order.product]?.kva ?? 0, globalRates)
+          // Pick the unit this machine can complete FASTEST (min getHrsForKva)
+          // — avoids assigning slow units (e.g. 11h custom rate) when fast ones exist
+          const eligible = pool.filter(u => !taken.has(`${u.order.id}_${u.unitIndex}`) && canMachineCut(m, u.order, products, strictWire, requireDrill))
+          if (!eligible.length) break
+          const best = eligible.reduce((a, b) => {
+            const ha = getHrsForKva(m, a.order.kva ?? products[a.order.product]?.kva ?? 0, globalRates, a.order.item_code)
+            const hb = getHrsForKva(m, b.order.kva ?? products[b.order.product]?.kva ?? 0, globalRates, b.order.item_code)
+            return hb < ha ? b : a
+          })
+          taken.add(`${best.order.id}_${best.unitIndex}`)
+          st.currentUnit = best
+          st.rem = getHrsForKva(m, best.order.kva ?? products[best.order.product]?.kva ?? 0, globalRates, best.order.item_code)
           st.isCarryOver = false
         }
         const h = Math.min(st.rem, avail)
@@ -374,7 +390,7 @@ function sortPool(
   nextWeekOrders: Order[] = []
 ): Order[] {
   const m0 = machines[0]
-  const hrs = (o: Order) => m0 ? o.qty * getHrsForKva(m0, o.kva ?? products[o.product]?.kva ?? 0, globalRates) : 0
+  const hrs = (o: Order) => m0 ? o.qty * getHrsForKva(m0, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code) : 0
   const kvaOf = (o: Order) => o.kva ?? products[o.product]?.kva ?? 0
   const pool = [...orders]
 
@@ -513,7 +529,7 @@ function scheduleMode(
             const next = eligible.reduce((a, b) => score(b) > score(a) ? b : a)
             taken.add(next.id)
             st.currentOrder = next
-            st.currentRem = next.qty * getHrsForKva(m, next.kva ?? products[next.product]?.kva ?? 0, globalRates)
+            st.currentRem = next.qty * getHrsForKva(m, next.kva ?? products[next.product]?.kva ?? 0, globalRates, next.item_code)
             st.isCarryOver = false
           }
           const h = Math.min(st.currentRem, avail)
@@ -576,7 +592,7 @@ function scheduleMode(
         // ── Daily: carry queue + today's new orders ───────────
         const todayOrders = dailyAssignments[di]?.asgn.get(m.id) ?? []
         const todayItems: QItem[] = todayOrders.map(o => ({
-          order: o, remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates), isCarryOver: false
+          order: o, remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code), isCarryOver: false
         }))
         const fullQueue = [...carryItems, ...todayItems]
         carryItems = []
@@ -595,90 +611,7 @@ function scheduleMode(
       mMap.set(dStr, {
         regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed,
         work, hasCarryOver: work.some(w => w.isCarryOver),
-        carriesForward: approach === 'weekly' ? qi < queue.length : carryItems.length > 0,
-      })
-    }
-  }
-  return result
-}
-function scheduleWeekWithCarryOver(
-  assignedPerDay: { dStr: string; asgn: Map<number, Order[]> }[],
-  machines: CuttingMachine[],
-  products: Record<string, { kva?: number }>,
-  globalRates: CuttingRate[],
-  noOT = false   // if true → otCap forced to 0 (daily_no_ot mode)
-): Map<number, Map<string, MachineDaySched>> {
-  const result = new Map<number, Map<string, MachineDaySched>>()
-
-  for (const m of machines) {
-    const mMap = new Map<string, MachineDaySched>()
-    result.set(m.id, mMap)
-
-    // carry-over queue: {order, remainingQty, isCarryOver}
-    let carryQueue: { order: Order; remainingQty: number; isCarryOver: boolean }[] = []
-
-    for (const { dStr, asgn } of assignedPerDay) {
-      const dow = new Date(dStr + 'T00:00:00').getDay()
-      const isSat = dow === 6
-      // Machine off today? → zero capacity, everything carries over
-      const machineOff = !isMachineOn(m, dow)
-      const regCap = machineOff ? 0 : (isSat ? m.reg_hrs / 2 : m.reg_hrs) * (m.count || 1)
-      const otCap  = (machineOff || noOT) ? 0 : (isSat ? m.ot_hrs / 2 : m.ot_hrs) * (m.count || 1)
-
-      // Add today's new orders ONLY after carry-over (appended to queue)
-      const todayOrders = asgn.get(m.id) ?? []
-      const fullQueue = [
-        ...carryQueue,
-        ...todayOrders.map(o => ({ order: o, remainingQty: o.qty, isCarryOver: false }))
-      ]
-      carryQueue = []
-
-      const work: DayWork[] = []
-      let remainingCap = regCap
-      let otUsed = 0
-
-      for (const item of fullQueue) {
-        if (remainingCap <= 0 && otUsed >= otCap) {
-          // No more capacity — whole item carries over
-          carryQueue.push({ ...item, isCarryOver: true })
-          continue
-        }
-        const kva = item.order.kva ?? products[item.order.product]?.kva ?? 0
-        const hrsEach = getHrsForKva(m, kva, globalRates)
-        const totalHrs = item.remainingQty * hrsEach
-
-        const available = remainingCap + otCap - otUsed
-        if (totalHrs <= available) {
-          // Finish this order today
-          const otForThis = Math.max(0, totalHrs - remainingCap)
-          remainingCap = Math.max(0, remainingCap - totalHrs)
-          otUsed += otForThis
-          work.push({ order: item.order, qtyDone: item.remainingQty, hrsWorked: totalHrs, isCarryOver: item.isCarryOver, carriesOver: false })
-        } else {
-          // Partial — do as many units as possible
-          const canDo = Math.floor(available / hrsEach)
-          if (canDo > 0) {
-            const hrsUsed = canDo * hrsEach
-            const otForThis = Math.max(0, hrsUsed - remainingCap)
-            remainingCap = Math.max(0, remainingCap - hrsUsed)
-            otUsed += otForThis
-            work.push({ order: item.order, qtyDone: canDo, hrsWorked: hrsUsed, isCarryOver: item.isCarryOver, carriesOver: true })
-            carryQueue.push({ order: item.order, remainingQty: item.remainingQty - canDo, isCarryOver: true })
-          } else {
-            carryQueue.push({ ...item, isCarryOver: true })
-          }
-        }
-      }
-
-      const regUsed = regCap - Math.max(0, remainingCap)
-      const otNeeded = Math.max(0, work.reduce((s, w) => s + w.hrsWorked, 0) - regCap)
-      mMap.set(dStr, {
-        regHrs: regUsed,
-        otHrs: otUsed,
-        otNeeded,
-        work,
-        hasCarryOver: carryQueue.length > 0 && fullQueue.some(q => q.isCarryOver),
-        carriesForward: carryQueue.length > 0,
+        carriesForward: carryItems.length > 0,
       })
     }
   }
@@ -770,6 +703,8 @@ export default function CuttingMachines() {
   const [balanceMode, setBalanceMode] = useState<BalanceMode>('weekly_no_ot')
   const [viewMode, setViewMode] = useState<'table' | 'cards' | 'pipeline'>('cards')
   const [globalRates, setGlobalRates] = useState<CuttingRate[]>([])
+  const [machineRateTab, setMachineRateTab] = useState<number | null>(null) // selected machine id for per-machine rates panel
+  const [machineTmcTab, setMachineTmcTab]   = useState<number | null>(null) // selected machine id for per-machine TMC rates panel
   const [strictWire,   setStrictWire]   = useState(false)
   const [requireDrill, setRequireDrill] = useState(false)
 
@@ -782,49 +717,81 @@ export default function CuttingMachines() {
     await fetch('/api/cutting-rates', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rates) })
   }
 
+  async function saveMachineRates(machineId: number, rates: CuttingRate[]) {
+    const updated = machines.map(m => m.id === machineId ? { ...m, rates } : m)
+    dispatch({ type: 'SET_CUTTING_MACHINES', machines: updated })
+    const machine = updated.find(m => m.id === machineId)!
+    await api.cuttingMachines.update(machineId, machine)
+  }
+
+  async function saveMachineTmcRates(machineId: number, tmc_rates: CuttingRate[]) {
+    const updated = machines.map(m => m.id === machineId ? { ...m, tmc_rates } : m)
+    dispatch({ type: 'SET_CUTTING_MACHINES', machines: updated })
+    const machine = updated.find(m => m.id === machineId)!
+    await api.cuttingMachines.update(machineId, machine)
+  }
+
   // ── Plan snapshot ────────────────────────────────────────────
   function exportPlanCSV() {
+    const DAY_EN = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
     const rows: string[][] = []
-    // Header
-    rows.push(['Date', 'Day', 'Machine', 'SAP SO', 'kVA', 'Qty', 'Type', 'Customer', 'Raw Mat', 'Hours Worked', 'Total Hrs', 'Status', 'Carry Over'])
 
+    // ── Summary header ──────────────────────────────────────────
+    rows.push([`แผนการตัดโลหะ — ${weekLabel}`])
+    rows.push([`Mode: ${balanceMode}`, `Total: ${weekData.totalQtyWeek} ตัว`, `${Math.round(weekData.totalKvaWeek).toLocaleString()} kVA`, `OT: ${weekData.totalOT.toFixed(1)}h`])
+    rows.push([])
+
+    // ── Machine legend ─────────────────────────────────────────
+    rows.push(['# เครื่อง', 'kVA Range', 'h/ตัว', '×Rate', 'TMC'])
+    machines.forEach(m => {
+      rows.push([mLabel(m), `${m.min_kva}–${m.max_kva >= 9999 ? '∞' : m.max_kva}`, m.hrs_per_unit.toString(), (m.time_mul ?? 1).toString(), (m.tmc_hrs ?? 0).toString()])
+    })
+    rows.push([])
+
+    // ── Day-by-day schedule ────────────────────────────────────
     weekData.dayRows.forEach(row => {
-      const { d, machineCells } = row
+      const { d, machineCells, dayFinish, actualQty, actualOrderCount } = row
+      const hasWork = machineCells.some(mc => mc.work.length > 0 || mc.machOff)
+      if (!hasWork) return
+
       const dateStr = fmtISO(d)
-      const dayName = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]
-      machineCells.forEach(({ m, machOff, work }) => {
+      const dayEN = DAY_EN[d.getDay()]
+      const dayTH = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์'][d.getDay()]
+      const totalKva = row.dayOrders.reduce((s, o) => s + ((o.total_kva ?? 0) > 0 ? (o.total_kva ?? 0) : (o.kva ?? 0) * (o.qty ?? 1)), 0)
+
+      // Day header row
+      rows.push([`${dayTH} ${dateStr}`, `${dayEN}`, `${actualQty} ตัว`, `${Math.round(totalKva).toLocaleString()} kVA`, `เสร็จใน ${dayFinish.toFixed(1)}h`])
+
+      machineCells.forEach(({ m, machOff, sched, work, wall }) => {
         if (machOff) {
-          rows.push([dateStr, dayName, mLabel(m), '', '', '', '', '', '', '', '', 'CLOSED', ''])
+          rows.push(['', mLabel(m), '🔴 ปิด'])
           return
         }
         if (work.length === 0) return
-        work.forEach(w => {
+
+        const otNote = (sched?.otHrs ?? 0) > 0 ? ` +OT ${sched!.otHrs.toFixed(1)}h` : ''
+        const carryNote = sched?.carriesForward ? ' →' : ''
+        rows.push(['', mLabel(m), `${wall.toFixed(1)}h${otNote}${carryNote}`])
+
+        work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
           const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-          const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates)
-          const { typeCode } = decodeItemInfo(w.order.item_code ?? '')
-          const typeLabel = typeCode === '4' ? 'CR' : ['1','2','3'].includes(typeCode) ? 'Oil' : ''
-          const wt = detectWireType(w.order.raw_mat)
-          const wireLabel = wt === 'laser' ? 'Laser' : wt === 'm4' ? 'M4' : ''
+          const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code)
+          const status = w.isComplete ? '✓' : '→'
+          const carry = w.isCarryOver ? '↩ ' : ''
           rows.push([
-            dateStr,
-            dayName,
-            mLabel(m),
-            w.order.sap_so ?? w.order.id,
-            String(kva),
-            String(w.order.qty),
-            typeLabel,
+            '', '',
+            `${carry}${w.order.sap_so ?? w.order.id}`,
+            `${kva.toLocaleString()}kVA ×${w.order.qty}`,
             w.order.customer ?? '',
-            `${w.order.raw_mat ?? ''}${wireLabel ? ` (${wireLabel})` : ''}`,
-            w.hrsWorked.toFixed(2),
-            totalHrs.toFixed(2),
-            w.isComplete ? 'Done' : 'In Progress',
-            w.carriesOver ? 'Yes' : 'No',
+            `${w.hrsWorked.toFixed(1)}h / ${totalHrs.toFixed(1)}h ${status}`,
           ])
         })
       })
+      rows.push([]) // blank line between days
     })
 
-    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
+    const q = (s: string) => `"${s.replace(/"/g, '""')}"`
+    const csv = rows.map(r => r.map(c => q(String(c))).join(',')).join('\n')
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -832,6 +799,145 @@ export default function CuttingMachines() {
     a.download = `cutting-plan-${fmtISO(mon)}_${fmtISO(sat)}.csv`
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  /** Shared helper: build plan rows for export (CSV/TXT/Excel/JSON) */
+  function buildPlanRows() {
+    const DAY_TH_FULL = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์']
+    type PlanRow = { day: string; date: string; machine: string; machOff: boolean; wallHrs: number; ot: number; carryFwd: boolean; sapSo: string; kva: number; qty: number; customer: string; rawMat: string; hrsWorked: number; totalHrs: number; done: boolean; carryOver: boolean; isCarryIn: boolean }
+    const planRows: PlanRow[] = []
+    weekData.dayRows.forEach(row => {
+      const { d, machineCells } = row
+      const date = fmtISO(d)
+      const day = DAY_TH_FULL[d.getDay()]
+      machineCells.forEach(({ m, machOff, sched, work, wall }) => {
+        if (machOff) { planRows.push({ day, date, machine: mLabel(m), machOff: true, wallHrs: 0, ot: 0, carryFwd: false, sapSo: '', kva: 0, qty: 0, customer: '', rawMat: '', hrsWorked: 0, totalHrs: 0, done: false, carryOver: false, isCarryIn: false }); return }
+        if (work.length === 0) return
+        work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
+          const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
+          const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code)
+          planRows.push({ day, date, machine: mLabel(m), machOff: false, wallHrs: wall, ot: sched?.otHrs ?? 0, carryFwd: sched?.carriesForward ?? false, sapSo: w.order.sap_so ?? w.order.id, kva, qty: w.order.qty, customer: w.order.customer ?? '', rawMat: w.order.raw_mat ?? '', hrsWorked: w.hrsWorked, totalHrs, done: w.isComplete, carryOver: w.carriesOver, isCarryIn: w.isCarryOver })
+        })
+      })
+    })
+    return planRows
+  }
+
+  function exportTXT() {
+    const DAY_TH_FULL = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์']
+    const lines: string[] = []
+    lines.push(`แผนการตัดโลหะ — ${weekLabel}`)
+    lines.push(`${weekData.totalQtyWeek} ตัว · ${Math.round(weekData.totalKvaWeek).toLocaleString()} kVA · OT ${weekData.totalOT.toFixed(1)}h`)
+    lines.push('─'.repeat(60))
+    weekData.dayRows.forEach(row => {
+      const { d, machineCells, dayFinish, actualQty } = row
+      if (!machineCells.some(mc => mc.work.length > 0 || mc.machOff)) return
+      lines.push('')
+      const totalKva = row.dayOrders.reduce((s, o) => s + ((o.total_kva ?? 0) > 0 ? (o.total_kva ?? 0) : (o.kva ?? 0) * (o.qty ?? 1)), 0)
+      lines.push(`${DAY_TH_FULL[d.getDay()]} ${fmtISO(d)}  ${actualQty} ตัว · ${Math.round(totalKva).toLocaleString()} kVA  เสร็จใน ${dayFinish.toFixed(1)}h`)
+      machineCells.forEach(({ m, machOff, sched, work, wall }) => {
+        if (machOff) { lines.push(`  🔴 ${mLabel(m)} ปิด`); return }
+        if (work.length === 0) return
+        const ot = (sched?.otHrs ?? 0) > 0 ? ` +OT ${sched!.otHrs.toFixed(1)}h` : ''
+        lines.push(`  ${mLabel(m).padEnd(18)} ${wall.toFixed(1)}h${ot}${sched?.carriesForward ? ' →' : ''}`)
+        work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
+          const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
+          const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code)
+          const pre = w.isCarryOver ? '↩ ' : '  '
+          lines.push(`    ${pre}${(w.order.sap_so ?? '').padEnd(14)} ${String(kva.toLocaleString() + 'kVA×' + w.order.qty).padEnd(12)} ${w.hrsWorked.toFixed(1)}h/${total.toFixed(1)}h ${w.isComplete ? '✓' : '→'}  ${w.order.customer ?? ''}`)
+        })
+      })
+    })
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = `cutting-plan-${fmtISO(mon)}_${fmtISO(sat)}.txt`; a.click(); URL.revokeObjectURL(url)
+  }
+
+  function exportXLSX() {
+    const wb = XLSX.utils.book_new()
+
+    // ── Sheet 1: Schedule ──────────────────────────────────────
+    const schedRows: (string | number)[][] = [
+      [`แผนการตัดโลหะ — ${weekLabel}`],
+      [`${weekData.totalQtyWeek} ตัว`, `${Math.round(weekData.totalKvaWeek).toLocaleString()} kVA`, `OT: ${weekData.totalOT.toFixed(1)}h`, `Mode: ${balanceMode}`],
+      [],
+      ['วัน', 'วันที่', 'เครื่อง', 'SAP SO', 'kVA', 'จำนวน', 'ลูกค้า', 'Raw Mat', 'ชม.ทำงาน', 'ชม.รวม', 'สถานะ', 'ค้าง'],
+    ]
+    buildPlanRows().forEach(r => {
+      if (r.machOff) { schedRows.push([r.day, r.date, r.machine, '🔴 ปิด']); return }
+      schedRows.push([r.day, r.date, r.machine, r.sapSo, r.kva, r.qty, r.customer, r.rawMat, +r.hrsWorked.toFixed(2), +r.totalHrs.toFixed(2), r.done ? '✓ Done' : '→ In Prog', r.carryOver ? '→' : ''])
+    })
+    const ws = XLSX.utils.aoa_to_sheet(schedRows)
+    ws['!cols'] = [10,12,16,14,8,6,18,10,10,10,12,6].map(w => ({ wch: w }))
+    XLSX.utils.book_append_sheet(wb, ws, 'Schedule')
+
+    // ── Sheet 2: Machine Summary ───────────────────────────────
+    const sumRows: (string | number)[][] = [['เครื่อง', 'kVA Range', 'h/ตัว', '×Rate', 'TMC', 'ตัว/สัปดาห์', 'ชม.รวม', 'OT']]
+    machines.forEach((m, i) => {
+      const t = weekData.mTotals[i]
+      sumRows.push([mLabel(m), `${m.min_kva}–${m.max_kva >= 9999 ? '∞' : m.max_kva}`, m.hrs_per_unit, m.time_mul ?? 1, m.tmc_hrs ?? 0, t.qty, +t.wallHrs.toFixed(1), +t.ot.toFixed(1)])
+    })
+    const ws2 = XLSX.utils.aoa_to_sheet(sumRows)
+    ws2['!cols'] = [18,14,8,8,8,14,10,10].map(w => ({ wch: w }))
+    XLSX.utils.book_append_sheet(wb, ws2, 'Machines')
+
+    XLSX.writeFile(wb, `cutting-plan-${fmtISO(mon)}_${fmtISO(sat)}.xlsx`)
+  }
+
+  function exportJSON() {
+    const data = {
+      week: weekLabel,
+      generated: new Date().toISOString(),
+      summary: { qty: weekData.totalQtyWeek, kva: weekData.totalKvaWeek, ot: weekData.totalOT, bottleneck: weekData.bottleneckWall },
+      machines: machines.map((m, i) => ({ ...m, weekly: weekData.mTotals[i] })),
+      schedule: buildPlanRows(),
+    }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = `cutting-plan-${fmtISO(mon)}_${fmtISO(sat)}.json`; a.click(); URL.revokeObjectURL(url)
+  }
+
+  function exportPrint() {
+    const DAY_TH_FULL = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์']
+    let html = `<html><head><meta charset="utf-8"><title>แผนการตัดโลหะ ${weekLabel}</title><style>
+      body{font-family:sans-serif;font-size:11px;margin:12px}
+      h2{font-size:13px;margin:0 0 4px}
+      .sum{color:#666;margin-bottom:10px}
+      .day{font-weight:700;font-size:12px;background:#eee;padding:3px 6px;margin:8px 0 3px;border-radius:3px}
+      .mach{font-weight:600;padding:2px 4px;margin:2px 0;color:#333}
+      .moff{color:#e0534a;padding:2px 4px}
+      table{border-collapse:collapse;width:100%;margin-bottom:2px}
+      td{border:1px solid #ddd;padding:2px 5px;font-size:10px}
+      td.h{background:#f5f5f5;font-weight:600}
+      .done{color:#40a02b}.carry{color:#fe640b}
+      @media print{body{margin:6mm}}
+    </style></head><body>`
+    html += `<h2>แผนการตัดโลหะ — ${weekLabel}</h2>`
+    html += `<div class="sum">${weekData.totalQtyWeek} ตัว · ${Math.round(weekData.totalKvaWeek).toLocaleString()} kVA · OT ${weekData.totalOT.toFixed(1)}h · Mode: ${balanceMode}</div>`
+    weekData.dayRows.forEach(row => {
+      const { d, machineCells, dayFinish, actualQty } = row
+      if (!machineCells.some(mc => mc.work.length > 0 || mc.machOff)) return
+      const totalKva = row.dayOrders.reduce((s, o) => s + ((o.total_kva ?? 0) > 0 ? (o.total_kva ?? 0) : (o.kva ?? 0) * (o.qty ?? 1)), 0)
+      html += `<div class="day">${DAY_TH_FULL[d.getDay()]} ${fmtISO(d)} &nbsp; ${actualQty} ตัว · ${Math.round(totalKva).toLocaleString()} kVA &nbsp; เสร็จใน ${dayFinish.toFixed(1)}h</div>`
+      machineCells.forEach(({ m, machOff, sched, work, wall }) => {
+        if (machOff) { html += `<div class="moff">🔴 ${mLabel(m)} ปิด</div>`; return }
+        if (work.length === 0) return
+        const ot = (sched?.otHrs ?? 0) > 0 ? ` <span style="color:#fe640b">+OT ${sched!.otHrs.toFixed(1)}h</span>` : ''
+        html += `<div class="mach">${mLabel(m)} &nbsp; ${wall.toFixed(1)}h${ot}${sched?.carriesForward ? ' <span class="carry">→</span>' : ''}</div>`
+        html += `<table><tr><td class="h">SAP SO</td><td class="h">kVA</td><td class="h">Qty</td><td class="h">ลูกค้า</td><td class="h">Raw Mat</td><td class="h">ชม.</td><td class="h">สถานะ</td></tr>`
+        work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
+          const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
+          const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code)
+          const st = w.isComplete ? `<span class="done">✓</span>` : `<span class="carry">→</span>`
+          const ci = w.isCarryOver ? '↩ ' : ''
+          html += `<tr><td>${ci}${w.order.sap_so ?? ''}</td><td>${kva.toLocaleString()}</td><td>×${w.order.qty}</td><td>${w.order.customer ?? ''}</td><td>${w.order.raw_mat ?? ''}</td><td>${w.hrsWorked.toFixed(1)}/${total.toFixed(1)}h</td><td>${st}</td></tr>`
+        })
+        html += '</table>'
+      })
+    })
+    html += '</body></html>'
+    const win = window.open('', '_blank')
+    if (win) { win.document.write(html); win.document.close(); win.focus(); setTimeout(() => win.print(), 400) }
   }
 
   async function savePlan(label: string) {
@@ -915,7 +1021,7 @@ export default function CuttingMachines() {
 
   // ── CRUD ────────────────────────────────────────────────────
   async function handleAdd() {
-    const m = { name: 'เครื่องตัด', count: 1, min_kva: 160, max_kva: 2500, hrs_per_unit: 2.5, laser: false, m4: false, min_face_mm: 1, max_face_mm: 9999, drill_8mm: false, drill_22mm: false, notes: '', reg_hrs: 8, ot_hrs: 4 }
+    const m = { name: 'เครื่องตัด', count: 1, min_kva: 160, max_kva: 2500, hrs_per_unit: 2.5, laser: false, m4: false, min_face_mm: 1, max_face_mm: 9999, drill_8mm: false, drill_22mm: false, notes: '', reg_hrs: 8, ot_hrs: 4, time_mul: 1, tmc_hrs: 0 }
     const saved = await api.cuttingMachines.create(m)
     dispatch({ type: 'SET_CUTTING_MACHINES', machines: [...machines, saved] })
   }
@@ -936,6 +1042,8 @@ export default function CuttingMachines() {
       if (field === 'hrs_per_unit') next.hrs_per_unit = Math.max(0.1, parseFloat(raw) || 1)
       if (field === 'reg_hrs')     next.reg_hrs      = Math.max(0.5, parseFloat(raw) || 8)
       if (field === 'ot_hrs')      next.ot_hrs       = Math.max(0,   parseFloat(raw) || 0)
+      if (field === 'time_mul')    next.time_mul     = Math.max(0.1, parseFloat(raw) || 1)
+      if (field === 'tmc_hrs')     next.tmc_hrs      = Math.max(0,   parseFloat(raw) || 0)
       if (field === 'min_face_mm')  next.min_face_mm  = Math.max(1, parseInt(raw) || 1)
       if (field === 'max_face_mm')  next.max_face_mm  = Math.max(1, parseInt(raw) || 9999)
       if (field === 'notes')        next.notes        = raw
@@ -1044,14 +1152,14 @@ export default function CuttingMachines() {
         const mOrd = asgn.get(m.id) ?? []
         const w = mOrd.reduce((a, o) => {
           const kva = o.kva ?? products[o.product]?.kva ?? 0
-          return a + (o.qty * getHrsForKva(m, kva, globalRates)) / (m.count || 1)
+          return a + (o.qty * getHrsForKva(m, kva, globalRates, o.item_code)) / (m.count || 1)
         }, 0)
         cumWall.set(m.id, (cumWall.get(m.id) ?? 0) + w)
       })
       return { dStr, asgn }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [balanceMode, strictWire, requireDrill, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${+m.laser}${+m.m4}${(m.off_days??[]).join('-')}`).join(',')])
+  }, [balanceMode, strictWire, requireDrill, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${+m.laser}${+m.m4}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(',')])
 
 
 
@@ -1076,7 +1184,7 @@ export default function CuttingMachines() {
     return (modeMap[balanceMode] ?? modeMap['weekly_no_ot'])()
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [balanceMode, strictWire, requireDrill, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
+  [balanceMode, strictWire, requireDrill, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
   /**
    * SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
@@ -1095,7 +1203,7 @@ export default function CuttingMachines() {
         qty += sched.work.filter(w => w.isComplete).length > 0
           ? sched.work.filter(w => w.isComplete).reduce((s, w) => {
               const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-              const hrsEach = getHrsForKva(m, kva, globalRates)
+              const hrsEach = getHrsForKva(m, kva, globalRates, w.order.item_code)
               return s + (hrsEach > 0 ? w.hrsWorked / hrsEach : 0)
             }, 0)
           : 0
@@ -1201,6 +1309,8 @@ export default function CuttingMachines() {
                   <th style={{ textAlign: 'center' }}>เจาะรู 22mm</th>
                   <th style={{ textAlign: 'center' }}>ชม.ปกติ/วัน</th>
                   <th style={{ textAlign: 'center' }}>OT สูงสุด/วัน</th>
+                  <th style={{ textAlign: 'center', color: 'var(--amber)' }} title="Speed multiplier: final_hrs = base × ×Rate + TMC">×Rate</th>
+                  <th style={{ textAlign: 'center', color: 'var(--purple)' }} title="TMC: fixed setup/overhead hours added per order">TMC (h)</th>
                   <th style={{ textAlign: 'center', minWidth: 160 }}>วันทำงาน (คลิกปิด)</th>
                   <th style={{ textAlign: 'left', minWidth: 180 }}>หมายเหตุ / ข้อจำกัด</th>
                   <th style={{ textAlign: 'left' }}>หม้อแปลงที่รองรับ</th>
@@ -1302,6 +1412,22 @@ export default function CuttingMachines() {
                           defaultValue={m.ot_hrs ?? 4}
                           onBlur={e => handleChange(m.id, 'ot_hrs', e.target.value || '0')}
                           style={{ width: 52, color: 'var(--amber)', fontWeight: 700 }} />
+                        <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 2 }}>h</span>
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        <input className={styles.inputNum} type="number" min={0.1} max={5} step={0.05}
+                          defaultValue={m.time_mul ?? 1}
+                          onBlur={e => handleChange(m.id, 'time_mul', e.target.value || '1')}
+                          title="Speed multiplier — final_hrs = base × this"
+                          style={{ width: 52, color: 'var(--amber)', fontWeight: 700 }} />
+                        <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 2 }}>×</span>
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        <input className={styles.inputNum} type="number" min={0} max={8} step={0.1}
+                          defaultValue={m.tmc_hrs ?? 0}
+                          onBlur={e => handleChange(m.id, 'tmc_hrs', e.target.value || '0')}
+                          title="TMC — fixed setup hours added per order"
+                          style={{ width: 52, color: 'var(--purple)', fontWeight: 700 }} />
                         <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 2 }}>h</span>
                       </td>
                       {/* Day-on/off picker — Mon=1 … Sat=6 */}
@@ -1409,68 +1535,325 @@ export default function CuttingMachines() {
         </div>
       </div>
 
+      {/* ── Per-Machine Rates ───────────────────────────── */}
+      <div className={styles.card}>
+        <div className={styles.cardHeader}>
+          <span className={styles.sectionTitle}>⏱ เวลาตัดโลหะตามขนาด (รายเครื่อง)</span>
+          <span style={{ fontSize: 10, color: 'var(--txt3)' }}>กำหนดเวลาเฉพาะแต่ละเครื่อง — จะใช้แทนค่ามาตรฐาน · ไม่ได้กำหนด = ใช้ค่ามาตรฐาน</span>
+        </div>
+        <div style={{ padding: '10px 16px' }}>
+          {/* Machine tabs */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+            {machines.map(m => {
+              const hasCustRates = (m.rates ?? []).length > 0
+              const isActive = machineRateTab === m.id
+              return (
+                <button key={m.id} onClick={() => setMachineRateTab(isActive ? null : m.id)}
+                  style={{ fontSize: 11, padding: '4px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: isActive ? 700 : 400,
+                    border: `1px solid ${isActive ? 'var(--blue)' : hasCustRates ? 'rgba(166,227,161,.5)' : 'var(--bord2)'}`,
+                    background: isActive ? 'rgba(137,180,250,.15)' : hasCustRates ? 'rgba(166,227,161,.08)' : 'var(--bg3)',
+                    color: isActive ? 'var(--blue)' : hasCustRates ? 'var(--green)' : 'var(--txt3)',
+                  }}>
+                  {mLabel(m)}{hasCustRates ? ` (${(m.rates ?? []).length})` : ''}
+                </button>
+              )
+            })}
+          </div>
+
+          {machineRateTab !== null && (() => {
+            const m = machines.find(x => x.id === machineRateTab)
+            if (!m) return null
+            const mRates = [...(m.rates ?? [])].sort((a, b) => a.kva - b.kva)
+            return (
+              <div>
+                {/* TMC + multiplier summary for this machine */}
+                <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 12, padding: '8px 12px', background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bord)' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt)' }}>{mLabel(m)}</span>
+                  <span style={{ fontSize: 10, color: 'var(--txt3)' }}>สูตร:</span>
+                  <code style={{ fontSize: 11, color: 'var(--amber)', background: 'var(--bg3)', padding: '2px 8px', borderRadius: 4 }}>
+                    final = base × {m.time_mul ?? 1} + {m.tmc_hrs ?? 0}h TMC
+                  </code>
+                  <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 4 }}>แก้ไข ×Rate และ TMC ได้ในตารางเครื่องด้านบน</span>
+                </div>
+
+                {/* Rate table header */}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, fontSize: 10, fontWeight: 700, color: 'var(--txt3)' }}>
+                  <span style={{ width: 90, textAlign: 'right' }}>ขนาด (kVA)</span>
+                  <span style={{ width: 16 }} />
+                  <span style={{ width: 80, textAlign: 'right' }}>เวลาตัด (h)</span>
+                  <span style={{ width: 80, textAlign: 'right', color: 'var(--purple)' }}>รวม TMC</span>
+                  <span style={{ width: 60 }} />
+                </div>
+
+                {mRates.length === 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--txt3)', padding: '6px 0' }}>ยังไม่มีค่าเฉพาะ — ใช้ค่ามาตรฐาน (ตารางด้านบน)</div>
+                )}
+
+                {mRates.map((r, ri) => {
+                  const finalHrs = r.hrs * (m.time_mul ?? 1) + (m.tmc_hrs ?? 0)
+                  return (
+                    <div key={ri} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                      <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
+                        onChange={e => saveMachineRates(m.id, mRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
+                        style={{ width: 90, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--blue)', fontFamily: 'var(--mono)', fontWeight: 700, textAlign: 'right' }} />
+                      <span style={{ fontSize: 11, color: 'var(--txt3)' }}>kVA →</span>
+                      <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
+                        onChange={e => saveMachineRates(m.id, mRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
+                        style={{ width: 80, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--amber)', fontFamily: 'var(--mono)', textAlign: 'right' }} />
+                      <span style={{ width: 80, textAlign: 'right', fontSize: 12, fontFamily: 'var(--mono)', color: 'var(--purple)', fontWeight: 600 }}>
+                        = {finalHrs.toFixed(2)}h
+                      </span>
+                      <button onClick={() => saveMachineRates(m.id, mRates.filter((_, i) => i !== ri))}
+                        style={{ fontSize: 13, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--red)', padding: '0 4px' }}>✕</button>
+                    </div>
+                  )
+                })}
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                  <button onClick={() => saveMachineRates(m.id, [...mRates, { kva: 0, hrs: m.hrs_per_unit }])}
+                    style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(137,180,250,.3)', background: 'rgba(137,180,250,.08)', color: 'var(--blue)', cursor: 'pointer' }}>
+                    + เพิ่มขนาด
+                  </button>
+                  {globalRates.length > 0 && (
+                    <button
+                      title="Copy all standard rates as starting point — then edit values you want to change"
+                      onClick={() => {
+                        // Merge: keep existing machine rates, add any global kVA not yet in machine rates
+                        const existingKvas = new Set(mRates.map(r => r.kva))
+                        const newRates = [
+                          ...mRates,
+                          ...globalRates.filter(r => !existingKvas.has(r.kva)).map(r => ({ kva: r.kva, hrs: r.hrs }))
+                        ].sort((a, b) => a.kva - b.kva)
+                        saveMachineRates(m.id, newRates)
+                      }}
+                      style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(166,227,161,.4)', background: 'rgba(166,227,161,.08)', color: 'var(--green)', cursor: 'pointer' }}>
+                      📋 คัดลอกจากมาตรฐาน ({globalRates.length} ขนาด)
+                    </button>
+                  )}
+                  {mRates.length > 0 && (
+                    <button onClick={() => saveMachineRates(m.id, [])}
+                      style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(224,90,78,.3)', background: 'none', color: 'var(--red)', cursor: 'pointer' }}>
+                      ล้างค่าเฉพาะ (กลับไปใช้มาตรฐาน)
+                    </button>
+                  )}
+                </div>
+
+                {/* ── TMC Rate Table ─────────────────────────────── */}
+                <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px dashed var(--bord)' }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--purple)', marginBottom: 6 }}>
+                    ⏱ TMC ตามขนาด (Cast Resin)
+                    <span style={{ fontSize: 9, fontWeight: 400, color: 'var(--txt3)', marginLeft: 8 }}>ใช้เมื่อ B=4 — แทนค่า TMC (h) เดิม · ไม่ได้กำหนด = ใช้ค่า TMC (h) จากตาราง</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, fontSize: 10, fontWeight: 700, color: 'var(--txt3)' }}>
+                    <span style={{ width: 90, textAlign: 'right' }}>ขนาด (kVA)</span>
+                    <span style={{ width: 16 }} />
+                    <span style={{ width: 80, textAlign: 'right' }}>TMC (h)</span>
+                    <span style={{ width: 60 }} />
+                  </div>
+                  {(m.tmc_rates ?? []).length === 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--txt3)', paddingBottom: 6 }}>ยังไม่มี — ใช้ค่า TMC (h) = {m.tmc_hrs ?? 0}h สำหรับทุกขนาด</div>
+                  )}
+                  {[...(m.tmc_rates ?? [])].sort((a, b) => a.kva - b.kva).map((r, ri) => (
+                    <div key={ri} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                      <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
+                        onChange={e => saveMachineTmcRates(m.id, (m.tmc_rates ?? []).map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
+                        style={{ width: 90, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--blue)', fontFamily: 'var(--mono)', fontWeight: 700, textAlign: 'right' }} />
+                      <span style={{ fontSize: 11, color: 'var(--txt3)' }}>kVA →</span>
+                      <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
+                        onChange={e => saveMachineTmcRates(m.id, (m.tmc_rates ?? []).map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
+                        style={{ width: 80, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--purple)', fontFamily: 'var(--mono)', textAlign: 'right' }} />
+                      <span style={{ fontSize: 11, color: 'var(--txt3)' }}>h TMC</span>
+                      <button onClick={() => saveMachineTmcRates(m.id, (m.tmc_rates ?? []).filter((_, i) => i !== ri))}
+                        style={{ fontSize: 13, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--red)', padding: '0 4px' }}>✕</button>
+                    </div>
+                  ))}
+                  <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                    <button onClick={() => saveMachineTmcRates(m.id, [...(m.tmc_rates ?? []), { kva: 0, hrs: m.tmc_hrs ?? 0 }])}
+                      style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(203,166,247,.4)', background: 'rgba(203,166,247,.08)', color: 'var(--purple)', cursor: 'pointer' }}>
+                      + เพิ่มขนาด TMC
+                    </button>
+                    {(m.tmc_rates ?? []).length > 0 && (
+                      <button onClick={() => saveMachineTmcRates(m.id, [])}
+                        style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(224,90,78,.3)', background: 'none', color: 'var(--red)', cursor: 'pointer' }}>
+                        ล้าง TMC ตารางนี้
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+        </div>
+      </div>
+
+      {/* ── Per-Machine TMC Rates ────────────────────────── */}
+      <div className={styles.card}>
+        <div className={styles.cardHeader}>
+          <span className={styles.sectionTitle}>⏱ TMC ตามขนาด (รายเครื่อง)</span>
+          <span style={{ fontSize: 10, color: 'var(--txt3)' }}>เวลาตัด Cast Resin (B=4) ตามขนาด kVA — ถ้าไม่กำหนด ใช้ค่า TMC (h) จากตารางเครื่อง</span>
+        </div>
+        <div style={{ padding: '10px 16px' }}>
+          {/* Machine tabs */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+            {machines.map(m => {
+              const hasTmcRates = (m.tmc_rates ?? []).length > 0
+              const isActive = machineTmcTab === m.id
+              return (
+                <button key={m.id} onClick={() => setMachineTmcTab(isActive ? null : m.id)}
+                  style={{ fontSize: 11, padding: '4px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: isActive ? 700 : 400,
+                    border: `1px solid ${isActive ? 'var(--purple)' : hasTmcRates ? 'rgba(203,166,247,.5)' : 'var(--bord2)'}`,
+                    background: isActive ? 'rgba(203,166,247,.15)' : hasTmcRates ? 'rgba(203,166,247,.08)' : 'var(--bg3)',
+                    color: isActive ? 'var(--purple)' : hasTmcRates ? 'var(--purple)' : 'var(--txt3)',
+                  }}>
+                  {mLabel(m)}{hasTmcRates ? ` (${(m.tmc_rates ?? []).length})` : ''}
+                </button>
+              )
+            })}
+          </div>
+
+          {machineTmcTab !== null && (() => {
+            const m = machines.find(x => x.id === machineTmcTab)
+            if (!m) return null
+            const tmcRates = [...(m.tmc_rates ?? [])].sort((a, b) => a.kva - b.kva)
+            return (
+              <div>
+                {/* Machine info */}
+                <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 12, padding: '8px 12px', background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bord)' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt)' }}>{mLabel(m)}</span>
+                  <span style={{ fontSize: 10, color: 'var(--txt3)' }}>TMC fallback:</span>
+                  <code style={{ fontSize: 11, color: 'var(--purple)', background: 'var(--bg3)', padding: '2px 8px', borderRadius: 4 }}>
+                    {(m.tmc_hrs ?? 0) > 0 ? `${m.tmc_hrs}h` : 'ไม่ได้ตั้ง (ใช้ kVA rate)'}
+                  </code>
+                  <span style={{ fontSize: 9, color: 'var(--txt3)' }}>แก้ไข TMC (h) ได้ในตารางเครื่องด้านบน</span>
+                </div>
+
+                {/* Table header */}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, fontSize: 10, fontWeight: 700, color: 'var(--txt3)' }}>
+                  <span style={{ width: 90, textAlign: 'right' }}>ขนาด (kVA)</span>
+                  <span style={{ width: 16 }} />
+                  <span style={{ width: 80, textAlign: 'right' }}>TMC (h)</span>
+                  <span style={{ width: 60 }} />
+                </div>
+
+                {tmcRates.length === 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--txt3)', padding: '6px 0' }}>ยังไม่มีค่าเฉพาะ — ใช้ TMC (h) = {m.tmc_hrs ?? 0}h สำหรับทุกขนาด</div>
+                )}
+
+                {tmcRates.map((r, ri) => (
+                  <div key={ri} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                    <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
+                      onChange={e => saveMachineTmcRates(m.id, tmcRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
+                      style={{ width: 90, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--blue)', fontFamily: 'var(--mono)', fontWeight: 700, textAlign: 'right' }} />
+                    <span style={{ fontSize: 11, color: 'var(--txt3)' }}>kVA →</span>
+                    <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
+                      onChange={e => saveMachineTmcRates(m.id, tmcRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
+                      style={{ width: 80, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--purple)', fontFamily: 'var(--mono)', textAlign: 'right' }} />
+                    <span style={{ fontSize: 11, color: 'var(--txt3)' }}>h TMC</span>
+                    <button onClick={() => saveMachineTmcRates(m.id, tmcRates.filter((_, i) => i !== ri))}
+                      style={{ fontSize: 13, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--red)', padding: '0 4px' }}>✕</button>
+                  </div>
+                ))}
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                  <button onClick={() => saveMachineTmcRates(m.id, [...tmcRates, { kva: 0, hrs: m.tmc_hrs ?? 0 }])}
+                    style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(203,166,247,.4)', background: 'rgba(203,166,247,.08)', color: 'var(--purple)', cursor: 'pointer' }}>
+                    + เพิ่มขนาด
+                  </button>
+                  {globalRates.length > 0 && (
+                    <button
+                      title="Copy kVA sizes from standard rates — pre-filled with this machine's TMC (h) value as starting point"
+                      onClick={() => {
+                        const existingKvas = new Set(tmcRates.map(r => r.kva))
+                        const newRates = [
+                          ...tmcRates,
+                          ...globalRates.filter(r => !existingKvas.has(r.kva)).map(r => ({ kva: r.kva, hrs: m.tmc_hrs ?? 0 }))
+                        ].sort((a, b) => a.kva - b.kva)
+                        saveMachineTmcRates(m.id, newRates)
+                      }}
+                      style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(166,227,161,.4)', background: 'rgba(166,227,161,.08)', color: 'var(--green)', cursor: 'pointer' }}>
+                      📋 คัดลอกจากมาตรฐาน ({globalRates.length} ขนาด)
+                    </button>
+                  )}
+                  {tmcRates.length > 0 && (
+                    <button onClick={() => saveMachineTmcRates(m.id, [])}
+                      style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(224,90,78,.3)', background: 'none', color: 'var(--red)', cursor: 'pointer' }}>
+                      ล้างค่า TMC
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })()}
+        </div>
+      </div>
+
       {/* ── Weekly plan ──────────────────────────────────── */}
       <div className={styles.card}>
         <div className={styles.cardHeader}>
           <span className={styles.sectionTitle}>แผนการตัดโลหะ — สัปดาห์</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 12 }}>
-            <span style={{ fontSize: 10, color: 'var(--txt3)' }}>มุมมอง:</span>
-            {(['cards', 'table', 'pipeline'] as const).map(v => (
-              <button key={v} onClick={() => setViewMode(v)} style={{
-                fontSize: 10, padding: '3px 10px', borderRadius: 12, border: '1px solid var(--bord2)', cursor: 'pointer',
-                background: viewMode === v ? 'var(--blue)' : 'var(--bg3)',
-                color: viewMode === v ? '#000' : 'var(--txt2)', fontWeight: viewMode === v ? 700 : 400,
-              }}>
-                {v === 'cards' ? '📋 รายวัน' : v === 'table' ? '📊 ตาราง' : '🔄 Pipeline'}
-              </button>
-            ))}
-            <span style={{ fontSize: 10, color: 'var(--txt3)', marginLeft: 6 }}>Balance:</span>
-            {/* 3 OT policies × 7 approaches = 21 modes */}
-            {([
-              { group: '❌ ไม่ OT',         col: 'var(--green)', modes: [
-                { id: 'daily_no_ot',       label: '📅 รายวัน' },
-                { id: 'weekly_no_ot',      label: '🗓 รายสัปดาห์' },
-                { id: 'fastest_no_ot',     label: '🏎 เร็วสุด' },
-                { id: 'deadline_no_ot',    label: '📅 วันส่งก่อน' },
-                { id: 'priority_no_ot',    label: '⭐ ความสำคัญ' },
-                { id: 'interweek_no_ot',   label: '🔮 สัปดาห์หน้า' },
-                { id: 'batch_no_ot',       label: '🔗 Batch kVA' },
-              ]},
-              { group: '⚠️ OT เมื่อจำเป็น', col: 'var(--amber)', modes: [
-                { id: 'daily_smart',       label: '📅 รายวัน' },
-                { id: 'weekly_smart',      label: '🗓 รายสัปดาห์' },
-                { id: 'fastest_smart',     label: '🏎 เร็วสุด' },
-                { id: 'deadline_smart',    label: '📅 วันส่งก่อน' },
-                { id: 'priority_smart',    label: '⭐ ความสำคัญ' },
-                { id: 'interweek_smart',   label: '🔮 สัปดาห์หน้า' },
-                { id: 'batch_smart',       label: '🔗 Batch kVA' },
-              ]},
-              { group: '🔥 OT เสมอ',        col: 'var(--red)',   modes: [
-                { id: 'daily_full',        label: '📅 รายวัน' },
-                { id: 'weekly_full',       label: '🗓 รายสัปดาห์' },
-                { id: 'fastest_full',      label: '🏎 เร็วสุด' },
-                { id: 'deadline_full',     label: '📅 วันส่งก่อน' },
-                { id: 'priority_full',     label: '⭐ ความสำคัญ' },
-                { id: 'interweek_full',    label: '🔮 สัปดาห์หน้า' },
-                { id: 'batch_full',        label: '🔗 Batch kVA' },
-              ]},
-            ] as const).map(cat => (
-              <div key={cat.group} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                <span style={{ fontSize: 9, color: cat.col, fontWeight: 700, whiteSpace: 'nowrap', marginRight: 2 }}>{cat.group}</span>
-                {cat.modes.map(m => (
-                  <button key={m.id} onClick={() => setBalanceMode(m.id as typeof balanceMode)} style={{
-                    fontSize: 10, padding: '3px 8px', borderRadius: 8,
-                    border: `1px solid ${balanceMode === m.id ? cat.col : 'var(--bord2)'}`,
-                    background: balanceMode === m.id ? cat.col + '22' : 'var(--bg3)',
-                    color: balanceMode === m.id ? cat.col : 'var(--txt2)',
-                    fontWeight: balanceMode === m.id ? 700 : 400, cursor: 'pointer',
-                  }}>
-                    {m.label}
-                  </button>
-                ))}
+          {(() => {
+            const otPol = balanceMode.endsWith('_no_ot') ? 'no_ot' : balanceMode.endsWith('_smart') ? 'smart' : 'full'
+            const schedKey = balanceMode.replace(/_(?:no_ot|smart|full)$/, '')
+            const otOptions = [
+              { id: 'no_ot', label: '❌ ไม่ OT',      col: 'var(--green)' },
+              { id: 'smart', label: '⚠️ เมื่อจำเป็น', col: 'var(--amber)' },
+              { id: 'full',  label: '🔥 OT เสมอ',     col: 'var(--red)'   },
+            ] as const
+            const schedOptions = [
+              { id: 'daily',     label: '📅 รายวัน' },
+              { id: 'weekly',    label: '🗓 รายสัปดาห์' },
+              { id: 'fastest',   label: '🏎 เร็วสุด' },
+              { id: 'deadline',  label: '📅 วันส่งก่อน' },
+              { id: 'priority',  label: '⭐ ความสำคัญ' },
+              { id: 'interweek', label: '🔮 สัปดาห์หน้า' },
+              { id: 'batch',     label: '🔗 Batch kVA' },
+            ] as const
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginLeft: 12 }}>
+                {/* Row 1: View mode + OT policy */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ fontSize: 10, color: 'var(--txt3)' }}>มุมมอง:</span>
+                  {(['cards', 'table', 'pipeline'] as const).map(v => (
+                    <button key={v} onClick={() => setViewMode(v)} style={{
+                      fontSize: 10, padding: '3px 10px', borderRadius: 12, border: '1px solid var(--bord2)', cursor: 'pointer',
+                      background: viewMode === v ? 'var(--blue)' : 'var(--bg3)',
+                      color: viewMode === v ? '#000' : 'var(--txt2)', fontWeight: viewMode === v ? 700 : 400,
+                    }}>
+                      {v === 'cards' ? '📋 รายวัน' : v === 'table' ? '📊 ตาราง' : '🔄 Pipeline'}
+                    </button>
+                  ))}
+                  <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 6px', flexShrink: 0 }} />
+                  <span style={{ fontSize: 10, color: 'var(--txt3)' }}>OT:</span>
+                  {otOptions.map(ot => (
+                    <button key={ot.id} onClick={() => setBalanceMode(`${schedKey}_${ot.id}` as typeof balanceMode)} style={{
+                      fontSize: 10, padding: '3px 10px', borderRadius: 8,
+                      border: `1px solid ${otPol === ot.id ? ot.col : 'var(--bord2)'}`,
+                      background: otPol === ot.id ? ot.col + '22' : 'var(--bg3)',
+                      color: otPol === ot.id ? ot.col : 'var(--txt2)',
+                      fontWeight: otPol === ot.id ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap',
+                    }}>
+                      {ot.label}
+                    </button>
+                  ))}
+                </div>
+                {/* Row 2: Schedule mode */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ fontSize: 10, color: 'var(--txt3)', minWidth: 40 }}>แผน:</span>
+                  {schedOptions.map(s => (
+                    <button key={s.id} onClick={() => setBalanceMode(`${s.id}_${otPol}` as typeof balanceMode)} style={{
+                      fontSize: 10, padding: '3px 10px', borderRadius: 8,
+                      border: `1px solid ${schedKey === s.id ? 'var(--blue)' : 'var(--bord2)'}`,
+                      background: schedKey === s.id ? 'rgba(137,180,250,.18)' : 'var(--bg3)',
+                      color: schedKey === s.id ? 'var(--blue)' : 'var(--txt2)',
+                      fontWeight: schedKey === s.id ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap',
+                    }}>
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            ))}
-          </div>
+            )
+          })()}
           <div className={styles.weekNav}>
             <button className={styles.btn} onClick={() => setWeekOffset(w => w - 1)}>‹ ก่อนหน้า</button>
             <span className={styles.weekLabel}>{weekLabel}</span>
@@ -1517,11 +1900,32 @@ export default function CuttingMachines() {
             style={{ fontSize: 11, padding: '5px 14px', borderRadius: 8, border: 'none', background: 'var(--green)', color: '#000', fontWeight: 700, cursor: 'pointer', opacity: (planSaving || weekOrders.length === 0) ? 0.5 : 1 }}>
             {planSaving ? 'กำลังบันทึก…' : '💾 บันทึกแผน'}
           </button>
-          <button onClick={exportPlanCSV} disabled={weekOrders.length === 0}
-            title="Export schedule to CSV (Date, Machine, SAP SO, kVA, Hours…)"
-            style={{ fontSize: 11, padding: '5px 14px', borderRadius: 8, border: '1px solid var(--bord2)', background: 'var(--bg3)', color: 'var(--txt2)', fontWeight: 600, cursor: 'pointer', opacity: weekOrders.length === 0 ? 0.5 : 1 }}>
-            📤 Export CSV
-          </button>
+          {/* Export dropdown */}
+          <div style={{ position: 'relative', display: 'inline-block' }}>
+            <button disabled={weekOrders.length === 0}
+              onClick={e => { const m = (e.currentTarget.nextSibling as HTMLElement); m.style.display = m.style.display === 'block' ? 'none' : 'block' }}
+              style={{ fontSize: 11, padding: '5px 14px', borderRadius: 8, border: '1px solid var(--bord2)', background: 'var(--bg3)', color: 'var(--txt2)', fontWeight: 600, cursor: 'pointer', opacity: weekOrders.length === 0 ? 0.5 : 1 }}>
+              📤 Export ▾
+            </button>
+            <div style={{ display: 'none', position: 'absolute', top: '100%', left: 0, zIndex: 100, background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,.3)', minWidth: 160, padding: 4, marginTop: 2 }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.display = 'none' }}>
+              {[
+                { label: '📄 CSV', fn: exportPlanCSV, desc: 'Spreadsheet rows' },
+                { label: '📊 Excel (.xlsx)', fn: exportXLSX, desc: 'Formatted workbook' },
+                { label: '📝 Text (.txt)', fn: exportTXT, desc: 'Plain text summary' },
+                { label: '🖨 Print / PDF', fn: exportPrint, desc: 'Print dialog' },
+                { label: '{ } JSON', fn: exportJSON, desc: 'Raw data' },
+              ].map(({ label, fn, desc }) => (
+                <button key={label} onClick={() => { fn(); (document.activeElement as HTMLElement)?.blur() }}
+                  style={{ display: 'flex', flexDirection: 'column', width: '100%', padding: '7px 12px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', borderRadius: 6, color: 'var(--txt)' }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--bg3)' }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'none' }}>
+                  <span style={{ fontSize: 11, fontWeight: 600 }}>{label}</span>
+                  <span style={{ fontSize: 9, color: 'var(--txt3)' }}>{desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
           <button onClick={loadSnapshots}
             style={{ fontSize: 10, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--bord2)', background: 'var(--bg3)', color: 'var(--txt2)', cursor: 'pointer' }}>
             📋 ดูแผนที่บันทึก
@@ -1741,9 +2145,9 @@ export default function CuttingMachines() {
                             <div style={{ minWidth: 140, flexShrink: 0 }}>
                               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt)' }}>
                                 {mLabel(m)}
-                                {sched.hasCarryOver && <span style={{ fontSize: 8, marginLeft: 4, color: 'var(--blue)', background: 'rgba(137,180,250,.15)', padding: '1px 4px', borderRadius: 4 }}>↩ ต่อจากเมื่อวาน</span>}
+                                {sched.hasCarryOver && <span style={{ fontSize: 9, marginLeft: 4, color: 'var(--blue)', background: 'rgba(137,180,250,.15)', padding: '1px 4px', borderRadius: 4 }}>↩ ต่อจากเมื่อวาน</span>}
                               </div>
-                              <div style={{ fontSize: 9, fontFamily: 'var(--mono)', color: timeCol, fontWeight: 600 }}>
+                              <div style={{ fontSize: 10, fontFamily: 'var(--mono)', color: timeCol, fontWeight: 600 }}>
                                 {totalH.toFixed(1)}h / {capH}h
                                 {sched.otHrs > 0 && <span style={{ color: 'var(--amber)', marginLeft: 4 }}>+OT {sched.otHrs.toFixed(1)}h</span>}
                                 {sched.carriesForward && <span style={{ color: 'var(--red)', marginLeft: 4 }}>→ พรุ่งนี้</span>}
@@ -1751,20 +2155,22 @@ export default function CuttingMachines() {
                             </div>
                             {/* Work items */}
                             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                              {sched.work.map((w, wi) => {
+                              {sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).map((w, wi) => {
                                 const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
                                 const { typeCode } = decodeItemInfo(w.order.item_code ?? '')
                                 const kvaCol = kva <= 400 ? 'var(--blue)' : kva <= 3500 ? 'var(--amber)' : 'var(--red)'
                                 const typeLabel = typeCode === '4' ? 'CR' : ['1','2','3'].includes(typeCode) ? 'Oil' : ''
                                 return (
                                   <div key={wi}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10 }}>
-                                      {w.isCarryOver && <span style={{ fontSize: 8, color: 'var(--blue)' }}>↩</span>}
-                                      <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt3)', fontSize: 9, minWidth: 110 }}>{w.order.sap_so || w.order.id.slice(-10)}</span>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                                      {w.isCarryOver && <span style={{ fontSize: 9, color: 'var(--blue)' }}>↩</span>}
+                                      <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt3)', fontSize: 10, minWidth: 110 }}>{w.order.sap_so || w.order.id.slice(-10)}</span>
                                       <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: kvaCol }}>{kva.toLocaleString()}kVA ×{w.order.qty}</span>
-                                      {typeLabel && <span style={{ fontSize: 8, padding: '1px 4px', borderRadius: 4, background: typeCode === '4' ? 'rgba(250,179,135,.2)' : 'rgba(137,180,250,.15)', color: typeCode === '4' ? 'var(--amber)' : 'var(--blue)' }}>{typeLabel}</span>}
-                                      {drillPrefers(m, w.order) && <span style={{ fontSize: 9 }}>🔩</span>}
-                                      <span style={{ color: 'var(--txt3)', marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 9 }}>{w.hrsWorked.toFixed(1)}h{w.isComplete ? ' ✓' : w.carriesOver ? ' →' : ''}</span>
+                                      {typeLabel && <span style={{ fontSize: 9, padding: '1px 4px', borderRadius: 4, background: typeCode === '4' ? 'rgba(250,179,135,.2)' : 'rgba(137,180,250,.15)', color: typeCode === '4' ? 'var(--amber)' : 'var(--blue)' }}>{typeLabel}</span>}
+                                      {typeCode === '4' && <span title={`Cast Resin — uses TMC time: ${(m.tmc_hrs ?? 0) > 0 ? (m.tmc_hrs ?? 0) + 'h' : 'not set (using kVA rate)'}`} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: 'rgba(203,166,247,.2)', color: 'var(--purple)', fontWeight: 700, letterSpacing: '.02em' }}>⏱ TMC</span>}
+                                      {drillPrefers(m, w.order) && <span style={{ fontSize: 10 }}>🔩</span>}
+                                      {w.order.customer && <span style={{ fontSize: 10, color: 'var(--txt2)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 90 }}>{w.order.customer}</span>}
+                                      <span style={{ color: 'var(--txt3)', marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 10 }}>{w.hrsWorked.toFixed(1)}h{w.isComplete ? ' ✓' : w.carriesOver ? ' →' : ''}</span>
                                     </div>
                                     {showWireData && (w.order.raw_mat || w.order.lv || w.order.hv) && (
                                       <div style={{ display: 'flex', gap: 6, paddingLeft: 16, paddingBottom: 2, fontSize: 8, color: 'var(--txt3)', flexWrap: 'wrap', alignItems: 'center' }}>
@@ -1886,13 +2292,13 @@ export default function CuttingMachines() {
                                 {work.length === 0 ? <span className={styles.dim}>—</span> : (
                                   <>
                                     {/* Summary line */}
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4, flexWrap: 'wrap' }}>
-                                      {sched?.hasCarryOver && <span style={{ fontSize: 8, color: 'var(--blue)', background: 'rgba(137,180,250,.12)', padding: '1px 4px', borderRadius: 4 }}>↩ ต่อ</span>}
-                                      <span style={{ fontSize: 9, fontFamily: 'var(--mono)', color: col, fontWeight: 700 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 5, flexWrap: 'wrap' }}>
+                                      {sched?.hasCarryOver && <span style={{ fontSize: 9, color: 'var(--blue)', background: 'rgba(137,180,250,.12)', padding: '1px 4px', borderRadius: 4 }}>↩ ต่อ</span>}
+                                      <span style={{ fontSize: 11, fontFamily: 'var(--mono)', color: col, fontWeight: 700 }}>
                                         {wall.toFixed(1)}h / {capH}h
                                       </span>
-                                      {sched?.otHrs ? <span style={{ fontSize: 8, color: 'var(--amber)', fontWeight: 600 }}>+OT {sched.otHrs.toFixed(1)}h</span> : ''}
-                                      {sched?.carriesForward && <span style={{ fontSize: 8, color: 'var(--red)' }}>→ พรุ่งนี้</span>}
+                                      {sched?.otHrs ? <span style={{ fontSize: 9, color: 'var(--amber)', fontWeight: 600 }}>+OT {sched.otHrs.toFixed(1)}h</span> : ''}
+                                      {sched?.carriesForward && <span style={{ fontSize: 9, color: 'var(--red)', fontWeight: 600 }}>→ พรุ่งนี้</span>}
                                     </div>
                                     {/* Order rows — always visible, no click needed */}
                                     {work.map((w, idx) => {
@@ -1900,25 +2306,25 @@ export default function CuttingMachines() {
                                       const kvaCol = kva <= 400 ? 'var(--blue)' : kva <= 3500 ? 'var(--amber)' : 'var(--red)'
                                       const { typeCode: tc } = decodeItemInfo(w.order.item_code ?? '')
                                       const typeLabel = tc === '4' ? 'CR' : ['1','2','3'].includes(tc) ? 'Oil' : ''
-                                      const totalH = w.order.qty * getHrsForKva(m, kva, globalRates)
+                                      const totalH = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code)
                                       const wireType = detectWireType(w.order.raw_mat)
                                       const wireMatch = wireType === 'laser' ? m.laser : wireType === 'm4' ? m.m4 : true
                                       return (
-                                        <div key={idx} style={{ borderBottom: idx < work.length - 1 ? '0.5px solid var(--bord)' : 'none', paddingBottom: 3, marginBottom: 3 }}>
+                                        <div key={idx} style={{ borderBottom: idx < work.length - 1 ? '1px solid var(--bord)' : 'none', paddingBottom: 4, marginBottom: 4 }}>
                                           {/* Row 1: SAP SO + kVA + status */}
-                                          <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 9 }}>
-                                            {w.isCarryOver && <span style={{ color: 'var(--blue)', fontSize: 7 }}>↩</span>}
-                                            <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt3)', fontSize: 8, minWidth: 80 }}>{w.order.sap_so || w.order.id.slice(-8)}</span>
+                                          <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 10 }}>
+                                            {w.isCarryOver && <span style={{ color: 'var(--blue)', fontSize: 9 }}>↩</span>}
+                                            <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt3)', fontSize: 9, minWidth: 80 }}>{w.order.sap_so || w.order.id.slice(-8)}</span>
                                             <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: kvaCol }}>{kva.toLocaleString()}kVA</span>
-                                            <span style={{ color: 'var(--txt3)', fontSize: 8 }}>×{w.order.qty}</span>
-                                            {typeLabel && <span style={{ fontSize: 7, padding: '0 3px', borderRadius: 3, background: tc === '4' ? 'rgba(250,179,135,.2)' : 'rgba(137,180,250,.12)', color: tc === '4' ? 'var(--amber)' : 'var(--blue)' }}>{typeLabel}</span>}
-                                            {drillPrefers(m, w.order) && <span style={{ fontSize: 9 }}>🔩</span>}
-                                            <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 9, fontWeight: 700, color: w.carriesOver ? 'var(--red)' : w.isComplete ? 'var(--green)' : 'var(--amber)' }}>
+                                            <span style={{ color: 'var(--txt3)', fontSize: 9 }}>×{w.order.qty}</span>
+                                            {typeLabel && <span style={{ fontSize: 9, padding: '0 3px', borderRadius: 3, background: tc === '4' ? 'rgba(250,179,135,.2)' : 'rgba(137,180,250,.12)', color: tc === '4' ? 'var(--amber)' : 'var(--blue)' }}>{typeLabel}</span>}
+                                            {drillPrefers(m, w.order) && <span style={{ fontSize: 10 }}>🔩</span>}
+                                            <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700, color: w.carriesOver ? 'var(--red)' : w.isComplete ? 'var(--green)' : 'var(--amber)' }}>
                                               {w.hrsWorked.toFixed(1)}h{totalH > 0 ? `/${totalH.toFixed(1)}h` : ''}{w.isComplete ? '✓' : '→'}
                                             </span>
                                           </div>
                                           {/* Row 2: customer + wire data */}
-                                          <div style={{ display: 'flex', gap: 5, fontSize: 8, color: 'var(--txt3)', marginTop: 1, flexWrap: 'wrap' }}>
+                                          <div style={{ display: 'flex', gap: 5, fontSize: 9, color: 'var(--txt3)', marginTop: 2, flexWrap: 'wrap' }}>
                                             {w.order.customer && <span style={{ color: 'var(--txt2)', fontWeight: 600 }}>{w.order.customer}</span>}
                                             {showWireData && w.order.raw_mat && w.order.raw_mat !== '—' && (
                                               <span style={{ color: wireType === 'any' ? 'var(--txt3)' : wireMatch ? 'var(--green)' : 'var(--red)', fontWeight: wireType !== 'any' ? 600 : 400 }}>

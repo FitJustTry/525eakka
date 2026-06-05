@@ -60,7 +60,7 @@ function decodeItemCode(code: string): Decoded | null {
   return {
     category: CAT_A[A] ?? `หมวด ${A}`,
     type: IC_TYPE[B] ?? `Unknown (${B})`,
-    kva: decodeKva(CDEF),
+    kva: decodeKva(code),
     hv: IC_GH[GH] ?? `Unknown GH=${GH}`,
     group: IC_GRP[I] ?? (I ? `Unknown (${I})` : '—'),
     running: run || '—',

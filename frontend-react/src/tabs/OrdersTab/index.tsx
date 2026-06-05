@@ -24,7 +24,10 @@ export default function OrdersTab() {
       o.id.toLowerCase().includes(q) ||
       o.customer.toLowerCase().includes(q) ||
       (o.sap_so ?? '').toLowerCase().includes(q) ||
-      (o.item_code ?? '').toLowerCase().includes(q)
+      (o.item_code ?? '').toLowerCase().includes(q) ||
+      String(o.kva ?? '').includes(q) ||
+      (o.raw_mat ?? '').toLowerCase().includes(q) ||
+      (o.product ?? '').toLowerCase().includes(q)
     )
     return list
   }, [orders, filterCat, q])
@@ -87,7 +90,7 @@ export default function OrdersTab() {
 
       {/* Filters */}
       <div style={{ marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <input type="text" placeholder="ค้นหา Order / ลูกค้า / SAP SO..." value={search}
+        <input type="text" placeholder="ค้นหา SAP SO / ลูกค้า / kVA / Item Code / Raw Mat..." value={search}
           onChange={e => setSearch(e.target.value)}
           style={{ fontSize: 12, padding: '7px 12px', borderRadius: 8, border: '1px solid var(--bord2)', background: 'var(--bg3)', color: 'var(--txt)', outline: 'none', width: 260 }} />
         <select value={filterCat} onChange={e => setFilterCat(e.target.value)}

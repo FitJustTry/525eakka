@@ -9,6 +9,8 @@ Documentation for the Ekarat Capacity Planner project.
 | [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) | System overview, tabs, DB tables, item code format, production flows |
 | [CUTTING_MACHINE_LOGIC.md](CUTTING_MACHINE_LOGIC.md) | All 21 cutting machine scheduling modes, OT logic, shared pool, data flow |
 | [IMPORT_GUIDE.md](IMPORT_GUIDE.md) | How to import Master Plan, SAP Routing, and other data |
+| [SAP_ROUTING.md](SAP_ROUTING.md) | SAP Routing features: endpoints, catalog view, cutting rates, by-kVA lookup |
+| [HANDOFF.md](HANDOFF.md) | **Start here** — full summary of what was built, known issues, architecture decisions, pending work |
 
 ## Quick Reference
 
