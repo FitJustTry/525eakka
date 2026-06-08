@@ -726,11 +726,30 @@ export default function CuttingMachines() {
     const totalOT       = maxDailyOT
     const summaryStatus = bottleneckWall > REG_PER + OT_PER ? 'over' : totalOT >= 0.05 ? 'warn' : 'ok'
 
-    return { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, summaryStatus }
+    // Completion summary: track last-seen isComplete state for each order across all machines & days
+    const orderLastState = new Map<string, { isComplete: boolean; day: string }>()
+    machines.forEach(m => {
+      days.forEach(d => {
+        const dStr = fmtISO(d)
+        const sched = weekSchedule.get(m.id)?.get(dStr)
+        sched?.work.forEach(w => {
+          const cur = orderLastState.get(w.order.id)
+          // Keep the latest day; within same day, prefer isComplete=true
+          if (!cur || dStr > cur.day || (dStr === cur.day && w.isComplete)) {
+            orderLastState.set(w.order.id, { isComplete: w.isComplete, day: dStr })
+          }
+        })
+      })
+    })
+    const weekDoneOrders  = weekOrders.filter(o => orderLastState.get(o.id)?.isComplete === true)
+    const weekCarryOrders = weekOrders.filter(o => { const s = orderLastState.get(o.id); return !!s && !s.isComplete })
+    const weekUnscheduled = weekOrders.filter(o => !orderLastState.has(o.id))
+
+    return { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, summaryStatus, weekDoneOrders, weekCarryOrders, weekUnscheduled }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weekSchedule, strictWire, requireDrill, weekOrders.map(o=>o.id+o.qty).join(','), machines.map(m=>`${m.id}${(m.off_days??[]).join('-')}`).join(',')])
 
-  const { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek: _totalKvaWeek, totalOT, summaryStatus: _summaryStatus } = weekData
+  const { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek: _totalKvaWeek, totalOT, summaryStatus: _summaryStatus, weekDoneOrders, weekCarryOrders, weekUnscheduled } = weekData
 
   // ── Render ───────────────────────────────────────────────────
   return (
@@ -1895,6 +1914,54 @@ export default function CuttingMachines() {
                 </table>
               </div>
             )}
+
+            {/* ── WEEK COMPLETION SUMMARY ── */}
+            {viewMode !== 'pipeline' && (weekDoneOrders.length > 0 || weekCarryOrders.length > 0 || weekUnscheduled.length > 0) && (() => {
+              const doneQty  = weekDoneOrders.reduce((s, o) => s + o.qty, 0)
+              const carryQty = weekCarryOrders.reduce((s, o) => s + o.qty, 0)
+              const unschedQty = weekUnscheduled.reduce((s, o) => s + o.qty, 0)
+              const chip = (label: string, count: number, qty: number, col: string) => (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', background: 'var(--bg3)', borderRadius: 8, border: `1px solid ${col}22` }}>
+                  <span style={{ fontSize: 13 }}>{label}</span>
+                  <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 12, color: col }}>{count} orders</span>
+                  <span style={{ fontSize: 10, color: 'var(--txt3)' }}>·</span>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: col }}>{qty} ตัว</span>
+                </div>
+              )
+              const orderRow = (o: Order) => {
+                const kva = o.kva ?? products[o.product]?.kva ?? 0
+                return (
+                  <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 8px', background: 'var(--bg4)', borderRadius: 6, fontSize: 11, whiteSpace: 'nowrap' }}>
+                    <span style={{ fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--txt1)' }}>{o.sap_so ?? o.id.slice(-8)}</span>
+                    <span style={{ color: 'var(--txt3)' }}>{kva.toLocaleString()}kVA</span>
+                    <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt2)' }}>×{o.qty}</span>
+                    {o.customer && <span style={{ color: 'var(--txt3)', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>{o.customer}</span>}
+                  </div>
+                )
+              }
+              return (
+                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {weekDoneOrders.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                      {chip('✅ เสร็จสัปดาห์นี้', weekDoneOrders.length, doneQty, 'var(--green)')}
+                      {weekDoneOrders.map(orderRow)}
+                    </div>
+                  )}
+                  {weekCarryOrders.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                      {chip('⏭ ค้างสัปดาห์หน้า', weekCarryOrders.length, carryQty, 'var(--amber)')}
+                      {weekCarryOrders.map(orderRow)}
+                    </div>
+                  )}
+                  {weekUnscheduled.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                      {chip('❌ ไม่ได้ตั้งแผน', weekUnscheduled.length, unschedQty, 'var(--red)')}
+                      {weekUnscheduled.map(orderRow)}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
 
             {/* ── PIPELINE VIEW — horizontal timeline per machine ── */}
             {viewMode === 'pipeline' && (() => {
