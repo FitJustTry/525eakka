@@ -1,6 +1,6 @@
 # แผนการตัดโลหะ — Cutting Machine Plan Logic
 
-> Last updated: 2026-06-02  
+> Last updated: 2026-06-08  
 > File: `frontend-react/src/tabs/DeptTab/CuttingMachines.tsx`  
 > Backend: `backend/server.js`
 
@@ -39,18 +39,78 @@ All modes use one unified function: `scheduleMode(approach, otPolicy, sortStrate
 ### ❌ ไม่ OT
 `effectiveOtCap = 0` always. Work carries to next day naturally. Never uses overtime.
 
-### ⚠️ OT เมื่อจำเป็น
-OT added only when **current carry-over work won't fit in remaining regular days**:
-```
-carryHrs = hours remaining on current in-progress order (not yet done)
-regDaysLeft = working days remaining × regCap per day
+### ⚠️ OT เมื่อจำเป็น (Smart OT)
 
-if carryHrs > regDaysLeft capacity:
-  OT today = min(otCap, carryHrs - regDaysLeft)
-else:
-  OT = 0 (carry to next day in regular hours)
+OT is added only when estimated remaining work exceeds remaining regular capacity.  
+The estimate runs in **two stages** — upfront (at day start) + dynamic (inside the day loop).
+
+#### Stage 1 — Upfront estimate (at day start)
+
 ```
-Result: machines fill regular hours EVERY day first. OT only in last few days when genuinely necessary.
+regLeft = Σ reg_hrs for all working days remaining this week (including today)
+
+totalEstimate = currentHrs + ownedPendingHrs + unclaimedShare
+
+  currentHrs       = st.rem (hours left on in-progress unit, if any)
+  ownedPendingHrs  = Σ hrs of pool units where orderMachine[orderId] === this machine
+                     (units already reserved for this machine via stickyOrders)
+  unclaimedShare   = Σ (hrs / eligibleCount) for each unclaimed eligible pool unit
+                     eligibleCount = # machines that can cut this order AND are ON today
+                     → orders only 1 machine can cut count in full
+                     → orders shared across N machines count as 1/N
+
+if totalEstimate > regLeft:
+  effectiveOtCap = min(otCap, totalEstimate − regLeft)
+else:
+  effectiveOtCap = 0
+```
+
+**Why include unclaimedShare?** ⚠️ เมื่อจำเป็น fires when the machine's *weekly load* exceeds *weekly regular capacity* — not just today's carry-over. Without `unclaimedShare`, the machine only sees one order at a time (ownedFirst rule), which almost always fits in remaining time → OT never fires → equivalent to ❌. The `unclaimedShare` term approximates total realistic weekly load. Stage 2 then refines this in real-time as units are claimed.
+
+**Why per-unit division?** Prevents every machine over-counting the same shared pool. An order eligible for 4 machines contributes 1/4 of its hours to each machine's estimate. An order only Machine 4 can cut contributes its full hours to Machine 4's estimate.
+
+#### Stage 2 — Dynamic extension (after each unit is claimed)
+
+Each time the machine picks a new unit from the pool:
+
+```
+nowOwned = st.rem (just-picked unit hrs) + ownedPendingHrs (all other owned units)
+
+if nowOwned > regLeft AND effectiveOtCap < otCap:
+  needed = min(otCap, max(st.rem, nowOwned − regLeft))
+  if needed > effectiveOtCap:
+    avail  += needed − effectiveOtCap   ← extend working time NOW
+    effectiveOtCap = needed
+```
+
+`Math.max(st.rem, …)` ensures OT extension is at least one unit's size — this prevents a unit-boundary carry-over where the estimate says "1.6h OT needed" but the last unit is 3.52h, causing a 0.2h spill to the next day.
+
+**Example — Machine 2, Friday:**
+- Batch 1 of 2110000076: 0.2h remaining → finishes in 10 min
+- Batch 2 of 2110000076: 17.6h, NOT yet claimed at day start → unclaimedShare = 17.6h/4 = 4.4h  
+- Stage 1: totalEstimate = 0.2 + 0 + 4.4 = 4.6h < regLeft (16h) → OT = 0
+- Machine 2 picks first unit of batch 2 → **Stage 2 fires**:
+  - nowOwned = 3.52 + 14.08 = 17.6h > regLeft (16h)
+  - needed = min(4, max(3.52, 1.6)) = **3.52h**
+  - avail += 3.52h → Machine 2 now has 3.52h OT on Friday
+- Result: Machine 2 finishes batch 2 on Saturday ✓
+
+#### Saturday OT — REQUIRES WC CONFIG
+
+For machines with a `wc_id`, Saturday OT comes from `WCConfig.sat_ot`:
+
+```
+resolveHours(machine, isSat=true):
+  if machine.wc_id:
+    return { reg: wc.sat_hrs ?? 0, ot: wc.sat_ot ?? 0 }  ← 0 if not set!
+  else:
+    return { reg: reg_hrs/2, ot: ot_hrs/2 }              ← halved for Saturday
+```
+
+**If `sat_ot` is not configured in WC settings → Saturday OT = 0.**  
+Smart OT correctly detects the need for Saturday OT (`effectiveOtCap > 0`) but `regLeft` includes Saturday regular hours. If the work can't finish within Saturday regular time, the overflow carries to next week.
+
+**Fix**: Set `sat_ot` in WC Config → Settings → เวลางาน for any work centre that should allow Saturday overtime.
 
 ### 🔥 OT เสมอ
 `effectiveOtCap = otCap` always. Machine works reg + max OT every single day.
@@ -101,6 +161,23 @@ All strategies except `📅 รายวัน` use a **Shared Pool** — one li
 - Processes all of one size before moving to next
 - Within same bucket → LPT
 - Goal: minimize setup time between different transformer sizes
+
+---
+
+## 🔗 ครบต่อเครื่อง / 🔀 แยกเครื่องได้ (Sticky Orders)
+
+Toggle shown in the summary row. Only applies to `🏎 เร็วสุด` mode.
+
+| State | Behaviour |
+|-------|-----------|
+| 🔗 ครบต่อเครื่อง (ON, default) | Once Machine X picks any unit of Order A, **all** remaining units of Order A are reserved for Machine X. Another machine cannot pick them. |
+| 🔀 แยกเครื่องได้ (OFF) | Any machine can pick any unit of any order. One order may be split across multiple machines. |
+
+**Implementation**: `orderMachine: Map<orderId, machineId>` — populated when a machine claims a unit. Eligibility filter skips units where `orderMachine[orderId] !== m.id`.
+
+**Owned-first rule**: When a machine has owned pending units in the pool, it cannot claim NEW orders until all owned units are done. Without this, high-capacity machines (12h OT/day) greedily claim 4-5 orders in a single day, starving lower-capacity machines of any work — causing fewer total units completed than non-sticky modes.
+
+**Smart OT interaction**: `ownedPendingHrs` uses `orderMachine` to count reserved-but-not-yet-started units. When `stickyOrders=false`, `orderMachine` is never populated → `ownedPendingHrs = 0` always → Stage 1 only uses `unclaimedShare` (fair division among eligible machines).
 
 ---
 
@@ -271,7 +348,11 @@ All 3 views read IDENTICAL data from weekData.dayRows.machineCells
 |---------|-------|-----|
 | All machines use OT every day | SAP rates not loaded → 5.333h fallback | Load EE3102 rates in ⏱ section |
 | Machine 5 idle while others work | Old: pre-assigned static queues | Fixed: shared pool, machines pull dynamically |
-| OT added too early (Mon-Wed) | Smart OT estimated future queue size | Fixed: only adds OT for current carry-over hours |
+| 🏎 completes fewer units than 📅 (counterintuitive) | stickyOrders: high-capacity machines claim multiple orders per day, leaving lower-capacity machines idle | Fixed: owned-first rule — machine must finish all owned pending units before claiming a new order |
+| Smart OT fires on every day (same as 🔥) | Stage 1 counted ALL eligible pool units at full value → overcounting | Fixed: divide unclaimed by eligible machine count (per-unit weighted share) |
+| Smart OT ≈ 0h all week (same as ❌) | Stage 1 only used confirmed owned work — machine owns one order at a time (ownedFirst), which fits in regLeft → no OT | Fixed: Stage 1 includes unclaimedShare; Stage 2 refines dynamically when a claim reveals overload |
+| Machine doesn't use Friday OT, carries batch to next week | Unclaimed batch divided by 4 machines = 1/4 credit → Stage 1 underestimates → no OT | Fixed: Stage 2 fires when Machine claims batch mid-day, OT extended immediately |
+| Saturday still carries even after Friday OT | Saturday OT = 0 because `sat_ot` not set in WC Config | Fix: configure `sat_ot` in Settings → WC Config |
 | Machine shows "50–0kVA" | max_kva=0, less than min_kva | Fix kVA สูงสุด in config table |
 | Dates shift by 1 day | `.toISOString()` → UTC timezone shift | Fixed: `localISO(d)` + `types.setTypeParser(1082)` |
 | Card and table show different data | Table used raw `asgn`, card used `weekSchedule` | Fixed: both use `weekData.dayRows.machineCells` |
@@ -376,3 +457,4 @@ Downloads the full weekly schedule with columns:
 - 🔮 สัปดาห์หน้า logic is heuristic (50% threshold) — could be tuned
 - Pipeline view (🔄) shows correctly but could be improved with time axis scale
 - TMC for Cast Resin defaults to 0 — user must set machine tmc_hrs for CR orders to have non-zero cutting time
+- Smart OT Stage 2 re-evaluates `regLeft` using the value computed at day start (not reduced as hours are worked). This means `regLeft` slightly overestimates remaining capacity when the check fires mid-day. In practice the error is < 1 unit's worth of hours and is acceptable.
