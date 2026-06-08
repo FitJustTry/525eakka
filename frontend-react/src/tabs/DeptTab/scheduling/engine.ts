@@ -125,34 +125,27 @@ export function scheduleFastest(
   //  With stickyOrders, once order A lands on machine X, all
   //  remaining units of A follow X — no day-by-day competition.
   //
-  //  Week capacity = reg + OT per policy (upper bound used for
-  //  assignment; simulation enforces actual OT per day).
+  //  No week-capacity cap here — Phase 3 simulation handles
+  //  carry-over naturally.  Capping here would drop units from
+  //  queues entirely (never simulated), which is wrong under
+  //  strict wire + drill + stickyOrders where one machine may be
+  //  the only eligible option for an entire order.
   // ═══════════════════════════════════════════════════════════
-  const weekCap = new Map<number, number>()
-  machines.forEach(m => {
-    weekCap.set(m.id, days.reduce((s, dd) => {
-      const { reg, ot } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
-      return s + (reg + (otPolicy !== 'none' ? ot : 0)) * (m.count || 1)
-    }, 0))
-  })
-
-  const machLoad  = new Map<number, number>()   // accumulated assigned hours
+  const machLoad  = new Map<number, number>()   // accumulated assigned hours (for LPT balance only)
   const machQueue = new Map<number, Unit[]>()   // assigned units per machine
   const orderOwner = new Map<string, number>()  // orderId → machineId
   machines.forEach(m => { machLoad.set(m.id, 0); machQueue.set(m.id, []) })
 
   for (const u of pool) {
-    // Machines that can cut this unit and still have remaining week capacity
     const eligible = machines.filter(m =>
-      canMachineCut(m, u.order, products, strictWire, requireDrill) &&
-      (machLoad.get(m.id) ?? 0) < (weekCap.get(m.id) ?? 0) - 0.001
+      canMachineCut(m, u.order, products, strictWire, requireDrill)
     )
     if (!eligible.length) continue
 
     let target: CuttingMachine
     if (stickyOrders && orderOwner.has(u.order.id)) {
       const owner = eligible.find(m => m.id === orderOwner.get(u.order.id))
-      if (!owner) continue  // owner machine is full — unit skipped this week
+      if (!owner) continue  // owner can't cut this unit (constraint mismatch — shouldn't happen)
       target = owner
     } else {
       // Least-loaded eligible machine
