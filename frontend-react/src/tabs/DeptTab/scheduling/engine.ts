@@ -123,38 +123,50 @@ export function scheduleFastest(
   const mst = new Map<number, MS>()
   machines.forEach(m => { mst.set(m.id, { currentUnit: null, rem: 0, isCarryOver: false, mMap: new Map() }); result.set(m.id, mst.get(m.id)!.mMap) })
 
-  // ── Simulate day-by-day, all machines simultaneously ─────────
+  // ── Simulate day-by-day ──────────────────────────────────────
   for (let di = 0; di < days.length; di++) {
     const d = days[di]; const dow = d.getDay(); const isSat = dow === 6
     const dStr = fmtISO(d)
+
+    // Per-day bookkeeping per machine
+    type DS = { avail: number; regCap: number; otCap: number; effectiveOtCap: number; regUsed: number; otUsed: number; work: DayWork[] }
+    const ds = new Map<number, DS>()
 
     for (const m of machines) {
       const st = mst.get(m.id)!
       const { reg, ot } = resolveHours(m, wcConfig, isSat, dow)
       const regCap = reg * (m.count || 1); const otCap = ot * (m.count || 1)
       if (regCap === 0 && otCap === 0) { st.mMap.set(dStr, { regHrs:0, otHrs:0, otNeeded:0, work:[], hasCarryOver:false, carriesForward: st.rem>0 }); continue }
-
-      // OT policy
       let effectiveOtCap = 0
-      if (otPolicy === 'full') {
-        effectiveOtCap = otCap
-      } else if (otPolicy === 'smart') {
-        // Fill reg hours first; OT fires dynamically when a claimed unit overflows (see inside loop)
+      if (otPolicy === 'full') effectiveOtCap = otCap
+      else if (otPolicy === 'smart') {
         const currentHrs = st.rem > 0.001 ? st.rem : 0
         effectiveOtCap = Math.min(otCap, Math.max(0, currentHrs - regCap))
       }
+      ds.set(m.id, { avail: regCap + effectiveOtCap, regCap, otCap, effectiveOtCap, regUsed: 0, otUsed: 0, work: [] })
+    }
 
-      const work: DayWork[] = []; let avail = regCap + effectiveOtCap; let regUsed = 0; let otUsed = 0
+    // ── Interleaved fair scheduling ──────────────────────────────
+    // Each pass: machine with the MOST remaining avail gets one processing step
+    // (process carry-over OR claim+process one new unit), then we re-sort.
+    // This prevents any single machine from monopolising the pool — machines
+    // that are already loaded step aside while idle machines claim first.
+    let anyProgress = true
+    while (anyProgress) {
+      anyProgress = false
 
-      while (avail > 0.001) {
+      // Sort: most remaining avail first — the idlest machine claims next
+      const active = machines
+        .filter(m => { const s = ds.get(m.id); return s !== undefined && s.avail > 0.001 })
+        .sort((a, b) => ds.get(b.id)!.avail - ds.get(a.id)!.avail)
+
+      for (const m of active) {
+        const st = mst.get(m.id)!
+        const s  = ds.get(m.id)!
+
+        // Need a new unit to work on
         if (st.rem <= 0.001) {
           st.rem = 0
-          // LPT (Longest Processing Time first): pick the LARGEST eligible unit.
-          // LPT minimises makespan — big units distributed early keep all machines
-          // busy; small units fill the tail. SPT (smallest-first) caused machines
-          // to exhaust small orders early then go idle for the rest of the week.
-          //
-          // stickyOrders: finish ALL owned pending units before claiming a new order.
           const hasOwnedPending = stickyOrders && pool.some(u =>
             !taken.has(`${u.order.id}_${u.unitIndex}`) && orderMachine.get(u.order.id) === m.id
           )
@@ -163,47 +175,59 @@ export function scheduleFastest(
             if (!canMachineCut(m, u.order, products, strictWire, requireDrill)) return false
             if (stickyOrders) {
               const owner = orderMachine.get(u.order.id)
-              if (owner !== undefined && owner !== m.id) return false  // another machine owns this order
-              if (owner === undefined && hasOwnedPending) return false  // owned work not done yet
+              if (owner !== undefined && owner !== m.id) return false
+              if (owner === undefined && hasOwnedPending) return false
             }
             return true
           })
-          if (!eligible.length) break
+          if (!eligible.length) continue  // nothing to claim — skip, try next machine
+
           const best = eligible.reduce((a, b) => {
             const ha = getHrsForKva(m, a.order.kva ?? products[a.order.product]?.kva ?? 0, globalRates, a.order.item_code)
             const hb = getHrsForKva(m, b.order.kva ?? products[b.order.product]?.kva ?? 0, globalRates, b.order.item_code)
-            return hb > ha ? b : a  // LPT: pick largest unit first
+            return hb > ha ? b : a  // LPT: largest unit first
           })
           taken.add(`${best.order.id}_${best.unitIndex}`)
           if (stickyOrders) orderMachine.set(best.order.id, m.id)
           st.currentUnit = best
           st.rem = getHrsForKva(m, best.order.kva ?? products[best.order.product]?.kva ?? 0, globalRates, best.order.item_code)
           st.isCarryOver = false
-          // Dynamic OT extension: if newly-claimed unit overflows remaining reg hours, add exact OT needed
-          if (otPolicy === 'smart' && effectiveOtCap < otCap) {
-            const overflow = Math.max(0, st.rem - (regCap - regUsed))
+          // Dynamic OT extension
+          if (otPolicy === 'smart' && s.effectiveOtCap < s.otCap) {
+            const overflow = Math.max(0, st.rem - (s.regCap - s.regUsed))
             if (overflow > 0) {
-              const needed = Math.min(otCap, overflow)
-              if (needed > effectiveOtCap) { avail += needed - effectiveOtCap; effectiveOtCap = needed }
+              const needed = Math.min(s.otCap, overflow)
+              if (needed > s.effectiveOtCap) { s.avail += needed - s.effectiveOtCap; s.effectiveOtCap = needed }
             }
           }
         }
-        const h = Math.min(st.rem, avail)
-        const ot2 = Math.max(0, h - (regCap - regUsed))
-        regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h; st.rem -= h
+
+        // Process one step (up to one full unit or remaining avail — whichever is smaller)
+        const h = Math.min(st.rem, s.avail)
+        const ot2 = Math.max(0, h - (s.regCap - s.regUsed))
+        s.regUsed = Math.min(s.regCap, s.regUsed + h); s.otUsed += ot2; s.avail -= h; st.rem -= h
         const done = st.rem <= 0.001
         if (done) st.rem = 0
-        // One unit = one DayWork entry (group same order+day into one work item if consecutive)
-        const lastW = work[work.length - 1]
+        const lastW = s.work[s.work.length - 1]
         if (lastW && lastW.order.id === st.currentUnit!.order.id && !lastW.isComplete) {
-          lastW.hrsWorked += h; lastW.isComplete = done; lastW.carriesOver = !done && avail <= 0.001
+          lastW.hrsWorked += h; lastW.isComplete = done; lastW.carriesOver = !done && s.avail <= 0.001
         } else {
-          work.push({ order: st.currentUnit!.order, hrsWorked: h, isComplete: done, isCarryOver: st.isCarryOver, carriesOver: !done && avail <= 0.001 })
+          s.work.push({ order: st.currentUnit!.order, hrsWorked: h, isComplete: done, isCarryOver: st.isCarryOver, carriesOver: !done && s.avail <= 0.001 })
         }
-        if (done) { st.isCarryOver = false } else { st.isCarryOver = true; break }
+        if (done) { st.isCarryOver = false } else { st.isCarryOver = true }
+
+        anyProgress = true
+        break  // re-sort after every step so the idlest machine always claims next
       }
+    }
+
+    // Store day results
+    for (const m of machines) {
+      const s = ds.get(m.id)
+      if (!s) continue  // off day — already stored above
+      const st = mst.get(m.id)!
       const hasMore = st.rem > 0.001 || pool.some(u => !taken.has(`${u.order.id}_${u.unitIndex}`) && canMachineCut(m, u.order, products, strictWire, requireDrill))
-      st.mMap.set(dStr, { regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed, work, hasCarryOver: work.some(w => w.isCarryOver), carriesForward: hasMore })
+      st.mMap.set(dStr, { regHrs: s.regUsed, otHrs: s.otUsed, otNeeded: s.otUsed, work: s.work, hasCarryOver: s.work.some(w => w.isCarryOver), carriesForward: hasMore })
     }
   }
   return result
