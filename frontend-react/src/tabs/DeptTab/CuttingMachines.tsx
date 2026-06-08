@@ -1322,25 +1322,21 @@ export default function CuttingMachines() {
                       {ot.label}
                     </button>
                   ))}
-                  {otPol === 'smart' && (
-                    <>
-                      <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 2px', flexShrink: 0 }} />
-                      {([
-                        { v: true,  label: '🌅 ท้ายสัปดาห์', title: 'OT ท้ายสัปดาห์ — เต็มวันปกติก่อน ค่อยเพิ่ม OT เมื่อจำเป็น' },
-                        { v: false, label: '⚡ ต้นสัปดาห์',   title: 'OT ทันที — เพิ่ม OT ตั้งแต่วันแรกถ้า queue เกิน reg' },
-                      ] as const).map(({ v, label, title }) => (
-                        <button key={String(v)} title={title} onClick={() => setLazyOT(v)} style={{
-                          fontSize: 10, padding: '3px 10px', borderRadius: 8,
-                          border: `1px solid ${lazyOT === v ? 'var(--amber)' : 'var(--bord2)'}`,
-                          background: lazyOT === v ? 'rgba(249,226,175,.25)' : 'var(--bg3)',
-                          color: lazyOT === v ? 'var(--amber)' : 'var(--txt2)',
-                          fontWeight: lazyOT === v ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap',
-                        }}>
-                          {label}
-                        </button>
-                      ))}
-                    </>
-                  )}
+                  <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 2px', flexShrink: 0 }} />
+                  {([
+                    { v: true,  label: '🌅 ท้ายสัปดาห์', title: 'OT ท้ายสัปดาห์ — เต็มวันปกติก่อน ค่อยเพิ่ม OT เมื่อจำเป็น' },
+                    { v: false, label: '⚡ ต้นสัปดาห์',   title: 'OT ทันที — เพิ่ม OT ตั้งแต่วันแรกถ้า queue เกิน reg' },
+                  ] as const).map(({ v, label, title }) => (
+                    <button key={String(v)} title={title} onClick={() => setLazyOT(v)} style={{
+                      fontSize: 10, padding: '3px 10px', borderRadius: 8,
+                      border: `1px solid ${lazyOT === v ? 'var(--amber)' : 'var(--bord2)'}`,
+                      background: lazyOT === v ? 'rgba(249,226,175,.25)' : 'var(--bg3)',
+                      color: lazyOT === v ? 'var(--amber)' : 'var(--txt2)',
+                      fontWeight: lazyOT === v ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap',
+                    }}>
+                      {label}
+                    </button>
+                  ))}
                 </div>
                 {/* Row 2: Schedule mode */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
