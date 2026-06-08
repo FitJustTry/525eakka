@@ -339,80 +339,85 @@ export function scheduleMode(
   const machineQueues = new Map<number, QItem[]>()
 
   if (approach === 'weekly') {
-    // ── SHARED POOL approach ────────────────────────────────────
-    // All orders in one pool sorted by plan_date (then LPT within same date).
-    // Machines dynamically pull the next eligible order when they finish —
-    // Machine 5 can grab a 160kVA order the moment it becomes available,
-    // even if that order was "planned" for another day.
-    const sharedPool: Order[] = sortPool(weekOrders, sortStrategy, products, globalRates, machines, nextWeekOrders)
-    const taken = new Set<string>()  // order IDs already claimed by a machine
+    // ── PRE-ASSIGN orders globally using LPT load balancing ────
+    // assignOrders balances load across ALL machines (including Machine 14).
+    // Fixes the old shared-pool bug where machines processed in fixed array
+    // order and Machine 14 (last) never got any orders.
+    const machIdxLocal = new Map<number, number>()
+    machines.forEach((m, i) => machIdxLocal.set(m.id, i))
+    const asgn = assignOrders(weekOrders, machines, products, globalRates, new Map(), machIdxLocal, strictWire, requireDrill)
 
-    // Per-machine state: what is each machine working on right now
-    type MState = { currentOrder: Order | null; currentRem: number; isCarryOver: boolean; mMap: Map<string, MachineDaySched> }
-    const machState = new Map<number, MState>()
-    machines.forEach(m => machState.set(m.id, { currentOrder: null, currentRem: 0, isCarryOver: false, mMap: new Map() }))
-    machines.forEach(m => result.set(m.id, machState.get(m.id)!.mMap))
+    // ── Simulate each machine's pre-assigned queue independently ─
+    // Week-ahead smart OT: only add OT on a day when total remaining work
+    // exceeds total remaining reg capacity for this machine's queue.
+    // No per-order OT extension — avoids using full OT from Day 1.
+    for (const m of machines) {
+      const mMap = new Map<string, MachineDaySched>()
+      result.set(m.id, mMap)
 
-    // Simulate ALL machines simultaneously, day by day
-    for (let di = 0; di < days.length; di++) {
-      const d = days[di]; const dow = d.getDay(); const isSat = dow === 6
-      const dStr = fmtISO(d)
+      const assignedOrders = sortPool(asgn.get(m.id) ?? [], sortStrategy, products, globalRates, machines, nextWeekOrders)
+      const queue: QItem[] = assignedOrders.map(o => ({
+        order: o,
+        remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product ?? '']?.kva ?? 0, globalRates, o.item_code),
+        isCarryOver: false,
+      }))
 
-      for (const m of machines) {
-        const st = machState.get(m.id)!
+      let qi  = 0
+      let cur: QItem | null = null   // in-progress order (carry-over between days)
+
+      for (let di = 0; di < days.length; di++) {
+        const d = days[di]; const dow = d.getDay(); const isSat = dow === 6
+        const dStr = fmtISO(d)
         const { reg, ot } = resolveHours(m, wcConfig, isSat, dow)
         const regCap = reg * (m.count || 1); const otCap = ot * (m.count || 1)
+
         if (regCap === 0 && otCap === 0) {
-          // Machine is off — carry-over stays with this machine (resumes next working day)
-          st.mMap.set(dStr, { regHrs:0, otHrs:0, otNeeded:0, work:[], hasCarryOver:false, carriesForward: st.currentRem > 0.001 })
+          mMap.set(dStr, { regHrs: 0, otHrs: 0, otNeeded: 0, work: [], hasCarryOver: false,
+            carriesForward: (cur?.remainingHrs ?? 0) > 0.001 || qi < queue.length })
           continue
         }
 
-        // Smart OT: fire only when the current in-progress order can't finish in remaining regular hours.
-        // Pool hours are ignored — other machines handle their own share of the pool.
+        // Week-ahead OT: compare total remaining work vs remaining reg capacity
         let effectiveOtCap = 0
         if (otPolicy === 'full') {
           effectiveOtCap = otCap
         } else if (otPolicy === 'smart') {
-          // Fill reg hours first; OT fires dynamically when a claimed order overflows
-          const currentHrs = st.currentRem > 0.001 ? st.currentRem : 0
-          effectiveOtCap = Math.min(otCap, Math.max(0, currentHrs - regCap))
+          const regLeft = days.slice(di).reduce((s, dd) => {
+            const { reg: r } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
+            return s + r * (m.count || 1)
+          }, 0)
+          const curRem   = cur?.remainingHrs ?? 0
+          const queueHrs = queue.slice(qi).reduce((s, item) => s + item.remainingHrs, 0)
+          effectiveOtCap = Math.min(otCap, Math.max(0, curRem + queueHrs - regLeft))
         }
 
-        const work: DayWork[] = []; let avail = regCap + effectiveOtCap; let regUsed = 0; let otUsed = 0
+        const work: DayWork[] = []
+        let avail = regCap + effectiveOtCap; let regUsed = 0; let otUsed = 0
 
         while (avail > 0.001) {
-          if (st.currentRem <= 0.001) {
-            st.currentRem = 0
-            // Pull next eligible order from shared pool (drill + wire preference as tiebreaker)
-            const eligible = sharedPool.filter(o => !taken.has(o.id) && canMachineCut(m, o, products, strictWire, requireDrill))
-            if (!eligible.length) break
-            const score = (o: Order) => (drillPrefers(m, o) ? 1 : 0) + (wirePrefers(m, o) ? 1 : 0)
-            const next = eligible.reduce((a, b) => score(b) > score(a) ? b : a)
-            taken.add(next.id)
-            st.currentOrder = next
-            st.currentRem = next.qty * getHrsForKva(m, next.kva ?? products[next.product]?.kva ?? 0, globalRates, next.item_code)
-            st.isCarryOver = false
-            // Dynamic OT extension: if newly-claimed order overflows remaining reg hours, add exact OT needed
-            if (otPolicy === 'smart' && effectiveOtCap < otCap) {
-              const overflow = Math.max(0, st.currentRem - (regCap - regUsed))
-              if (overflow > 0) {
-                const needed = Math.min(otCap, overflow)
-                if (needed > effectiveOtCap) { avail += needed - effectiveOtCap; effectiveOtCap = needed }
-              }
-            }
+          if (!cur || cur.remainingHrs <= 0.001) {
+            if (qi >= queue.length) break
+            cur = { ...queue[qi++], isCarryOver: false }
           }
-          const h = Math.min(st.currentRem, avail)
+          const h = Math.min(cur.remainingHrs, avail)
           const ot2 = Math.max(0, h - (regCap - regUsed))
-          regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h; st.currentRem -= h
-          const done = st.currentRem <= 0.001
-          if (done) st.currentRem = 0
-          work.push({ order: st.currentOrder!, hrsWorked: h, isComplete: done, isCarryOver: st.isCarryOver, carriesOver: !done && avail <= 0.001 })
-          if (done) { st.isCarryOver = false }
-          else { st.isCarryOver = true; break }
+          regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h; cur.remainingHrs -= h
+          const done = cur.remainingHrs <= 0.001
+          if (done) cur.remainingHrs = 0
+          const lastW = work[work.length - 1]
+          if (lastW && lastW.order.id === cur.order.id && !lastW.isComplete) {
+            lastW.hrsWorked += h; lastW.isComplete = done; lastW.carriesOver = !done && avail <= 0.001
+          } else {
+            work.push({ order: cur.order, hrsWorked: h, isComplete: done, isCarryOver: cur.isCarryOver, carriesOver: !done && avail <= 0.001 })
+          }
+          if (done) { cur = null } else { if (cur) cur.isCarryOver = true; break }
         }
-        const hasMore = st.currentRem > 0.001 || sharedPool.some(o => !taken.has(o.id) && canMachineCut(m, o, products, strictWire, requireDrill))
-        st.mMap.set(dStr, { regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed, work, hasCarryOver: work.some(w => w.isCarryOver), carriesForward: hasMore })
+
+        mMap.set(dStr, {
+          regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed,
+          work, hasCarryOver: work.some(w => w.isCarryOver),
+          carriesForward: (cur?.remainingHrs ?? 0) > 0.001 || qi < queue.length,
+        })
       }
     }
     return result
