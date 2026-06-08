@@ -151,6 +151,7 @@ export default function CuttingMachines() {
   const [strictWire,   setStrictWire]   = useState(true)
   const [requireDrill, setRequireDrill] = useState(true)
   const [stickyOrders, setStickyOrders] = useState(true)  // true = one machine owns all units of an order
+  const [lazyOT, setLazyOT] = useState(true)             // true = defer OT to end of week; false = eager (fire from day 1)
 
   useEffect(() => {
     fetch('/api/cutting-rates').then(r => r.json()).then(setGlobalRates).catch(() => {})
@@ -611,9 +612,9 @@ export default function CuttingMachines() {
   const weekSchedule = useMemo(() => {
     // ── ❌ ไม่ OT ─────────────────────────────────────────────────
     const mi = new Map(machIdx)
-    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill)
-    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill)
-    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders)
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, ot === 'smart' ? lazyOT : true)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, ot === 'smart' ? lazyOT : true)
+    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true)
     const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
       daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
       deadline_no_ot: () => sm('none','deadline'), priority_no_ot: () => sm('none','priority'),
@@ -628,7 +629,7 @@ export default function CuttingMachines() {
     return (modeMap[balanceMode] ?? modeMap['weekly_no_ot'])()
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [balanceMode, strictWire, requireDrill, stickyOrders, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
+  [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
   /**
    * SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
@@ -1321,6 +1322,25 @@ export default function CuttingMachines() {
                       {ot.label}
                     </button>
                   ))}
+                  {otPol === 'smart' && (
+                    <>
+                      <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 2px', flexShrink: 0 }} />
+                      {([
+                        { v: true,  label: '🌅 ท้ายสัปดาห์', title: 'OT ท้ายสัปดาห์ — เต็มวันปกติก่อน ค่อยเพิ่ม OT เมื่อจำเป็น' },
+                        { v: false, label: '⚡ ต้นสัปดาห์',   title: 'OT ทันที — เพิ่ม OT ตั้งแต่วันแรกถ้า queue เกิน reg' },
+                      ] as const).map(({ v, label, title }) => (
+                        <button key={String(v)} title={title} onClick={() => setLazyOT(v)} style={{
+                          fontSize: 10, padding: '3px 10px', borderRadius: 8,
+                          border: `1px solid ${lazyOT === v ? 'var(--amber)' : 'var(--bord2)'}`,
+                          background: lazyOT === v ? 'rgba(249,226,175,.25)' : 'var(--bg3)',
+                          color: lazyOT === v ? 'var(--amber)' : 'var(--txt2)',
+                          fontWeight: lazyOT === v ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap',
+                        }}>
+                          {label}
+                        </button>
+                      ))}
+                    </>
+                  )}
                 </div>
                 {/* Row 2: Schedule mode */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>

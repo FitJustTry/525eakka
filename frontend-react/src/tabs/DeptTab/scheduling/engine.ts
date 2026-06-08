@@ -94,7 +94,8 @@ export function scheduleFastest(
   otPolicy: 'none' | 'smart' | 'full',
   strictWire = false,
   requireDrill = false,
-  stickyOrders = true
+  stickyOrders = true,
+  lazyOt = true   // true = defer OT to end of week; false = eager (fire OT from day 1)
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
   if (!machines.length || !weekOrders.length) return result
@@ -210,9 +211,9 @@ export function scheduleFastest(
         continue
       }
 
-      // Smart OT: fire OT today only if work can't fit in reg + ALL remaining future capacity.
-      // Subtracting otLeft (future OT) defers OT to the end of the week — machines fill regular
-      // hours first and only add OT when future days genuinely can't absorb the overflow.
+      // Smart OT:
+      //   lazyOt=true  (new) — subtract future OT capacity; defers OT to end of week
+      //   lazyOt=false (old) — fire OT whenever queue > remaining regular hours
       let effectiveOtCap = 0
       if (otPolicy === 'full') {
         effectiveOtCap = otCap
@@ -221,10 +222,10 @@ export function scheduleFastest(
           const { reg: r } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
           return s + r * (m.count || 1)
         }, 0)
-        const otLeft = days.slice(di + 1).reduce((s, dd) => {
+        const otLeft = lazyOt ? days.slice(di + 1).reduce((s, dd) => {
           const { ot: o } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
           return s + o * (m.count || 1)
-        }, 0)
+        }, 0) : 0
         const queueHrs = queue.slice(qi).reduce((s, u) => s + uHrs(m, u), 0)
         effectiveOtCap = Math.min(otCap, Math.max(0, rem + queueHrs - regLeft - otLeft))
       }
@@ -350,7 +351,8 @@ export function scheduleMode(
   sortStrategy = 'plan_date',
   nextWeekOrders: Order[] = [],
   strictWire = false,
-  requireDrill = false
+  requireDrill = false,
+  lazyOt = true
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
 
@@ -397,7 +399,9 @@ export function scheduleMode(
           continue
         }
 
-        // Week-ahead OT: fire OT today only if work can't fit in reg + all future OT capacity.
+        // Week-ahead OT:
+        //   lazyOt=true  — subtract future OT; defers OT to end of week
+        //   lazyOt=false — fire OT whenever queue > remaining regular hours
         let effectiveOtCap = 0
         if (otPolicy === 'full') {
           effectiveOtCap = otCap
@@ -406,10 +410,10 @@ export function scheduleMode(
             const { reg: r } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
             return s + r * (m.count || 1)
           }, 0)
-          const otLeft = days.slice(di + 1).reduce((s, dd) => {
+          const otLeft = lazyOt ? days.slice(di + 1).reduce((s, dd) => {
             const { ot: o } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
             return s + o * (m.count || 1)
-          }, 0)
+          }, 0) : 0
           const curRem   = cur?.remainingHrs ?? 0
           const queueHrs = queue.slice(qi).reduce((s, item) => s + item.remainingHrs, 0)
           effectiveOtCap = Math.min(otCap, Math.max(0, curRem + queueHrs - regLeft - otLeft))
