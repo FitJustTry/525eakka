@@ -637,32 +637,29 @@ export default function CuttingMachines() {
    */
   const weekData = useMemo(() => {
     // ── Per-machine weekly totals ──────────────────────────────
+    // In fastest mode each DayWork.isComplete = 1 unit (orders split into individual units).
+    // In schedule modes each DayWork.isComplete = whole order (all o.qty units done on this machine).
+    const isFastest = balanceMode.startsWith('fastest')
     const mTotals = machines.map(m => {
-      let wallHrs = 0, otSum = 0, qty = 0
+      let wallHrs = 0, otSum = 0
+      const completedIds = new Set<string>()  // for schedule modes
+      let completedEntries = 0                // for fastest mode (1 entry = 1 unit)
       days.forEach(d => {
-        const dStr = fmtISO(d)
-        const sched = weekSchedule.get(m.id)?.get(dStr)
+        const sched = weekSchedule.get(m.id)?.get(fmtISO(d))
         if (!sched) return
         wallHrs += sched.regHrs + sched.otHrs
         otSum   += sched.otHrs
-        qty += sched.work.filter(w => w.isComplete).length > 0
-          ? sched.work.filter(w => w.isComplete).reduce((s, w) => {
-              const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-              const hrsEach = getHrsForKva(m, kva, globalRates, w.order.item_code)
-              return s + (hrsEach > 0 ? w.hrsWorked / hrsEach : 0)
-            }, 0)
-          : 0
+        sched.work.forEach(w => {
+          if (w.isComplete) { completedIds.add(w.order.id); completedEntries++ }
+        })
       })
-      // Count each order ONCE (carry-over orders appear on multiple days — use Set to deduplicate)
-      const seenOrders = new Set<string>()
-      days.forEach(d => {
-        weekSchedule.get(m.id)?.get(fmtISO(d))?.work.forEach(w => seenOrders.add(w.order.id))
-      })
-      const totalQty = [...seenOrders].reduce((s, oid) => {
-        const o = weekOrders.find(x => x.id === oid)
-        return s + (o?.qty ?? 0)
-      }, 0)
-      return { wallHrs, qty: totalQty, regCap: REG_PER, ot: otSum, over: wallHrs > REG_PER + OT_PER }
+      const qty = isFastest
+        ? completedEntries
+        : [...completedIds].reduce((s, oid) => {
+            const o = weekOrders.find(x => x.id === oid)
+            return s + (o?.qty ?? 0)
+          }, 0)
+      return { wallHrs, qty, regCap: REG_PER, ot: otSum, over: wallHrs > REG_PER + OT_PER }
     })
 
     // ── Per-day data for each machine ──────────────────────────
@@ -747,7 +744,7 @@ export default function CuttingMachines() {
 
     return { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, summaryStatus, weekDoneOrders, weekCarryOrders, weekUnscheduled }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weekSchedule, strictWire, requireDrill, weekOrders.map(o=>o.id+o.qty).join(','), machines.map(m=>`${m.id}${(m.off_days??[]).join('-')}`).join(',')])
+  }, [weekSchedule, balanceMode, strictWire, requireDrill, weekOrders.map(o=>o.id+o.qty).join(','), machines.map(m=>`${m.id}${(m.off_days??[]).join('-')}`).join(',')])
 
   const { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek: _totalKvaWeek, totalOT, summaryStatus: _summaryStatus, weekDoneOrders, weekCarryOrders, weekUnscheduled } = weekData
 
