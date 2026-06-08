@@ -116,7 +116,7 @@ import { DAY_TH, DAY_SHORT, REG_PER, OT_PER, CR_STANDARD_SIZES } from './schedul
 import type { DayWork, MachineDaySched } from './scheduling/constants'
 import {
   getHrsForKva, isMachineOn, resolveHours,
-  detectWireType, canMachineCut, drillPrefers, wirePrefers,
+  detectWireType, canMachineCut, drillPrefers,
   mLabel, machineTypeLabel, fmtISO, getWeekRange,
 } from './scheduling/utils'
 import { assignOrders, scheduleFastest, scheduleMode } from './scheduling/engine'
@@ -194,7 +194,7 @@ export default function CuttingMachines() {
 
     // ── Day-by-day schedule ────────────────────────────────────
     weekData.dayRows.forEach(row => {
-      const { d, machineCells, dayFinish, actualQty, actualOrderCount } = row
+      const { d, machineCells, dayFinish, actualQty, actualOrderCount: _actualOrderCount } = row
       const hasWork = machineCells.some(mc => mc.work.length > 0 || mc.machOff)
       if (!hasWork) return
 
@@ -730,7 +730,7 @@ export default function CuttingMachines() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weekSchedule, strictWire, requireDrill, weekOrders.map(o=>o.id+o.qty).join(','), machines.map(m=>`${m.id}${(m.off_days??[]).join('-')}`).join(',')])
 
-  const { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, summaryStatus } = weekData
+  const { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek: _totalKvaWeek, totalOT, summaryStatus: _summaryStatus } = weekData
 
   // ── Render ───────────────────────────────────────────────────
   return (
@@ -1584,7 +1584,7 @@ export default function CuttingMachines() {
             {/* ── CARD VIEW ── */}
             {viewMode === 'cards' && <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {dayRows.map(row => {
-                const { dStr, d, isSat, dayOrders, dayScheduledQty, dayKva, dayCarryQty, unassigned, machineCells, dayFinish, dayCapHrs, finishCol, actualQty, actualOrderCount } = row
+                const { dStr, d, isSat, dayOrders, dayScheduledQty, dayKva: _dayKva, dayCarryQty: _dayCarryQty, unassigned, machineCells, dayFinish, dayCapHrs, finishCol, actualQty, actualOrderCount } = row
                 // Show day only if there are orders planned OR machines actually working
                 const hasActualWork = machineCells.some(mc => mc.work.length > 0)
                 if (dayOrders.length === 0 && !hasActualWork) return null
@@ -1614,7 +1614,7 @@ export default function CuttingMachines() {
 
                     {/* Machine rows — data from weekData.machineCells (same source for all views) */}
                     <div style={{ padding: '6px 0' }}>
-                      {machineCells.map(({ m, machOff, sched, work, wall, capH, grp }) => {
+                      {machineCells.map(({ m, machOff, sched, work, wall, capH, grp: _grp }) => {
                         if (machOff) return (
                           <div key={m.id} style={{ display: 'flex', alignItems: 'center', padding: '4px 14px', borderBottom: '0.5px solid var(--bord)', gap: 8, opacity: 0.5 }}>
                             <div style={{ minWidth: 140, fontSize: 10, fontWeight: 700, color: 'var(--red)' }}>🔴 {mLabel(m)}</div>
@@ -1761,7 +1761,7 @@ export default function CuttingMachines() {
                   </thead>
                   <tbody>
                     {dayRows.map(row => {
-                      const { dStr, d, isSat, dayOrders, dayScheduledQty, dayCarryQty, unassigned: dayUnassigned2, machineCells, dayFinish, dayCapHrs, finishCol } = row
+                      const { dStr, d, isSat, dayOrders, dayScheduledQty, dayCarryQty: _dayCarryQty2, unassigned: _dayUnassigned2, machineCells, dayFinish, dayCapHrs: _dayCapHrs, finishCol } = row
                       const isToday = dStr === fmtISO(new Date())
                       const dayTotalQty = dayScheduledQty
                       return (
@@ -1777,13 +1777,12 @@ export default function CuttingMachines() {
                               </div>
                             ))}
                           </td>
-                          {machineCells.map(({ m, machOff, sched, work, wall, capH, grp: cellGrp }, mi) => {
+                          {machineCells.map(({ m, machOff, sched, work, wall, capH }, _mi) => {
                             if (machOff) return (
                               <td key={m.id} style={{ verticalAlign: 'top', borderLeft: '1px solid var(--bord)', background: 'rgba(224,90,78,.04)', textAlign: 'center', color: 'var(--red)', fontSize: 9, fontWeight: 700, padding: 6 }}>
                                 🔴 ปิด
                               </td>
                             )
-                            const grp = cellGrp
                             const col = work.length === 0 ? 'var(--txt3)' : wall <= capH ? 'var(--green)' : wall <= capH * 2 ? 'var(--amber)' : 'var(--red)'
                             const isSelected = selectedCell?.machineId === m.id && selectedCell?.date === dStr
                             return (
@@ -1913,7 +1912,7 @@ export default function CuttingMachines() {
                 return resolveHours(m0, wcConfig, isSat, d.getDay()).reg || (isSat ? 4 : 8)
               })
               const totalHrs = dayRegHrs.reduce((a, h) => a + h, 0) || 1
-              const dayStart = dayRegHrs.reduce<number[]>((acc, h, i) => { acc.push(i === 0 ? 0 : acc[i-1] + dayRegHrs[i-1]); return acc }, [])
+              const dayStart = dayRegHrs.reduce<number[]>((acc, _h, i) => { acc.push(i === 0 ? 0 : acc[i-1] + dayRegHrs[i-1]); return acc }, [])
 
               interface Seg { order: Order; start: number; dur: number; isCarryOver: boolean; carriesOver: boolean; isComplete: boolean }
               const machineSegs = machines.map(m => {

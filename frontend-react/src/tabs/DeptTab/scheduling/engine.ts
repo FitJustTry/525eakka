@@ -1,6 +1,7 @@
 import type { CuttingMachine, CuttingRate, Order, WCConfig } from '../../../types'
-import { DRILL_BONUS, INDEX_BONUS, DayWork, MachineDaySched } from './constants'
-import { getHrsForKva, isMachineOn, resolveHours, canMachineCut, drillPrefers, wirePrefers, catRank, fmtISO } from './utils'
+import { DRILL_BONUS, INDEX_BONUS } from './constants'
+import type { DayWork, MachineDaySched } from './constants'
+import { getHrsForKva, resolveHours, canMachineCut, drillPrefers, wirePrefers, catRank, fmtISO } from './utils'
 
 export type { DayWork, MachineDaySched }
 
@@ -287,7 +288,7 @@ export function scheduleMode(
   globalRates: CuttingRate[],
   wcConfig: Record<string, WCConfig>,
   days: Date[],
-  machIdx: Map<number, number>,
+  _machIdx: Map<number, number>,
   approach: 'daily' | 'weekly',
   otPolicy: 'none' | 'smart' | 'full',
   sortStrategy = 'plan_date',
