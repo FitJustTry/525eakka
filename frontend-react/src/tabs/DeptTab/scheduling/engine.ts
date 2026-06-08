@@ -120,43 +120,65 @@ export function scheduleFastest(
   // ═══════════════════════════════════════════════════════════
   //  PHASE 2 — Pre-assign every unit to a machine globally
   //
-  //  Strategy: for each unit (largest-first), pick the eligible
-  //  machine with the LOWEST accumulated load so far (greedy LPT).
-  //  With stickyOrders, once order A lands on machine X, all
-  //  remaining units of A follow X — no day-by-day competition.
+  //  Two strategies depending on stickyOrders:
   //
-  //  No week-capacity cap here — Phase 3 simulation handles
-  //  carry-over naturally.  Capping here would drop units from
-  //  queues entirely (never simulated), which is wrong under
-  //  strict wire + drill + stickyOrders where one machine may be
-  //  the only eligible option for an entire order.
+  //  stickyOrders=true  (🔗 ครบต่อเครื่อง):
+  //    Assign WHOLE ORDERS at once, sorted exclusive-first then LPT.
+  //    "Exclusive" = only 1 eligible machine given active constraints.
+  //    Locking exclusive orders in first prevents a non-exclusive order
+  //    from grabbing the only machine that can handle a constrained order,
+  //    which was the root cause of 🔒+🔩+🔗 being the SLOWEST mode.
+  //
+  //  stickyOrders=false (🔀 แยกเครื่องได้):
+  //    Assign individual units (LPT), each unit independently to the
+  //    least-loaded eligible machine.  No ordering bias.
   // ═══════════════════════════════════════════════════════════
-  const machLoad  = new Map<number, number>()   // accumulated assigned hours (for LPT balance only)
-  const machQueue = new Map<number, Unit[]>()   // assigned units per machine
-  const orderOwner = new Map<string, number>()  // orderId → machineId
+  const machLoad  = new Map<number, number>()
+  const machQueue = new Map<number, Unit[]>()
   machines.forEach(m => { machLoad.set(m.id, 0); machQueue.set(m.id, []) })
 
-  for (const u of pool) {
-    const eligible = machines.filter(m =>
-      canMachineCut(m, u.order, products, strictWire, requireDrill)
-    )
-    if (!eligible.length) continue
+  if (stickyOrders) {
+    // ── Whole-order assignment: exclusive-first, then LPT ──────
+    const ordEl  = (o: Order) => machines.filter(m => canMachineCut(m, o, products, strictWire, requireDrill))
+    const ordHrs = (m: CuttingMachine, o: Order) =>
+      o.qty * getHrsForKva(m, o.kva ?? products[o.product ?? '']?.kva ?? 0, globalRates, o.item_code)
 
-    let target: CuttingMachine
-    if (stickyOrders && orderOwner.has(u.order.id)) {
-      const owner = eligible.find(m => m.id === orderOwner.get(u.order.id))
-      if (!owner) continue  // owner can't cut this unit (constraint mismatch — shouldn't happen)
-      target = owner
-    } else {
-      // Least-loaded eligible machine
-      target = eligible.reduce((a, m) =>
+    const sortedOrders = [...weekOrders].sort((a, b) => {
+      const ae = ordEl(a), be = ordEl(b)
+      if (ae.length !== be.length) return ae.length - be.length   // fewest-eligible (exclusive) first
+      const ra = ae[0] ?? machines[0], rb = be[0] ?? machines[0]
+      return ordHrs(rb, b) - ordHrs(ra, a)                        // then largest total hours first
+    })
+
+    for (const o of sortedOrders) {
+      let eligible = ordEl(o)
+      if (!eligible.length) {
+        // Constraint relaxation fallback: drop wire match, then drill, then both
+        if (strictWire)    eligible = machines.filter(m => canMachineCut(m, o, products, false, requireDrill))
+        if (!eligible.length && requireDrill)
+                           eligible = machines.filter(m => canMachineCut(m, o, products, strictWire, false))
+        if (!eligible.length)
+                           eligible = machines.filter(m => canMachineCut(m, o, products, false, false))
+        if (!eligible.length) continue
+      }
+      const target = eligible.reduce((a, m) =>
         (machLoad.get(m.id) ?? 0) < (machLoad.get(a.id) ?? 0) ? m : a
       )
-      if (stickyOrders) orderOwner.set(u.order.id, target.id)
+      const units = pool.filter(u => u.order.id === o.id)
+      machQueue.get(target.id)!.push(...units)
+      machLoad.set(target.id, (machLoad.get(target.id) ?? 0) + ordHrs(target, o))
     }
-
-    machLoad.set(target.id, (machLoad.get(target.id) ?? 0) + uHrs(target, u))
-    machQueue.get(target.id)!.push(u)
+  } else {
+    // ── Unit-by-unit LPT (stickyOrders=false) ──────────────────
+    for (const u of pool) {
+      const eligible = machines.filter(m => canMachineCut(m, u.order, products, strictWire, requireDrill))
+      if (!eligible.length) continue
+      const target = eligible.reduce((a, m) =>
+        (machLoad.get(m.id) ?? 0) < (machLoad.get(a.id) ?? 0) ? m : a
+      )
+      machLoad.set(target.id, (machLoad.get(target.id) ?? 0) + uHrs(target, u))
+      machQueue.get(target.id)!.push(u)
+    }
   }
 
   // ═══════════════════════════════════════════════════════════
