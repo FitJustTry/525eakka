@@ -210,7 +210,9 @@ export function scheduleFastest(
         continue
       }
 
-      // Smart OT: compare total remaining work vs remaining reg capacity for all days left
+      // Smart OT: fire OT today only if work can't fit in reg + ALL remaining future capacity.
+      // Subtracting otLeft (future OT) defers OT to the end of the week — machines fill regular
+      // hours first and only add OT when future days genuinely can't absorb the overflow.
       let effectiveOtCap = 0
       if (otPolicy === 'full') {
         effectiveOtCap = otCap
@@ -219,8 +221,12 @@ export function scheduleFastest(
           const { reg: r } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
           return s + r * (m.count || 1)
         }, 0)
+        const otLeft = days.slice(di + 1).reduce((s, dd) => {
+          const { ot: o } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
+          return s + o * (m.count || 1)
+        }, 0)
         const queueHrs = queue.slice(qi).reduce((s, u) => s + uHrs(m, u), 0)
-        effectiveOtCap = Math.min(otCap, Math.max(0, rem + queueHrs - regLeft))
+        effectiveOtCap = Math.min(otCap, Math.max(0, rem + queueHrs - regLeft - otLeft))
       }
 
       const work: DayWork[] = []
@@ -234,14 +240,6 @@ export function scheduleFastest(
           curUnit = queue[qi++]
           rem     = uHrs(m, curUnit)
           isCarry = false
-          // Dynamic OT extension: if this new unit overflows remaining reg hours
-          if (otPolicy === 'smart' && effectiveOtCap < otCap) {
-            const overflow = Math.max(0, rem - (regCap - regUsed))
-            if (overflow > 0) {
-              const needed = Math.min(otCap, overflow)
-              if (needed > effectiveOtCap) { avail += needed - effectiveOtCap; effectiveOtCap = needed }
-            }
-          }
         }
         const h    = Math.min(rem, avail)
         const ot2  = Math.max(0, h - (regCap - regUsed))
@@ -399,7 +397,7 @@ export function scheduleMode(
           continue
         }
 
-        // Week-ahead OT: compare total remaining work vs remaining reg capacity
+        // Week-ahead OT: fire OT today only if work can't fit in reg + all future OT capacity.
         let effectiveOtCap = 0
         if (otPolicy === 'full') {
           effectiveOtCap = otCap
@@ -408,9 +406,13 @@ export function scheduleMode(
             const { reg: r } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
             return s + r * (m.count || 1)
           }, 0)
+          const otLeft = days.slice(di + 1).reduce((s, dd) => {
+            const { ot: o } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
+            return s + o * (m.count || 1)
+          }, 0)
           const curRem   = cur?.remainingHrs ?? 0
           const queueHrs = queue.slice(qi).reduce((s, item) => s + item.remainingHrs, 0)
-          effectiveOtCap = Math.min(otCap, Math.max(0, curRem + queueHrs - regLeft))
+          effectiveOtCap = Math.min(otCap, Math.max(0, curRem + queueHrs - regLeft - otLeft))
         }
 
         const work: DayWork[] = []
