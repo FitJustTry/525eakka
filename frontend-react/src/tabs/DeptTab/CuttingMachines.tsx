@@ -155,6 +155,8 @@ export default function CuttingMachines() {
   const [stickyOrders, setStickyOrders] = useState(true)  // true = one machine owns all units of an order
   const [lazyOT, setLazyOT] = useState(true)             // true = defer OT to end of week; false = eager (fire from day 1)
   const [machineTableOpen, setMachineTableOpen] = useState(false)
+  const [globalRatesOpen, setGlobalRatesOpen]   = useState(false)
+  const [perMachRatesOpen, setPerMachRatesOpen] = useState(false)
 
   useEffect(() => {
     fetch('/api/cutting-rates').then(r => r.json()).then(setGlobalRates).catch(() => {})
@@ -980,10 +982,17 @@ export default function CuttingMachines() {
 
       {/* ── Global Cutting + TMC Rates ───────────────────── */}
       <div className={styles.card}>
-        <div className={styles.cardHeader}>
-          <span className={styles.sectionTitle}>⏱ เวลาตัดโลหะ — มาตรฐาน</span>
-          <span style={{ fontSize: 10, color: 'var(--txt3)' }}>ใช้กับทุกเครื่อง · ไม่กำหนด = ใช้ค่า h/ตัว แทน</span>
+        <div className={styles.cardHeader} style={{ cursor: 'pointer' }} onClick={() => setGlobalRatesOpen(v => !v)}>
+          <span className={styles.sectionTitle}>
+            {globalRatesOpen ? '▾' : '▸'} ⏱ เวลาตัดโลหะ — มาตรฐาน
+            {!globalRatesOpen && (
+              <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--txt3)', marginLeft: 10 }}>
+                ตารางเวลาตัด kVA → ชั่วโมง สำหรับทุกเครื่อง · {globalRates.length} ขนาด · TMC {globalTmcRates.length} ขนาด
+              </span>
+            )}
+          </span>
         </div>
+        {!globalRatesOpen ? null : <>
         {/* Global sub-tabs */}
         <div style={{ display: 'flex', gap: 4, padding: '8px 14px', borderBottom: '1px solid var(--bord)' }}>
           <button onClick={() => setGlobalRateSubTab('cut')}
@@ -1101,15 +1110,22 @@ export default function CuttingMachines() {
             </div>
           </>
         )}
+        </>}
       </div>
 
       {/* ── Per-Machine Rates + TMC (consolidated) ──────── */}
       <div className={styles.card}>
-        <div className={styles.cardHeader}>
-          <span className={styles.sectionTitle}>⏱ เวลาตัดโลหะ — รายเครื่อง</span>
-          <span style={{ fontSize: 10, color: 'var(--txt3)' }}>กำหนดเฉพาะเครื่อง · รวมทั้งเวลาตัดและ TMC (Cast Resin) · ไม่กำหนด = ใช้ค่ามาตรฐาน</span>
+        <div className={styles.cardHeader} style={{ cursor: 'pointer' }} onClick={() => setPerMachRatesOpen(v => !v)}>
+          <span className={styles.sectionTitle}>
+            {perMachRatesOpen ? '▾' : '▸'} ⏱ เวลาตัดโลหะ — รายเครื่อง
+            {!perMachRatesOpen && (
+              <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--txt3)', marginLeft: 10 }}>
+                override อัตราตัดเฉพาะเครื่อง · {machines.filter(m => (m.rates?.length ?? 0) > 0 || (m.tmc_rates?.length ?? 0) > 0).length}/{machines.length} เครื่องมี override
+              </span>
+            )}
+          </span>
         </div>
-        <div style={{ padding: '10px 14px' }}>
+        {perMachRatesOpen && <div style={{ padding: '10px 14px' }}>
           {/* Machine tabs */}
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
             {machines.map(m => {
@@ -1295,7 +1311,7 @@ export default function CuttingMachines() {
               </div>
             )
           })()}
-        </div>
+        </div>}
       </div>
 
       {/* ── Weekly plan ──────────────────────────────────── */}
