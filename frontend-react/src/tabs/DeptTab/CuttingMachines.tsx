@@ -405,10 +405,13 @@ export default function CuttingMachines() {
       // Only assign to machines that are ON today
       const activeMachines = machines.filter(m => isMachineOn(m, dow))
       const dayOrds = weekOrders.filter(o => o.plan_date === dStr)
-      // Daily mode: each day starts fresh (wall=0) — balance within each day
-      // Weekly mode: carry forward cumulative wall — balance across the week
-      const initWall = new Map<number, number>()  // all modes use fresh start per day (weekly approach handles order assignment differently)
-      const asgn = assignOrders(dayOrds, activeMachines, products, globalRates, initWall, new Map(machIdx), strictWire, requireDrill, globalTmcRates)
+      // stickyOrders=false: expand to individual 1-unit orders so each unit can go to a different machine
+      const dayOrdsEff = stickyOrders
+        ? dayOrds
+        : dayOrds.flatMap(o => Array.from({length: o.qty}, (_, ui) => ({...o, id: `${o.id}__u${ui}`, qty: 1})))
+      const initWall = new Map<number, number>()
+      const isBatch = balanceMode.includes('batch_kva')
+      const asgn = assignOrders(dayOrdsEff, activeMachines, products, globalRates, initWall, new Map(machIdx), strictWire, requireDrill, globalTmcRates, isBatch)
       // Always accumulate for weekly mode reference
       activeMachines.forEach(m => {
         const mOrd = asgn.get(m.id) ?? []
@@ -421,7 +424,7 @@ export default function CuttingMachines() {
       return { dStr, asgn }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [balanceMode, strictWire, requireDrill, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${+m.laser}${+m.m4}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(',')])
+  }, [balanceMode, strictWire, requireDrill, stickyOrders, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${+m.laser}${+m.m4}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(',')])
 
 
 
@@ -429,8 +432,8 @@ export default function CuttingMachines() {
   const weekSchedule = useMemo(() => {
     // ── ❌ ไม่ OT ─────────────────────────────────────────────────
     const mi = new Map(machIdx)
-    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, ot === 'smart' ? lazyOT : true, globalTmcRates)
-    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, ot === 'smart' ? lazyOT : true, globalTmcRates)
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates)
     const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates)
     const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
       daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
@@ -450,7 +453,7 @@ export default function CuttingMachines() {
 
   // SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
   const weekData = useMemo(
-    () => computeWeekData({ weekSchedule, weekOrders, machines, days, balanceMode, strictWire, requireDrill, products, wcConfig, globalRates, globalTmcRates }),
+    () => computeWeekData({ weekSchedule, weekOrders, machines, days, balanceMode, strictWire, requireDrill, stickyOrders, products, wcConfig, globalRates, globalTmcRates }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [weekSchedule, balanceMode, strictWire, requireDrill, weekOrders.map(o=>o.id+o.qty).join(','), machines.map(m=>`${m.id}${(m.off_days??[]).join('-')}`).join(',')]
   )

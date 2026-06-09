@@ -28,7 +28,9 @@ export function assignOrders(
   initWall: Map<number, number> = new Map(),
   machIdx: Map<number, number> = new Map(),
   strictWire = false,
-  requireDrill = false
+  requireDrill = false,
+  globalTmcRates: CuttingRate[] = [],
+  batchKva = false   // when true: penalise over-qualified machines → small orders → small machines
 ): Map<number, Order[]> {
   const assigned = new Map<number, Order[]>()
   const wall     = new Map<number, number>()
@@ -38,6 +40,7 @@ export function assignOrders(
     if (!machIdx.has(m.id)) machIdx.set(m.id, i)
   })
 
+  const kvaOf = (o: Order) => o.kva ?? products[o.product ?? '']?.kva ?? 0
   const el = (o: Order) => machines.filter(m => canMachineCut(m, o, products, strictWire, requireDrill))
 
   // Sort: exclusive orders first, then LPT (largest wall contribution first)
@@ -51,20 +54,24 @@ export function assignOrders(
     const eligible = el(o)
     if (eligible.length === 0) continue
 
-    // Score = wall_time − drill_bonus − index_bonus
+    // Score = wall_time − drill_bonus − wire_bonus − index_bonus + kva_over_qualified_penalty
     // Lower score = better candidate.
-    // Drill bonus: prefer drill machine when load is equal.
-    // Index bonus: higher-index machines preferred on ties → round-robin effect.
+    // batchKva: penalise machines whose max_kva greatly exceeds order.kva (route small→small, large→large)
+    const KVA_WT = 1.0  // up to 1h preference weight for kVA-matched machine
     const best = eligible.reduce((a, m) => {
-      const pref = (mc: CuttingMachine) => (drillPrefers(mc, o) ? DRILL_BONUS : 0) + (wirePrefers(mc, o) ? DRILL_BONUS : 0)
-      const sa = (wall.get(a.id) ?? 0) - pref(a) - (machIdx.get(a.id) ?? 0) * INDEX_BONUS
-      const sm = (wall.get(m.id) ?? 0) - pref(m) - (machIdx.get(m.id) ?? 0) * INDEX_BONUS
+      const pref  = (mc: CuttingMachine) => (drillPrefers(mc, o) ? DRILL_BONUS : 0) + (wirePrefers(mc, o) ? DRILL_BONUS : 0)
+      const kvaP  = (mc: CuttingMachine) => {
+        const k = kvaOf(o); if (!batchKva || k <= 0 || mc.max_kva >= 9999) return 0
+        return Math.max(0, (mc.max_kva - k) / mc.max_kva) * KVA_WT
+      }
+      const sa = (wall.get(a.id) ?? 0) - pref(a) + kvaP(a) - (machIdx.get(a.id) ?? 0) * INDEX_BONUS
+      const sm = (wall.get(m.id) ?? 0) - pref(m) + kvaP(m) - (machIdx.get(m.id) ?? 0) * INDEX_BONUS
       return sm < sa ? m : a
     })
 
     assigned.get(best.id)!.push(o)
     const kva = o.kva ?? products[o.product ?? '']?.kva ?? 0
-    wall.set(best.id, (wall.get(best.id) ?? 0) + (o.qty * getHrsForKva(best, kva, globalRates, o.item_code)) / (best.count || 1))
+    wall.set(best.id, (wall.get(best.id) ?? 0) + (o.qty * getHrsForKva(best, kva, globalRates, o.item_code, globalTmcRates)) / (best.count || 1))
   }
   return assigned
 }
@@ -95,7 +102,8 @@ export function scheduleFastest(
   strictWire = false,
   requireDrill = false,
   stickyOrders = true,
-  lazyOt = true   // true = defer OT to end of week; false = eager (fire OT from day 1)
+  lazyOt = true,
+  globalTmcRates: CuttingRate[] = []
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
   if (!machines.length || !weekOrders.length) return result
@@ -111,7 +119,7 @@ export function scheduleFastest(
 
   // Rate helper per (machine, unit)
   const uHrs = (m: CuttingMachine, u: Unit) =>
-    getHrsForKva(m, u.order.kva ?? products[u.order.product]?.kva ?? 0, globalRates, u.order.item_code)
+    getHrsForKva(m, u.order.kva ?? products[u.order.product]?.kva ?? 0, globalRates, u.order.item_code, globalTmcRates)
 
   // LPT sort: use the fastest eligible machine's rate as the ordering key
   const refMach = (u: Unit) =>
@@ -142,7 +150,7 @@ export function scheduleFastest(
     // ── Whole-order assignment: exclusive-first, then LPT ──────
     const ordEl  = (o: Order) => machines.filter(m => canMachineCut(m, o, products, strictWire, requireDrill))
     const ordHrs = (m: CuttingMachine, o: Order) =>
-      o.qty * getHrsForKva(m, o.kva ?? products[o.product ?? '']?.kva ?? 0, globalRates, o.item_code)
+      o.qty * getHrsForKva(m, o.kva ?? products[o.product ?? '']?.kva ?? 0, globalRates, o.item_code, globalTmcRates)
 
     const sortedOrders = [...weekOrders].sort((a, b) => {
       const ae = ordEl(a), be = ordEl(b)
@@ -270,10 +278,10 @@ export function scheduleFastest(
 export function sortPool(
   orders: Order[], strategy: string,
   products: Record<string, { kva?: number }>, globalRates: CuttingRate[], machines: CuttingMachine[],
-  nextWeekOrders: Order[] = []
+  nextWeekOrders: Order[] = [], globalTmcRates: CuttingRate[] = []
 ): Order[] {
   const m0 = machines[0]
-  const hrs = (o: Order) => m0 ? o.qty * getHrsForKva(m0, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code) : 0
+  const hrs = (o: Order) => m0 ? o.qty * getHrsForKva(m0, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates) : 0
   const kvaOf = (o: Order) => o.kva ?? products[o.product]?.kva ?? 0
   const pool = [...orders]
 
@@ -352,7 +360,9 @@ export function scheduleMode(
   nextWeekOrders: Order[] = [],
   strictWire = false,
   requireDrill = false,
-  lazyOt = true
+  stickyOrders = true,   // false → expand each order into qty individual 1-unit orders
+  lazyOt = true,
+  globalTmcRates: CuttingRate[] = []
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
 
@@ -362,12 +372,14 @@ export function scheduleMode(
 
   if (approach === 'weekly') {
     // ── PRE-ASSIGN orders globally using LPT load balancing ────
-    // assignOrders balances load across ALL machines (including Machine 14).
-    // Fixes the old shared-pool bug where machines processed in fixed array
-    // order and Machine 14 (last) never got any orders.
     const machIdxLocal = new Map<number, number>()
     machines.forEach((m, i) => machIdxLocal.set(m.id, i))
-    const asgn = assignOrders(weekOrders, machines, products, globalRates, new Map(), machIdxLocal, strictWire, requireDrill)
+    // stickyOrders=false: expand each order into qty individual 1-unit orders so units can split across machines
+    const ordersToAssign = stickyOrders
+      ? weekOrders
+      : weekOrders.flatMap(o => Array.from({length: o.qty}, (_, ui) => ({...o, id: `${o.id}__u${ui}`, qty: 1})))
+    const isBatch = sortStrategy === 'batch_kva'
+    const asgn = assignOrders(ordersToAssign, machines, products, globalRates, new Map(), machIdxLocal, strictWire, requireDrill, globalTmcRates, isBatch)
 
     // ── Simulate each machine's pre-assigned queue independently ─
     // Week-ahead smart OT: only add OT on a day when total remaining work
@@ -377,10 +389,10 @@ export function scheduleMode(
       const mMap = new Map<string, MachineDaySched>()
       result.set(m.id, mMap)
 
-      const assignedOrders = sortPool(asgn.get(m.id) ?? [], sortStrategy, products, globalRates, machines, nextWeekOrders)
+      const assignedOrders = sortPool(asgn.get(m.id) ?? [], sortStrategy, products, globalRates, machines, nextWeekOrders, globalTmcRates)
       const queue: QItem[] = assignedOrders.map(o => ({
         order: o,
-        remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product ?? '']?.kva ?? 0, globalRates, o.item_code),
+        remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product ?? '']?.kva ?? 0, globalRates, o.item_code, globalTmcRates),
         isCarryOver: false,
       }))
 
@@ -476,7 +488,7 @@ export function scheduleMode(
         // Fill reg hours first; OT = minimum needed to clear today's queue (carry + new)
         const carryHrs = carryItems.reduce((s, c) => s + c.remainingHrs, 0)
         const todayHrs = (dailyAssignments[di]?.asgn.get(m.id) ?? [])
-          .reduce((s, o) => s + o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code), 0)
+          .reduce((s, o) => s + o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates), 0)
         effectiveOtCap = Math.min(otCap, Math.max(0, carryHrs + todayHrs - regCap))
       }
 
@@ -488,7 +500,7 @@ export function scheduleMode(
         // ── Daily: carry queue + today's new orders ───────────
         const todayOrders = dailyAssignments[di]?.asgn.get(m.id) ?? []
         const todayItems: QItem[] = todayOrders.map(o => ({
-          order: o, remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code), isCarryOver: false
+          order: o, remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates), isCarryOver: false
         }))
         const fullQueue = [...carryItems, ...todayItems]
         carryItems = []

@@ -64,6 +64,7 @@ export function computeWeekData({
   balanceMode,
   strictWire,
   requireDrill,
+  stickyOrders = true,
   products,
   wcConfig,
   globalRates: _globalRates,
@@ -76,12 +77,16 @@ export function computeWeekData({
   balanceMode: string
   strictWire: boolean
   requireDrill: boolean
+  stickyOrders?: boolean
   products: Record<string, { kva?: number }>
   wcConfig: Record<string, WCConfig>
   globalRates: CuttingRate[]
   globalTmcRates: CuttingRate[]
 }): WeekData {
   const isFastest = balanceMode.startsWith('fastest')
+  // isSplit: work entries carry synthetic __u IDs (units of same order split across machines)
+  const isSplit = !stickyOrders && !isFastest
+  const origId = (id: string) => id.replace(/__u\d+$/, '')
 
   // Per-machine weekly totals
   const mTotals: MachTotals[] = machines.map(m => {
@@ -97,8 +102,8 @@ export function computeWeekData({
         if (w.isComplete) { completedIds.add(w.order.id); completedEntries++ }
       })
     })
-    const qty = isFastest
-      ? completedEntries
+    const qty = (isFastest || isSplit)
+      ? completedEntries  // each isComplete entry = 1 unit (split or fastest mode)
       : [...completedIds].reduce((s, oid) => {
           const o = weekOrders.find(x => x.id === oid)
           return s + (o?.qty ?? 0)
@@ -138,13 +143,19 @@ export function computeWeekData({
     const { reg: dayCapHrs } = activeMachineRef ? resolveHours(activeMachineRef, wcConfig, isSat, dow) : { reg: isSat ? 4 : 8 }
     const finishCol = dayFinish === 0 ? 'var(--txt3)' : dayFinish <= dayCapHrs ? 'var(--green)' : dayFinish <= dayCapHrs * 2 ? 'var(--amber)' : 'var(--red)'
 
+    // actualQty: units actually worked on today (from schedule, not from plan_date)
+    // In split mode, each work entry = 1 unit (qty=1 on synthetic order)
     const actualOrderIds = new Set<string>()
     machineCells.forEach(mc => mc.work.forEach(w => actualOrderIds.add(w.order.id)))
-    const actualQty = [...actualOrderIds].reduce((s, oid) => {
-      const o = weekOrders.find(x => x.id === oid)
-      return s + (o?.qty ?? 0)
-    }, 0)
-    const actualOrderCount = actualOrderIds.size
+    const actualQty = isSplit
+      ? actualOrderIds.size   // each synthetic ID = 1 unit
+      : [...actualOrderIds].reduce((s, oid) => {
+          const o = weekOrders.find(x => x.id === oid)
+          return s + (o?.qty ?? 0)
+        }, 0)
+    const actualOrderCount = isSplit
+      ? new Set([...actualOrderIds].map(origId)).size  // count distinct original orders
+      : actualOrderIds.size
 
     return { dStr, d, di, dow, isSat, dayOrders, dayScheduledQty, dayKva, dayCarryQty, unassigned, machineCells, dayWalls, dayFinish, dayCapHrs, finishCol, actualQty, actualOrderCount }
   })
@@ -164,23 +175,45 @@ export function computeWeekData({
   const totalOT = maxDailyOT
   const summaryStatus: 'ok' | 'warn' | 'over' = bottleneckWall > REG_PER + OT_PER ? 'over' : totalOT >= 0.05 ? 'warn' : 'ok'
 
-  // Track last-seen completion state for each order across all machines & days
-  const orderLastState = new Map<string, { isComplete: boolean; day: string }>()
-  machines.forEach(m => {
-    days.forEach(d => {
-      const dStr = fmtISO(d)
-      const sched = weekSchedule.get(m.id)?.get(dStr)
-      sched?.work.forEach(w => {
-        const cur = orderLastState.get(w.order.id)
-        if (!cur || dStr > cur.day || (dStr === cur.day && w.isComplete)) {
-          orderLastState.set(w.order.id, { isComplete: w.isComplete, day: dStr })
-        }
+  let weekDoneOrders: Order[], weekCarryOrders: Order[], weekUnscheduled: Order[]
+
+  if (isSplit) {
+    // Work entries use synthetic IDs (origId__uN). Map completed/in-progress counts back to original orders.
+    const doneUnitCount = new Map<string, number>()
+    const inProgressSet = new Set<string>()
+    machines.forEach(m => {
+      days.forEach(d => {
+        weekSchedule.get(m.id)?.get(fmtISO(d))?.work.forEach(w => {
+          const oid = origId(w.order.id)
+          if (w.isComplete) doneUnitCount.set(oid, (doneUnitCount.get(oid) ?? 0) + 1)
+          else inProgressSet.add(oid)
+        })
       })
     })
-  })
-  const weekDoneOrders  = weekOrders.filter(o => orderLastState.get(o.id)?.isComplete === true)
-  const weekCarryOrders = weekOrders.filter(o => { const s = orderLastState.get(o.id); return !!s && !s.isComplete })
-  const weekUnscheduled = weekOrders.filter(o => !orderLastState.has(o.id))
+    weekDoneOrders  = weekOrders.filter(o => (doneUnitCount.get(o.id) ?? 0) >= o.qty)
+    weekCarryOrders = weekOrders.filter(o => {
+      const done = doneUnitCount.get(o.id) ?? 0
+      return done < o.qty && (done > 0 || inProgressSet.has(o.id))
+    })
+    weekUnscheduled = weekOrders.filter(o => !doneUnitCount.has(o.id) && !inProgressSet.has(o.id))
+  } else {
+    // Sticky mode: track last-seen isComplete state per order across all machines & days
+    const orderLastState = new Map<string, { isComplete: boolean; day: string }>()
+    machines.forEach(m => {
+      days.forEach(d => {
+        const dStr = fmtISO(d)
+        weekSchedule.get(m.id)?.get(dStr)?.work.forEach(w => {
+          const cur = orderLastState.get(w.order.id)
+          if (!cur || dStr > cur.day || (dStr === cur.day && w.isComplete)) {
+            orderLastState.set(w.order.id, { isComplete: w.isComplete, day: dStr })
+          }
+        })
+      })
+    })
+    weekDoneOrders  = weekOrders.filter(o => orderLastState.get(o.id)?.isComplete === true)
+    weekCarryOrders = weekOrders.filter(o => { const s = orderLastState.get(o.id); return !!s && !s.isComplete })
+    weekUnscheduled = weekOrders.filter(o => !orderLastState.has(o.id))
+  }
 
   return { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, summaryStatus, weekDoneOrders, weekCarryOrders, weekUnscheduled }
 }
