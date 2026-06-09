@@ -164,6 +164,135 @@ export function exportJSON(ctx: ExportContext): void {
   const a = document.createElement('a'); a.href = url; a.download = `cutting-plan-${fmtISO(mon)}_${fmtISO(sat)}.json`; a.click(); URL.revokeObjectURL(url)
 }
 
+/** Machine-first XLSX: each machine gets its own sheet showing its full week */
+export function exportMachineXLSX(ctx: ExportContext): void {
+  const { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat } = ctx
+  const wb = XLSX.utils.book_new()
+
+  machines.forEach((m, mi) => {
+    const total = weekData.mTotals[mi]
+    const rows: (string | number)[][] = [
+      [`${mLabel(m)}  —  ${weekLabel}`],
+      [`${m.min_kva}–${m.max_kva >= 9999 ? '∞' : m.max_kva} kVA`, `${m.hrs_per_unit}h/ตัว`, `×${m.time_mul ?? 1}`, `TMC +${m.tmc_hrs ?? 0}h`],
+      [`${total.qty} ตัว`, `${total.wallHrs.toFixed(1)}h / ${total.regCap}h reg`, `OT: ${total.ot.toFixed(1)}h`],
+      [],
+      ['วันที่', 'วัน', 'รวม(h)', 'OT(h)', 'SAP SO', 'kVA', 'จำนวน', 'ลูกค้า', 'Raw Mat', 'ทำ(h)', 'รวมคิว(h)', 'สถานะ'],
+    ]
+
+    weekData.dayRows.forEach(row => {
+      const { d } = row
+      const mc = row.machineCells[mi]
+      const dStr = fmtISO(d)
+
+      if (mc.machOff) {
+        rows.push([dStr, DAY_TH_FULL[d.getDay()], '', '', '🔴 ปิด'])
+        return
+      }
+
+      const work = mc.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
+      if (work.length === 0) {
+        rows.push([dStr, DAY_TH_FULL[d.getDay()], '—'])
+        return
+      }
+
+      work.forEach((w, wi) => {
+        const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
+        const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
+        rows.push([
+          wi === 0 ? dStr : '',
+          wi === 0 ? DAY_TH_FULL[d.getDay()] : '',
+          wi === 0 ? +mc.wall.toFixed(1) : '',
+          wi === 0 ? +(mc.sched?.otHrs ?? 0).toFixed(1) || '' : '',
+          `${w.isCarryOver ? '↩ ' : ''}${w.order.sap_so ?? w.order.id}`,
+          kva, w.order.qty, w.order.customer ?? '', w.order.raw_mat ?? '',
+          +w.hrsWorked.toFixed(2), +totalHrs.toFixed(2),
+          w.isComplete ? '✓' : (w.carriesOver ? '→ ต่อ' : '→'),
+        ])
+      })
+    })
+
+    const ws = XLSX.utils.aoa_to_sheet(rows)
+    ws['!cols'] = [12, 10, 8, 6, 16, 6, 6, 18, 10, 8, 10, 10].map(w => ({ wch: w }))
+    const sheetName = mLabel(m).replace(/[:\\/?*[\]]/g, '').substring(0, 31)
+    XLSX.utils.book_append_sheet(wb, ws, sheetName)
+  })
+
+  XLSX.writeFile(wb, `cutting-plan-by-machine-${fmtISO(mon)}_${fmtISO(sat)}.xlsx`)
+}
+
+/** Machine-first Print: one assignment card per machine — hand to floor workers */
+export function exportMachinePrint(ctx: ExportContext): void {
+  const { weekData, machines, products, globalRates, globalTmcRates, weekLabel, balanceMode } = ctx
+
+  let html = `<html><head><meta charset="utf-8"><title>แผนต่อเครื่อง ${weekLabel}</title><style>
+    body{font-family:sans-serif;font-size:11px;margin:10px}
+    .card{page-break-after:always;margin-bottom:16px}
+    .card:last-child{page-break-after:auto}
+    .mname{font-size:14px;font-weight:700;margin:0 0 2px}
+    .mspec{color:#666;font-size:10px;margin:0 0 3px}
+    .mtot{font-size:11px;margin:0 0 6px;color:#333}
+    .week{color:#888;font-size:10px}
+    table{border-collapse:collapse;width:100%}
+    th{background:#e8e8e8;font-size:10px;font-weight:600;padding:3px 5px;text-align:left;border:1px solid #ccc}
+    td{border:1px solid #ddd;padding:2px 5px;font-size:10px;vertical-align:top}
+    td.date{background:#f5f5f5;font-weight:600;white-space:nowrap}
+    td.wall{text-align:right;white-space:nowrap}
+    td.ot{color:#fe640b;text-align:right}
+    .done{color:#40a02b;font-weight:700}.carry{color:#fe640b}
+    .dayoff{color:#e0534a}
+    @media print{body{margin:5mm}.card{page-break-after:always}}
+  </style></head><body>`
+
+  html += `<div class="week">แผนการตัดโลหะ — ${weekLabel} · Mode: ${balanceMode}</div>`
+
+  machines.forEach((m, mi) => {
+    const total = weekData.mTotals[mi]
+    html += `<div class="card">`
+    html += `<div class="mname">${mLabel(m)}</div>`
+    html += `<div class="mspec">${m.min_kva}–${m.max_kva >= 9999 ? '∞' : m.max_kva} kVA &nbsp;·&nbsp; ${m.hrs_per_unit}h/ตัว &nbsp;·&nbsp; ×${m.time_mul ?? 1}${(m.tmc_hrs ?? 0) > 0 ? ` +${m.tmc_hrs}h TMC` : ''}</div>`
+    html += `<div class="mtot">${total.qty} ตัว &nbsp;·&nbsp; ${total.wallHrs.toFixed(1)}h / ${total.regCap}h reg &nbsp;·&nbsp; OT ${total.ot.toFixed(1)}h</div>`
+    html += `<table><tr><th>วันที่</th><th>วัน</th><th style="text-align:right">ชม.</th><th style="text-align:right">OT</th><th>SAP SO</th><th>kVA</th><th>Qty</th><th>ลูกค้า</th><th>ทำ</th><th>สถานะ</th></tr>`
+
+    weekData.dayRows.forEach(row => {
+      const { d } = row
+      const mc = row.machineCells[mi]
+      if (mc.machOff) {
+        html += `<tr><td class="date">${fmtISO(d)}</td><td>${DAY_TH_FULL[d.getDay()]}</td><td colspan="8" class="dayoff">🔴 ปิด</td></tr>`
+        return
+      }
+      const work = mc.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
+      if (work.length === 0) {
+        html += `<tr><td class="date">${fmtISO(d)}</td><td>${DAY_TH_FULL[d.getDay()]}</td><td colspan="8" style="color:#aaa">—</td></tr>`
+        return
+      }
+      work.forEach((w, wi) => {
+        const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
+        const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
+        const status = w.isComplete ? `<span class="done">✓</span>` : `<span class="carry">→</span>`
+        const otHrs = mc.sched?.otHrs ?? 0
+        html += `<tr>
+          <td class="date">${wi === 0 ? fmtISO(d) : ''}</td>
+          <td>${wi === 0 ? DAY_TH_FULL[d.getDay()] : ''}</td>
+          <td class="wall">${wi === 0 ? mc.wall.toFixed(1) + 'h' : ''}</td>
+          <td class="ot">${wi === 0 && otHrs > 0 ? '+' + otHrs.toFixed(1) + 'h' : ''}</td>
+          <td>${w.isCarryOver ? '↩ ' : ''}${w.order.sap_so ?? w.order.id}</td>
+          <td>${kva.toLocaleString()}</td>
+          <td>×${w.order.qty}</td>
+          <td>${w.order.customer ?? ''}</td>
+          <td style="white-space:nowrap">${w.hrsWorked.toFixed(1)}/${totalHrs.toFixed(1)}h</td>
+          <td>${status}</td>
+        </tr>`
+      })
+    })
+
+    html += `</table></div>`
+  })
+
+  html += '</body></html>'
+  const win = window.open('', '_blank')
+  if (win) { win.document.write(html); win.document.close(); win.focus(); setTimeout(() => win.print(), 400) }
+}
+
 export function exportPrint(ctx: ExportContext): void {
   const { weekData, products, globalRates, globalTmcRates, weekLabel, balanceMode } = ctx
   let html = `<html><head><meta charset="utf-8"><title>แผนการตัดโลหะ ${weekLabel}</title><style>

@@ -124,8 +124,10 @@ import {
   exportPlanCSV as _exportCSV,
   exportTXT as _exportTXT,
   exportXLSX as _exportXLSX,
+  exportMachineXLSX as _exportMachineXLSX,
   exportJSON as _exportJSON,
   exportPrint as _exportPrint,
+  exportMachinePrint as _exportMachinePrint,
 } from './scheduling/export'
 
 const origId = (id: string) => id.replace(/__u\d+$/, '')
@@ -199,11 +201,13 @@ export default function CuttingMachines() {
 
   // ── Plan snapshot ────────────────────────────────────────────
   function expCtx() { return { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat, balanceMode } }
-  function exportPlanCSV() { _exportCSV(expCtx()) }
-  function exportTXT()     { _exportTXT(expCtx()) }
-  function exportXLSX()    { _exportXLSX(expCtx()) }
-  function exportJSON()    { _exportJSON(expCtx()) }
-  function exportPrint()   { _exportPrint(expCtx()) }
+  function exportPlanCSV()      { _exportCSV(expCtx()) }
+  function exportTXT()          { _exportTXT(expCtx()) }
+  function exportXLSX()         { _exportXLSX(expCtx()) }
+  function exportMachineXLSX()  { _exportMachineXLSX(expCtx()) }
+  function exportJSON()         { _exportJSON(expCtx()) }
+  function exportPrint()        { _exportPrint(expCtx()) }
+  function exportMachinePrint() { _exportMachinePrint(expCtx()) }
 
   async function savePlan(label: string) {
     setPlanSaving(true); setPlanSaveMsg(null)
@@ -629,9 +633,11 @@ export default function CuttingMachines() {
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.display = 'none' }}>
               {[
                 { label: '📄 CSV', fn: exportPlanCSV, desc: 'Spreadsheet rows' },
-                { label: '📊 Excel (.xlsx)', fn: exportXLSX, desc: 'Formatted workbook' },
+                { label: '📊 Excel (.xlsx)', fn: exportXLSX, desc: 'ต่อวัน — formatted workbook' },
+                { label: '📊 Excel ต่อเครื่อง', fn: exportMachineXLSX, desc: 'แต่ละเครื่อง = 1 sheet' },
                 { label: '📝 Text (.txt)', fn: exportTXT, desc: 'Plain text summary' },
-                { label: '🖨 Print / PDF', fn: exportPrint, desc: 'Print dialog' },
+                { label: '🖨 Print / PDF', fn: exportPrint, desc: 'Print ต่อวัน' },
+                { label: '🖨 Print ต่อเครื่อง', fn: exportMachinePrint, desc: 'บัตรงานต่อเครื่อง' },
                 { label: '{ } JSON', fn: exportJSON, desc: 'Raw data' },
               ].map(({ label, fn, desc }) => (
                 <button key={label} onClick={() => { fn(); (document.activeElement as HTMLElement)?.blur() }}
