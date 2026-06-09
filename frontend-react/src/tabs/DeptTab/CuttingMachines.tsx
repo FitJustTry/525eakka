@@ -162,6 +162,7 @@ export default function CuttingMachines() {
   const [strictWire,   setStrictWire]   = useState(true)
   const [requireDrill, setRequireDrill] = useState(true)
   const [stickyOrders, setStickyOrders] = useState(true)  // true = one machine owns all units of an order
+  const isFastest = balanceMode.startsWith('fastest')
   const [lazyOT, setLazyOT] = useState(true)             // true = defer OT to end of week; false = eager (fire from day 1)
   const [machineTableOpen, setMachineTableOpen] = useState(false)
   const [globalRatesOpen, setGlobalRatesOpen]   = useState(false)
@@ -903,7 +904,7 @@ export default function CuttingMachines() {
                                 // ต่อหน่วย: expand qty>1 entries into individual unit rows (split/fastest already per-unit)
                                 : workDisplay === 'unit'
                                   ? sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).flatMap(w =>
-                                      w.order.qty <= 1 ? [w] : Array.from({length: w.order.qty}, () => ({...w, hrsWorked: w.hrsWorked / w.order.qty, order: {...w.order, qty: 1}}))
+                                      (w.order.qty <= 1 || isFastest) ? [w] : Array.from({length: w.order.qty}, () => ({...w, hrsWorked: w.hrsWorked / w.order.qty, order: {...w.order, qty: 1}}))
                                     )
                                   // ต่อเซ็กเมนต์: each entry with carry-over rows visible
                                   : sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
@@ -1063,7 +1064,7 @@ export default function CuttingMachines() {
                                         }, {} as Record<string, DayWork>)) as DayWork[]
                                       : workDisplay === 'unit'
                                         ? work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).flatMap(w =>
-                                            w.order.qty <= 1 ? [w] : Array.from({length: w.order.qty}, () => ({...w, hrsWorked: w.hrsWorked / w.order.qty, order: {...w.order, qty: 1}}))
+                                            (w.order.qty <= 1 || isFastest) ? [w] : Array.from({length: w.order.qty}, () => ({...w, hrsWorked: w.hrsWorked / w.order.qty, order: {...w.order, qty: 1}}))
                                           )
                                         : work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
                                     ).map((w, idx) => {
@@ -1252,7 +1253,7 @@ export default function CuttingMachines() {
                       })()
                     : workDisplay === 'unit'
                       ? sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).flatMap(w =>
-                          w.order.qty <= 1 ? [w] : Array.from({length: w.order.qty}, () => ({...w, hrsWorked: w.hrsWorked / w.order.qty, order: {...w.order, qty: 1}}))
+                          (w.order.qty <= 1 || isFastest) ? [w] : Array.from({length: w.order.qty}, () => ({...w, hrsWorked: w.hrsWorked / w.order.qty, order: {...w.order, qty: 1}}))
                         )
                       : sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
                   workItems.forEach(w => {
