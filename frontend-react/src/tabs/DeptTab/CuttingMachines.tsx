@@ -128,6 +128,8 @@ import {
   exportPrint as _exportPrint,
 } from './scheduling/export'
 
+const origId = (id: string) => id.replace(/__u\d+$/, '')
+
 
 export default function CuttingMachines() {
   const { state, dispatch } = useApp()
@@ -135,7 +137,7 @@ export default function CuttingMachines() {
   const [weekOffset, setWeekOffset] = useState(0)
   const [includePrevCarry, setIncludePrevCarry] = useState(false)
   const [showWireData, setShowWireData] = useState(true)   // show Raw Mat / LV / HV in order cards
-  const [compactWork, setCompactWork]   = useState(true)   // true = one row per order per day; false = one row per scheduler segment
+  const [workDisplay, setWorkDisplay]   = useState<'order' | 'segment' | 'unit'>('order')
   const [planSaving, setPlanSaving] = useState(false)
   const [planSaveMsg, setPlanSaveMsg] = useState<string | null>(null)
   const [snapshots, setSnapshots] = useState<{ id: number; week_start: string; week_end: string; label: string; saved_at: string }[]>([])
@@ -511,10 +513,10 @@ export default function CuttingMachines() {
                       {v === 'cards' ? '📋 รายวัน' : v === 'table' ? '📊 ตาราง' : '🔄 Pipeline'}
                     </button>
                   ))}
-                  <button onClick={() => setCompactWork(v => !v)}
-                    title={compactWork ? 'Compact: one row per order per day — click to show each segment' : 'Detailed: one row per segment — click to compact'}
-                    style={{ fontSize: 10, padding: '3px 10px', borderRadius: 12, border: `1px solid ${compactWork ? 'rgba(166,227,161,.5)' : 'var(--bord2)'}`, background: compactWork ? 'rgba(166,227,161,.15)' : 'var(--bg3)', color: compactWork ? 'var(--green)' : 'var(--txt2)', cursor: 'pointer', fontWeight: compactWork ? 700 : 400 }}>
-                    {compactWork ? '📦 รวมออเดอร์' : '📋 แยกรายงาน'}
+                  <button onClick={() => setWorkDisplay(d => d === 'order' ? 'segment' : d === 'segment' ? 'unit' : 'order')}
+                    title={workDisplay === 'order' ? 'ต่อออเดอร์: รวม segment ของ order เดียวกัน — คลิกเพื่อแยก segment' : workDisplay === 'segment' ? 'ต่อเซ็กเมนต์: แสดงทุก segment รวมค้าง — คลิกเพื่อดูทุกหน่วย' : 'ต่อหน่วย: แสดงทุก entry — คลิกเพื่อรวมออเดอร์'}
+                    style={{ fontSize: 10, padding: '3px 10px', borderRadius: 12, border: `1px solid ${workDisplay === 'order' ? 'rgba(166,227,161,.5)' : workDisplay === 'segment' ? 'rgba(250,179,135,.5)' : 'rgba(203,166,247,.5)'}`, background: workDisplay === 'order' ? 'rgba(166,227,161,.15)' : workDisplay === 'segment' ? 'rgba(250,179,135,.1)' : 'rgba(203,166,247,.12)', color: workDisplay === 'order' ? 'var(--green)' : workDisplay === 'segment' ? 'var(--amber)' : 'var(--purple)', cursor: 'pointer', fontWeight: 700 }}>
+                    {workDisplay === 'order' ? '📦 ต่อออเดอร์' : workDisplay === 'segment' ? '📋 ต่อเซ็กเมนต์' : '🔩 ต่อหน่วย'}
                   </button>
                   <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 6px', flexShrink: 0 }} />
                   <span style={{ fontSize: 10, color: 'var(--txt3)' }}>OT:</span>
@@ -802,7 +804,7 @@ export default function CuttingMachines() {
               </span>
               <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 10, fontWeight: 600, background: 'var(--bg3)', border: '1px solid var(--bord2)', color: 'var(--txt3)' }}>
                 {viewMode === 'cards' ? '📋' : viewMode === 'table' ? '📊' : '🔄'}
-                {compactWork ? ' 📦' : ''}
+                {workDisplay === 'order' ? ' 📦' : workDisplay === 'unit' ? ' 🔩' : ''}
               </span>
               {balanceMode.startsWith('fastest') && (
                 <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 10, fontWeight: 600, background: 'var(--bg3)', border: '1px solid var(--bord2)', color: stickyOrders ? 'var(--purple)' : 'var(--txt3)' }}>
@@ -884,21 +886,24 @@ export default function CuttingMachines() {
                             </div>
                             {/* Work items */}
                             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                              {(compactWork
-                                // Compact: merge same order into one row; skip carry-overs that don't finish today (still in progress)
+                              {(workDisplay === 'order'
+                                // ต่อออเดอร์: group by original order ID, one row per SAP SO, skip carry stubs
                                 ? Object.values(
                                     sched.work
                                       .filter(w => (w.hrsWorked >= 0.01 || !w.isComplete) && (!w.isCarryOver || w.isComplete))
                                       .reduce((acc, w) => {
-                                        if (!acc[w.order.id]) acc[w.order.id] = { ...w, hrsWorked: 0 }
-                                        acc[w.order.id].hrsWorked  += w.hrsWorked
-                                        acc[w.order.id].isComplete  = w.isComplete
-                                        acc[w.order.id].carriesOver = w.carriesOver
+                                        const key = origId(w.order.id)
+                                        if (!acc[key]) { const orig = weekOrders.find(o => o.id === key); acc[key] = { ...w, order: orig ?? {...w.order, id: key}, hrsWorked: 0 } }
+                                        acc[key].hrsWorked  += w.hrsWorked
+                                        acc[key].isComplete  = w.isComplete
+                                        acc[key].carriesOver = w.carriesOver
                                         return acc
                                       }, {} as Record<string, DayWork>)
                                   ) as DayWork[]
-                                // Detailed: show every segment including mid-stream carry-overs
-                                : sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
+                                // ต่อหน่วย: all entries including carry stubs; ต่อเซ็กเมนต์: same but filter 0-hr stubs
+                                : workDisplay === 'unit'
+                                  ? sched.work
+                                  : sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
                               ).map((w, wi) => {
                                 const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
                                 const { typeCode } = decodeItemInfo(w.order.item_code ?? '')
@@ -1044,15 +1049,18 @@ export default function CuttingMachines() {
                                       {sched?.carriesForward && <span style={{ fontSize: 9, color: 'var(--red)', fontWeight: 600 }}>→ พรุ่งนี้</span>}
                                     </div>
                                     {/* Order rows — always visible, no click needed */}
-                                    {(compactWork
+                                    {(workDisplay === 'order'
                                       ? Object.values(work.filter(w => (w.hrsWorked >= 0.01 || !w.isComplete) && (!w.isCarryOver || w.isComplete)).reduce((acc, w) => {
-                                          if (!acc[w.order.id]) acc[w.order.id] = { ...w, hrsWorked: 0 }
-                                          acc[w.order.id].hrsWorked += w.hrsWorked
-                                          acc[w.order.id].isComplete = w.isComplete
-                                          acc[w.order.id].carriesOver = w.carriesOver
+                                          const key = origId(w.order.id)
+                                          if (!acc[key]) { const orig = weekOrders.find(o => o.id === key); acc[key] = { ...w, order: orig ?? {...w.order, id: key}, hrsWorked: 0 } }
+                                          acc[key].hrsWorked += w.hrsWorked
+                                          acc[key].isComplete = w.isComplete
+                                          acc[key].carriesOver = w.carriesOver
                                           return acc
                                         }, {} as Record<string, DayWork>)) as DayWork[]
-                                      : work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
+                                      : workDisplay === 'unit'
+                                        ? work
+                                        : work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
                                     ).map((w, idx) => {
                                       const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
                                       const kvaCol = kva <= 400 ? 'var(--blue)' : kva <= 3500 ? 'var(--amber)' : 'var(--red)'
@@ -1220,22 +1228,26 @@ export default function CuttingMachines() {
                   const sched = weekSchedule.get(m.id)?.get(dStr)
                   if (!sched) return
                   let within = 0
-                  const workItems = compactWork
+                  const workItems = workDisplay === 'order'
                     ? (() => {
                         const merged: typeof sched.work = []
                         sched.work.filter(w => (w.hrsWorked >= 0.01 || !w.isComplete) && (!w.isCarryOver || w.isComplete)).forEach(w => {
+                          const key = origId(w.order.id)
                           const last = merged[merged.length - 1]
-                          if (last && last.order.id === w.order.id) {
+                          if (last && origId(last.order.id) === key) {
                             last.hrsWorked += w.hrsWorked
                             last.isComplete = w.isComplete
                             last.carriesOver = w.carriesOver
                           } else {
-                            merged.push({ ...w })
+                            const orig = weekOrders.find(o => o.id === key)
+                            merged.push({ ...w, order: orig ?? {...w.order, id: key} })
                           }
                         })
                         return merged
                       })()
-                    : sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
+                    : workDisplay === 'unit'
+                      ? sched.work
+                      : sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
                   workItems.forEach(w => {
                     segs.push({ order: w.order, start: dayStart[di] + within, dur: w.hrsWorked, isCarryOver: w.isCarryOver, carriesOver: w.carriesOver, isComplete: w.isComplete })
                     within += w.hrsWorked
