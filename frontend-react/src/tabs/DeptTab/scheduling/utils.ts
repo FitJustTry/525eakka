@@ -5,13 +5,14 @@ import { decodeItemInfo } from '../../../utils/itemCodeDecode'
  * Exact match only — if the kVA has a defined rate, use it.
  * Everything else uses m.hrs_per_unit (machine default).
  */
-export function getHrsForKva(m: CuttingMachine, kva: number, globalRates: CuttingRate[], itemCode?: string): number {
+export function getHrsForKva(m: CuttingMachine, kva: number, globalRates: CuttingRate[], itemCode?: string, globalTmcRates?: CuttingRate[]): number {
   // Cast Resin (item code position 1 = '4') — use TMC rate table first, then tmc_hrs fallback
   if (itemCode && itemCode[1] === '4') {
-    const tmcMatch = (m.tmc_rates ?? []).find(r => r.kva === kva)  // kVA-specific TMC rate
+    const tmcMatch = (m.tmc_rates ?? []).find(r => r.kva === kva)       // per-machine kVA-specific
     if (tmcMatch) return tmcMatch.hrs
-    if ((m.tmc_hrs ?? 0) > 0) return m.tmc_hrs!                    // single-value fallback
-    // No TMC configured → fall through to normal kVA rate
+    const globalTmcMatch = (globalTmcRates ?? []).find(r => r.kva === kva) // global TMC standard
+    if (globalTmcMatch) return globalTmcMatch.hrs
+    // No TMC rate entry → fall through to normal rate + tmc_hrs addition
   }
   // Priority: machine-specific rate → global rate → hrs_per_unit
   const machineMatch = (m.rates ?? []).find(r => r.kva === kva)
