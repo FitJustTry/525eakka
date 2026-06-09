@@ -191,46 +191,6 @@ export function scheduleFastest(
   }
 
   // ═══════════════════════════════════════════════════════════
-  //  PHASE 2.5 — Rescue idle machines with relaxed constraints
-  //
-  //  After Phase 2, machines that have no eligible orders under
-  //  the active constraints (e.g. Machine #14 with no laser/m4)
-  //  get a second chance: pull units from the most-overloaded
-  //  machine, relaxing wire-match first, then drill if still empty.
-  // ═══════════════════════════════════════════════════════════
-  const idleMachines = machines.filter(m => (machQueue.get(m.id)?.length ?? 0) === 0)
-  if (idleMachines.length > 0) {
-    // Most-overloaded donors first
-    const donors = [...machines]
-      .filter(m => (machQueue.get(m.id)?.length ?? 0) > 0)
-      .sort((a, b) => (machLoad.get(b.id) ?? 0) - (machLoad.get(a.id) ?? 0))
-
-    for (const idle of idleMachines) {
-      for (const donor of donors) {
-        const donorQ = machQueue.get(donor.id)!
-        // Units donor has that idle can cut — try relaxed wire first, then also relaxed drill
-        const transferable = donorQ.filter(u =>
-          canMachineCut(idle, u.order, products, false, requireDrill) ||
-          canMachineCut(idle, u.order, products, false, false)
-        )
-        if (!transferable.length) continue
-        // Pull units until idle load reaches half of donor's current load
-        const targetLoad = (machLoad.get(donor.id) ?? 0) / 2
-        for (const u of transferable) {
-          if ((machLoad.get(idle.id) ?? 0) >= targetLoad) break
-          const idx = donorQ.indexOf(u)
-          if (idx < 0) continue
-          donorQ.splice(idx, 1)
-          machLoad.set(donor.id, (machLoad.get(donor.id) ?? 0) - uHrs(donor, u))
-          machQueue.get(idle.id)!.push(u)
-          machLoad.set(idle.id, (machLoad.get(idle.id) ?? 0) + uHrs(idle, u))
-        }
-        if ((machQueue.get(idle.id)?.length ?? 0) > 0) break  // idle now has work, next idle
-      }
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════
   //  PHASE 3 — Simulate each machine's pre-assigned queue
   //
   //  No claiming, no pool competition — each machine just runs
