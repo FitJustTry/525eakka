@@ -43,10 +43,25 @@ export function assignOrders(
   const kvaOf = (o: Order) => o.kva ?? products[o.product ?? '']?.kva ?? 0
   const el = (o: Order) => machines.filter(m => canMachineCut(m, o, products, strictWire, requireDrill))
 
-  // Sort: exclusive orders first, then LPT (largest wall contribution first)
+  // Exclusive load per machine — hours only that machine can handle
+  const machExcl = new Map<number, number>()
+  machines.forEach(m => machExcl.set(m.id, 0))
+  for (const o of dayOrders) {
+    const oe = el(o)
+    if (oe.length === 1) {
+      const h = o.qty * getHrsForKva(oe[0], kvaOf(o), globalRates, o.item_code, globalTmcRates)
+      machExcl.set(oe[0].id, (machExcl.get(oe[0].id) ?? 0) + h)
+    }
+  }
+  // Sort: exclusive-first, then pressure-tiebreak within same tier, then LPT.
+  // Pressure = max exclusive load on any eligible machine. High-pressure groups go first
+  // so their shared machines fill up before flexible groups compete for them.
   const sorted = [...dayOrders].sort((a, b) => {
     const ae = el(a), be = el(b)
     if (ae.length !== be.length) return ae.length - be.length
+    const ap = ae.length ? Math.max(...ae.map(m => machExcl.get(m.id) ?? 0)) : 0
+    const bp = be.length ? Math.max(...be.map(m => machExcl.get(m.id) ?? 0)) : 0
+    if (Math.abs(bp - ap) > 0.001) return bp - ap
     return b.qty * (be[0]?.hrs_per_unit ?? 1) - a.qty * (ae[0]?.hrs_per_unit ?? 1)
   })
 
@@ -126,6 +141,28 @@ export function scheduleFastest(
     machines.find(m => canMachineCut(m, u.order, products, strictWire, requireDrill)) ?? machines[0]
   pool.sort((a, b) => uHrs(refMach(b), b) - uHrs(refMach(a), a))
 
+  // Exclusive-pressure map: total hours of work only each machine can do.
+  // Units competing for a machine with high exclusive load are assigned before
+  // units with a less-constrained eligible set — prevents flexible units from
+  // grabbing a bottleneck machine before its exclusive load is visible in wall time.
+  const machExclusive = new Map<number, number>()
+  machines.forEach(m => machExclusive.set(m.id, 0))
+  for (const u of pool) {
+    const uel = machines.filter(m => canMachineCut(m, u.order, products, strictWire, requireDrill))
+    if (uel.length === 1)
+      machExclusive.set(uel[0].id, (machExclusive.get(uel[0].id) ?? 0) + uHrs(uel[0], u))
+  }
+  // Re-sort pool: exclusive-first, pressure DESC, then LPT (used by split mode)
+  pool.sort((a, b) => {
+    const ae = machines.filter(m => canMachineCut(m, a.order, products, strictWire, requireDrill))
+    const be = machines.filter(m => canMachineCut(m, b.order, products, strictWire, requireDrill))
+    if (ae.length !== be.length) return ae.length - be.length
+    const ap = ae.length ? Math.max(...ae.map(m => machExclusive.get(m.id) ?? 0)) : 0
+    const bp = be.length ? Math.max(...be.map(m => machExclusive.get(m.id) ?? 0)) : 0
+    if (Math.abs(bp - ap) > 0.001) return bp - ap
+    return uHrs(refMach(b), b) - uHrs(refMach(a), a)
+  })
+
   // ═══════════════════════════════════════════════════════════
   //  PHASE 2 — Pre-assign every unit to a machine globally
   //
@@ -154,9 +191,12 @@ export function scheduleFastest(
 
     const sortedOrders = [...weekOrders].sort((a, b) => {
       const ae = ordEl(a), be = ordEl(b)
-      if (ae.length !== be.length) return ae.length - be.length   // fewest-eligible (exclusive) first
+      if (ae.length !== be.length) return ae.length - be.length
+      const ap = ae.length ? Math.max(...ae.map(m => machExclusive.get(m.id) ?? 0)) : 0
+      const bp = be.length ? Math.max(...be.map(m => machExclusive.get(m.id) ?? 0)) : 0
+      if (Math.abs(bp - ap) > 0.001) return bp - ap
       const ra = ae[0] ?? machines[0], rb = be[0] ?? machines[0]
-      return ordHrs(rb, b) - ordHrs(ra, a)                        // then largest total hours first
+      return ordHrs(rb, b) - ordHrs(ra, a)
     })
 
     for (const o of sortedOrders) {
