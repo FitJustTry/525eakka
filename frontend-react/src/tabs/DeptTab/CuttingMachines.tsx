@@ -767,7 +767,19 @@ export default function CuttingMachines() {
       {/* ── Weekly plan ──────────────────────────────────── */}
       <div className={styles.card}>
         <div className={styles.cardHeader}>
-          <span className={styles.sectionTitle}>แผนการตัดโลหะ — สัปดาห์</span>
+          <span className={styles.sectionTitle} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            แผนการตัดโลหะ — สัปดาห์
+            {totalQtyWeek > 0 && (
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt2)' }}>
+                {totalQtyWeek} ตัว
+                {weekCarryOrders.length > 0 && (
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--amber)', marginLeft: 4 }}>
+                    (⏭ {weekCarryOrders.reduce((s,o)=>s+o.qty,0)} ค้าง)
+                  </span>
+                )}
+              </span>
+            )}
+          </span>
           {(() => {
             const otPol = balanceMode.endsWith('_no_ot') ? 'no_ot' : balanceMode.endsWith('_smart') ? 'smart' : 'full'
             const schedKey = balanceMode.replace(/_(?:no_ot|smart|full)$/, '')
