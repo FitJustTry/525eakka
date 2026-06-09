@@ -1594,15 +1594,21 @@ export default function CuttingMachines() {
 
       {/* ── Config table ──────────────────────────────────── */}
       <div className={styles.card}>
-        <div className={styles.cardHeader} style={{ cursor: 'pointer' }} onClick={() => setMachineTableOpen(v => !v)}>
-          <span className={styles.sectionTitle}>
-            {machineTableOpen ? '▾' : '▸'} เครื่องตัดโลหะ — Metal Cutting Machines
-            {!machineTableOpen && machines.length > 0 && (
-              <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--txt3)', marginLeft: 10 }}>
-                {machines.map(m => `${mLabel(m)} (${m.min_kva}–${m.max_kva >= 9999 ? '∞' : m.max_kva}kVA)`).join(' · ')}
+        <div style={{ cursor: 'pointer', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, padding: '10px 14px', flexWrap: 'wrap' }} onClick={() => setMachineTableOpen(v => !v)}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+            <span className={styles.sectionTitle} style={{ whiteSpace: 'nowrap' }}>
+              {machineTableOpen ? '▾' : '▸'} เครื่องตัดโลหะ
+            </span>
+            {!machineTableOpen && machines.map(m => (
+              <span key={m.id} style={{
+                fontSize: 11, padding: '2px 8px', borderRadius: 10,
+                background: 'var(--bg3)', border: '1px solid var(--bord2)',
+                color: 'var(--txt2)', whiteSpace: 'nowrap',
+              }}>
+                {mLabel(m)}
               </span>
-            )}
-          </span>
+            ))}
+          </div>
           <button className={styles.btn} onClick={e => { e.stopPropagation(); handleAdd() }}>+ เพิ่มเครื่อง</button>
         </div>
 
