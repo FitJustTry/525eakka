@@ -145,21 +145,30 @@ export default function CuttingMachines() {
     | 'deadline_full' | 'priority_full' | 'interweek_full' | 'batch_full'
   const [balanceMode, setBalanceMode] = useState<BalanceMode>('weekly_no_ot')
   const [viewMode, setViewMode] = useState<'table' | 'cards' | 'pipeline'>('cards')
-  const [globalRates, setGlobalRates] = useState<CuttingRate[]>([])
-  const [machineRateTab, setMachineRateTab] = useState<number | null>(null) // selected machine id for per-machine rates panel
-  const [machineTmcTab, setMachineTmcTab]   = useState<number | null>(null) // selected machine id for per-machine TMC rates panel
+  const [globalRates, setGlobalRates]       = useState<CuttingRate[]>([])
+  const [globalTmcRates, setGlobalTmcRates] = useState<CuttingRate[]>([])
+  const [globalRateSubTab, setGlobalRateSubTab] = useState<'cut' | 'tmc'>('cut')
+  const [machineRateTab, setMachineRateTab]     = useState<number | null>(null)
+  const [machineRateSubTab, setMachineRateSubTab] = useState<'cut' | 'tmc'>('cut')
   const [strictWire,   setStrictWire]   = useState(true)
   const [requireDrill, setRequireDrill] = useState(true)
   const [stickyOrders, setStickyOrders] = useState(true)  // true = one machine owns all units of an order
   const [lazyOT, setLazyOT] = useState(true)             // true = defer OT to end of week; false = eager (fire from day 1)
+  const [machineTableOpen, setMachineTableOpen] = useState(false)
 
   useEffect(() => {
     fetch('/api/cutting-rates').then(r => r.json()).then(setGlobalRates).catch(() => {})
+    fetch('/api/cutting-tmc-rates').then(r => r.json()).then(setGlobalTmcRates).catch(() => {})
   }, [])
 
   async function saveGlobalRates(rates: CuttingRate[]) {
     setGlobalRates(rates)
     await fetch('/api/cutting-rates', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rates) })
+  }
+
+  async function saveGlobalTmcRates(rates: CuttingRate[]) {
+    setGlobalTmcRates(rates)
+    await fetch('/api/cutting-tmc-rates', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rates) })
   }
 
   async function saveMachineRates(machineId: number, rates: CuttingRate[]) {
@@ -220,7 +229,7 @@ export default function CuttingMachines() {
 
         work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
           const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-          const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code)
+          const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
           const status = w.isComplete ? '✓' : '→'
           const carry = w.isCarryOver ? '↩ ' : ''
           rows.push([
@@ -260,7 +269,7 @@ export default function CuttingMachines() {
         if (work.length === 0) return
         work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
           const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-          const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code)
+          const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
           planRows.push({ day, date, machine: mLabel(m), machOff: false, wallHrs: wall, ot: sched?.otHrs ?? 0, carryFwd: sched?.carriesForward ?? false, sapSo: w.order.sap_so ?? w.order.id, kva, qty: w.order.qty, customer: w.order.customer ?? '', rawMat: w.order.raw_mat ?? '', hrsWorked: w.hrsWorked, totalHrs, done: w.isComplete, carryOver: w.carriesOver, isCarryIn: w.isCarryOver })
         })
       })
@@ -287,7 +296,7 @@ export default function CuttingMachines() {
         lines.push(`  ${mLabel(m).padEnd(18)} ${wall.toFixed(1)}h${ot}${sched?.carriesForward ? ' →' : ''}`)
         work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
           const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-          const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code)
+          const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
           const pre = w.isCarryOver ? '↩ ' : '  '
           lines.push(`    ${pre}${(w.order.sap_so ?? '').padEnd(14)} ${String(kva.toLocaleString() + 'kVA×' + w.order.qty).padEnd(12)} ${w.hrsWorked.toFixed(1)}h/${total.toFixed(1)}h ${w.isComplete ? '✓' : '→'}  ${w.order.customer ?? ''}`)
         })
@@ -372,7 +381,7 @@ export default function CuttingMachines() {
         html += `<table><tr><td class="h">SAP SO</td><td class="h">kVA</td><td class="h">Qty</td><td class="h">ลูกค้า</td><td class="h">Raw Mat</td><td class="h">ชม.</td><td class="h">สถานะ</td></tr>`
         work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
           const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-          const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code)
+          const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
           const st = w.isComplete ? `<span class="done">✓</span>` : `<span class="carry">→</span>`
           const ci = w.isCarryOver ? '↩ ' : ''
           html += `<tr><td>${ci}${w.order.sap_so ?? ''}</td><td>${kva.toLocaleString()}</td><td>×${w.order.qty}</td><td>${w.order.customer ?? ''}</td><td>${w.order.raw_mat ?? ''}</td><td>${w.hrsWorked.toFixed(1)}/${total.toFixed(1)}h</td><td>${st}</td></tr>`
@@ -554,12 +563,12 @@ export default function CuttingMachines() {
     const prevDailyAsgn = prevDays.map(d => {
       const dStr = fmtISO(d); const dow = d.getDay()
       const active = machines.filter(m => isMachineOn(m, dow))
-      const asgn = assignOrders(prevOrders.filter(o => o.plan_date === dStr), active, products, globalRates, new Map(), new Map(machIdx))
+      const asgn = assignOrders(prevOrders.filter(o => o.plan_date === dStr), active, products, globalRates, new Map(), new Map(machIdx), false, false, globalTmcRates)
       return { dStr, asgn }
     })
     const prevApproach = balanceMode.startsWith('weekly') ? 'weekly' : 'daily'
     const prevOtPolicy = balanceMode.endsWith('_no_ot') ? 'none' : balanceMode.endsWith('_smart') ? 'smart' : 'full'
-    const prevSched = scheduleMode(prevOrders, prevDailyAsgn, machines, products, globalRates, wcConfig, prevDays, new Map(machIdx), prevApproach as 'daily'|'weekly', prevOtPolicy as 'none'|'smart'|'full')
+    const prevSched = scheduleMode(prevOrders, prevDailyAsgn, machines, products, globalRates, wcConfig, prevDays, new Map(machIdx), prevApproach as 'daily'|'weekly', prevOtPolicy as 'none'|'smart'|'full', 'plan_date', [], false, false, true, globalTmcRates)
     // Find orders that were NOT completed (still in machine queues at week end)
     const completedIds = new Set<string>()
     machines.forEach(m => {
@@ -591,20 +600,20 @@ export default function CuttingMachines() {
       // Daily mode: each day starts fresh (wall=0) — balance within each day
       // Weekly mode: carry forward cumulative wall — balance across the week
       const initWall = new Map<number, number>()  // all modes use fresh start per day (weekly approach handles order assignment differently)
-      const asgn = assignOrders(dayOrds, activeMachines, products, globalRates, initWall, new Map(machIdx), strictWire, requireDrill)
+      const asgn = assignOrders(dayOrds, activeMachines, products, globalRates, initWall, new Map(machIdx), strictWire, requireDrill, globalTmcRates)
       // Always accumulate for weekly mode reference
       activeMachines.forEach(m => {
         const mOrd = asgn.get(m.id) ?? []
         const w = mOrd.reduce((a, o) => {
           const kva = o.kva ?? products[o.product]?.kva ?? 0
-          return a + (o.qty * getHrsForKva(m, kva, globalRates, o.item_code)) / (m.count || 1)
+          return a + (o.qty * getHrsForKva(m, kva, globalRates, o.item_code, globalTmcRates)) / (m.count || 1)
         }, 0)
         cumWall.set(m.id, (cumWall.get(m.id) ?? 0) + w)
       })
       return { dStr, asgn }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [balanceMode, strictWire, requireDrill, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${+m.laser}${+m.m4}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(',')])
+  }, [balanceMode, strictWire, requireDrill, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${+m.laser}${+m.m4}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(',')])
 
 
 
@@ -612,9 +621,9 @@ export default function CuttingMachines() {
   const weekSchedule = useMemo(() => {
     // ── ❌ ไม่ OT ─────────────────────────────────────────────────
     const mi = new Map(machIdx)
-    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, ot === 'smart' ? lazyOT : true)
-    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, ot === 'smart' ? lazyOT : true)
-    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true)
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, ot === 'smart' ? lazyOT : true, globalTmcRates)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, ot === 'smart' ? lazyOT : true, globalTmcRates)
+    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates)
     const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
       daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
       deadline_no_ot: () => sm('none','deadline'), priority_no_ot: () => sm('none','priority'),
@@ -629,7 +638,7 @@ export default function CuttingMachines() {
     return (modeMap[balanceMode] ?? modeMap['weekly_no_ot'])()
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
+  [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
   /**
    * SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
@@ -755,12 +764,19 @@ export default function CuttingMachines() {
 
       {/* ── Config table ──────────────────────────────────── */}
       <div className={styles.card}>
-        <div className={styles.cardHeader}>
-          <span className={styles.sectionTitle}>เครื่องตัดโลหะ — Metal Cutting Machines</span>
-          <button className={styles.btn} onClick={handleAdd}>+ เพิ่มเครื่อง</button>
+        <div className={styles.cardHeader} style={{ cursor: 'pointer' }} onClick={() => setMachineTableOpen(v => !v)}>
+          <span className={styles.sectionTitle}>
+            {machineTableOpen ? '▾' : '▸'} เครื่องตัดโลหะ — Metal Cutting Machines
+            {!machineTableOpen && machines.length > 0 && (
+              <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--txt3)', marginLeft: 10 }}>
+                {machines.map(m => `${mLabel(m)} (${m.min_kva}–${m.max_kva >= 9999 ? '∞' : m.max_kva}kVA)`).join(' · ')}
+              </span>
+            )}
+          </span>
+          <button className={styles.btn} onClick={e => { e.stopPropagation(); handleAdd() }}>+ เพิ่มเครื่อง</button>
         </div>
 
-        {machines.length === 0 ? (
+        {!machineTableOpen ? null : machines.length === 0 ? (
           <p className={styles.empty}>ยังไม่มีเครื่องตัดโลหะ — กด "+ เพิ่มเครื่อง"</p>
         ) : (
           <div className={styles.tableWrap}>
@@ -962,70 +978,157 @@ export default function CuttingMachines() {
         )}
       </div>
 
-      {/* ── Global Cutting Rates ─────────────────────────── */}
+      {/* ── Global Cutting + TMC Rates ───────────────────── */}
       <div className={styles.card}>
         <div className={styles.cardHeader}>
-          <span className={styles.sectionTitle}>⏱ เวลาตัดโลหะตามขนาด (มาตรฐานทุกเครื่อง)</span>
-          <span style={{ fontSize: 10, color: 'var(--txt3)' }}>ใช้กับทุกเครื่องตัด — ถ้าไม่มีขนาดที่ตรงจะใช้ค่า h/ตัว จากตารางด้านบน</span>
+          <span className={styles.sectionTitle}>⏱ เวลาตัดโลหะ — มาตรฐาน</span>
+          <span style={{ fontSize: 10, color: 'var(--txt3)' }}>ใช้กับทุกเครื่อง · ไม่กำหนด = ใช้ค่า h/ตัว แทน</span>
         </div>
-        <div style={{ padding: '10px 16px' }}>
-          {/* Table header */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, fontSize: 10, fontWeight: 700, color: 'var(--txt3)' }}>
-            <span style={{ width: 90, textAlign: 'right' }}>ขนาด (kVA)</span>
-            <span style={{ width: 16 }} />
-            <span style={{ width: 80, textAlign: 'right' }}>เวลาตัด (h)</span>
-            <span style={{ width: 60 }} />
-          </div>
-          {globalRates.length === 0 && (
-            <div style={{ fontSize: 11, color: 'var(--txt3)', padding: '8px 0' }}>ยังไม่มีข้อมูล — ใช้ค่า h/ตัว ของแต่ละเครื่องแทน</div>
-          )}
-          {[...globalRates].sort((a, b) => a.kva - b.kva).map((r, ri) => (
-            <div key={ri} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-              <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
-                onChange={e => {
-                  const next = globalRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x)
-                  saveGlobalRates(next)
-                }}
-                style={{ width: 90, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--blue)', fontFamily: 'var(--mono)', fontWeight: 700, textAlign: 'right' }} />
-              <span style={{ fontSize: 11, color: 'var(--txt3)' }}>kVA →</span>
-              <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
-                onChange={e => {
-                  const next = globalRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x)
-                  saveGlobalRates(next)
-                }}
-                style={{ width: 80, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--amber)', fontFamily: 'var(--mono)', textAlign: 'right' }} />
-              <span style={{ fontSize: 11, color: 'var(--txt3)' }}>h/ตัว</span>
-              <button onClick={() => saveGlobalRates(globalRates.filter((_, i) => i !== ri))}
-                style={{ fontSize: 13, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--red)', padding: '0 4px' }}>✕</button>
-            </div>
-          ))}
-          <button onClick={() => saveGlobalRates([...globalRates, { kva: 0, hrs: 2.5 }])}
-            style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(137,180,250,.3)', background: 'rgba(137,180,250,.08)', color: 'var(--blue)', cursor: 'pointer', marginTop: 4 }}>
-            + เพิ่มขนาด
+        {/* Global sub-tabs */}
+        <div style={{ display: 'flex', gap: 4, padding: '8px 14px', borderBottom: '1px solid var(--bord)' }}>
+          <button onClick={() => setGlobalRateSubTab('cut')}
+            style={{ fontSize: 11, padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: globalRateSubTab === 'cut' ? 700 : 400,
+              border: `1px solid ${globalRateSubTab === 'cut' ? 'var(--blue)' : 'var(--bord2)'}`,
+              background: globalRateSubTab === 'cut' ? 'rgba(137,180,250,.15)' : 'transparent',
+              color: globalRateSubTab === 'cut' ? 'var(--blue)' : 'var(--txt3)' }}>
+            ✂ เวลาตัด{globalRates.length > 0 ? ` (${globalRates.length})` : ''}
+          </button>
+          <button onClick={() => setGlobalRateSubTab('tmc')}
+            style={{ fontSize: 11, padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: globalRateSubTab === 'tmc' ? 700 : 400,
+              border: `1px solid ${globalRateSubTab === 'tmc' ? 'var(--purple)' : 'var(--bord2)'}`,
+              background: globalRateSubTab === 'tmc' ? 'rgba(203,166,247,.15)' : 'transparent',
+              color: globalRateSubTab === 'tmc' ? 'var(--purple)' : 'var(--txt3)' }}>
+            ⚗ TMC Cast Resin{globalTmcRates.length > 0 ? ` (${globalTmcRates.length})` : ''}
           </button>
         </div>
+
+        {globalRateSubTab === 'cut' ? (
+          <>
+            <div className={styles.tableWrap}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'right', width: 110 }}>ขนาด (kVA)</th>
+                    <th style={{ textAlign: 'right', width: 110 }}>เวลาตัด (h)</th>
+                    <th style={{ width: 40 }} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {globalRates.length === 0 && (
+                    <tr><td colSpan={3} className={styles.empty}>ยังไม่มีข้อมูล — ใช้ค่า h/ตัว ของแต่ละเครื่องแทน</td></tr>
+                  )}
+                  {[...globalRates].sort((a, b) => a.kva - b.kva).map((r, ri) => (
+                    <tr key={ri}>
+                      <td style={{ textAlign: 'right' }}>
+                        <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
+                          onChange={e => saveGlobalRates(globalRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
+                          className={styles.inputNum} style={{ width: 80, color: 'var(--blue)', fontWeight: 700 }} />
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
+                          onChange={e => saveGlobalRates(globalRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
+                          className={styles.inputNum} style={{ width: 80, color: 'var(--amber)' }} />
+                      </td>
+                      <td>
+                        <button className={styles.delBtn} onClick={() => saveGlobalRates(globalRates.filter((_, i) => i !== ri))}>✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ padding: '8px 14px' }}>
+              <button className={styles.btnGhost} onClick={() => saveGlobalRates([...globalRates, { kva: 0, hrs: 2.5 }])}>+ เพิ่มขนาด</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 10, color: 'var(--txt3)', padding: '6px 14px 0' }}>
+              ใช้เมื่อ B=4 (Cast Resin) · ลำดับ: รายเครื่อง → มาตรฐาน → TMC (h) ของเครื่อง
+            </div>
+            <div className={styles.tableWrap}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'right', width: 110 }}>ขนาด (kVA)</th>
+                    <th style={{ textAlign: 'right', width: 110, color: 'var(--purple)' }}>TMC (h)</th>
+                    <th style={{ width: 40 }} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {globalTmcRates.length === 0 && (
+                    <tr><td colSpan={3} className={styles.empty}>ยังไม่มีข้อมูล — ใช้ค่า TMC (h) ของแต่ละเครื่องแทน</td></tr>
+                  )}
+                  {[...globalTmcRates].sort((a, b) => a.kva - b.kva).map((r, ri) => (
+                    <tr key={ri}>
+                      <td style={{ textAlign: 'right' }}>
+                        <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
+                          onChange={e => saveGlobalTmcRates(globalTmcRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
+                          className={styles.inputNum} style={{ width: 80, color: 'var(--blue)', fontWeight: 700 }} />
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
+                          onChange={e => saveGlobalTmcRates(globalTmcRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
+                          className={styles.inputNum} style={{ width: 80, color: 'var(--purple)' }} />
+                      </td>
+                      <td>
+                        <button className={styles.delBtn} onClick={() => saveGlobalTmcRates(globalTmcRates.filter((_, i) => i !== ri))}>✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '8px 14px' }}>
+              <button className={styles.btnGhost} onClick={() => saveGlobalTmcRates([...globalTmcRates, { kva: 0, hrs: 2.4 }])} style={{ color: 'var(--purple)', borderColor: 'rgba(203,166,247,.4)' }}>
+                + เพิ่มขนาด TMC
+              </button>
+              <button className={styles.btnGhost}
+                title="เติม 23 ขนาดมาตรฐาน Cast Resin"
+                onClick={() => {
+                  const existingKvas = new Set(globalTmcRates.map(r => r.kva))
+                  const newRates = [...globalTmcRates, ...CR_STANDARD_SIZES.filter(kva => !existingKvas.has(kva)).map(kva => ({ kva, hrs: 2.4 }))].sort((a, b) => a.kva - b.kva)
+                  saveGlobalTmcRates(newRates)
+                }}
+                style={{ color: 'var(--green)', borderColor: 'rgba(166,227,161,.4)' }}>
+                📋 เติม {CR_STANDARD_SIZES.length} ขนาดมาตรฐาน
+              </button>
+              {globalTmcRates.length > 0 && (
+                <button className={styles.btnGhost} onClick={() => saveGlobalTmcRates([])} style={{ color: 'var(--red)', borderColor: 'rgba(224,90,78,.3)' }}>
+                  ล้างทั้งหมด
+                </button>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
-      {/* ── Per-Machine Rates ───────────────────────────── */}
+      {/* ── Per-Machine Rates + TMC (consolidated) ──────── */}
       <div className={styles.card}>
         <div className={styles.cardHeader}>
-          <span className={styles.sectionTitle}>⏱ เวลาตัดโลหะตามขนาด (รายเครื่อง)</span>
-          <span style={{ fontSize: 10, color: 'var(--txt3)' }}>กำหนดเวลาเฉพาะแต่ละเครื่อง — จะใช้แทนค่ามาตรฐาน · ไม่ได้กำหนด = ใช้ค่ามาตรฐาน</span>
+          <span className={styles.sectionTitle}>⏱ เวลาตัดโลหะ — รายเครื่อง</span>
+          <span style={{ fontSize: 10, color: 'var(--txt3)' }}>กำหนดเฉพาะเครื่อง · รวมทั้งเวลาตัดและ TMC (Cast Resin) · ไม่กำหนด = ใช้ค่ามาตรฐาน</span>
         </div>
-        <div style={{ padding: '10px 16px' }}>
+        <div style={{ padding: '10px 14px' }}>
           {/* Machine tabs */}
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
             {machines.map(m => {
-              const hasCustRates = (m.rates ?? []).length > 0
+              const hasCut = (m.rates ?? []).length > 0
+              const hasTmc = (m.tmc_rates ?? []).length > 0
+              const hasAny = hasCut || hasTmc
               const isActive = machineRateTab === m.id
               return (
-                <button key={m.id} onClick={() => setMachineRateTab(isActive ? null : m.id)}
+                <button key={m.id}
+                  onClick={() => { setMachineRateTab(isActive ? null : m.id); if (!isActive) setMachineRateSubTab('cut') }}
                   style={{ fontSize: 11, padding: '4px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: isActive ? 700 : 400,
-                    border: `1px solid ${isActive ? 'var(--blue)' : hasCustRates ? 'rgba(166,227,161,.5)' : 'var(--bord2)'}`,
-                    background: isActive ? 'rgba(137,180,250,.15)' : hasCustRates ? 'rgba(166,227,161,.08)' : 'var(--bg3)',
-                    color: isActive ? 'var(--blue)' : hasCustRates ? 'var(--green)' : 'var(--txt3)',
+                    border: `1px solid ${isActive ? 'var(--blue)' : hasAny ? 'rgba(166,227,161,.5)' : 'var(--bord2)'}`,
+                    background: isActive ? 'rgba(137,180,250,.15)' : hasAny ? 'rgba(166,227,161,.08)' : 'var(--bg3)',
+                    color: isActive ? 'var(--blue)' : hasAny ? 'var(--green)' : 'var(--txt3)',
                   }}>
-                  {mLabel(m)}{hasCustRates ? ` (${(m.rates ?? []).length})` : ''}
+                  {mLabel(m)}
+                  {hasAny && <span style={{ fontSize: 9, marginLeft: 5, opacity: 0.8 }}>
+                    {[hasCut && `✂${(m.rates ?? []).length}`, hasTmc && `T${(m.tmc_rates ?? []).length}`].filter(Boolean).join(' ')}
+                  </span>}
                 </button>
               )
             })}
@@ -1034,235 +1137,161 @@ export default function CuttingMachines() {
           {machineRateTab !== null && (() => {
             const m = machines.find(x => x.id === machineRateTab)
             if (!m) return null
-            const mRates = [...(m.rates ?? [])].sort((a, b) => a.kva - b.kva)
-            return (
-              <div>
-                {/* TMC + multiplier summary for this machine */}
-                <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 12, padding: '8px 12px', background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bord)' }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt)' }}>{mLabel(m)}</span>
-                  <span style={{ fontSize: 10, color: 'var(--txt3)' }}>สูตร:</span>
-                  <code style={{ fontSize: 11, color: 'var(--amber)', background: 'var(--bg3)', padding: '2px 8px', borderRadius: 4 }}>
-                    final = base × {m.time_mul ?? 1} + {m.tmc_hrs ?? 0}h TMC
-                  </code>
-                  <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 4 }}>แก้ไข ×Rate และ TMC ได้ในตารางเครื่องด้านบน</span>
-                </div>
-
-                {/* Rate table header */}
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, fontSize: 10, fontWeight: 700, color: 'var(--txt3)' }}>
-                  <span style={{ width: 90, textAlign: 'right' }}>ขนาด (kVA)</span>
-                  <span style={{ width: 16 }} />
-                  <span style={{ width: 80, textAlign: 'right' }}>เวลาตัด (h)</span>
-                  <span style={{ width: 80, textAlign: 'right', color: 'var(--purple)' }}>รวม TMC</span>
-                  <span style={{ width: 60 }} />
-                </div>
-
-                {mRates.length === 0 && (
-                  <div style={{ fontSize: 11, color: 'var(--txt3)', padding: '6px 0' }}>ยังไม่มีค่าเฉพาะ — ใช้ค่ามาตรฐาน (ตารางด้านบน)</div>
-                )}
-
-                {mRates.map((r, ri) => {
-                  const finalHrs = r.hrs * (m.time_mul ?? 1) + (m.tmc_hrs ?? 0)
-                  return (
-                    <div key={ri} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-                      <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
-                        onChange={e => saveMachineRates(m.id, mRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
-                        style={{ width: 90, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--blue)', fontFamily: 'var(--mono)', fontWeight: 700, textAlign: 'right' }} />
-                      <span style={{ fontSize: 11, color: 'var(--txt3)' }}>kVA →</span>
-                      <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
-                        onChange={e => saveMachineRates(m.id, mRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
-                        style={{ width: 80, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--amber)', fontFamily: 'var(--mono)', textAlign: 'right' }} />
-                      <span style={{ width: 80, textAlign: 'right', fontSize: 12, fontFamily: 'var(--mono)', color: 'var(--purple)', fontWeight: 600 }}>
-                        = {finalHrs.toFixed(2)}h
-                      </span>
-                      <button onClick={() => saveMachineRates(m.id, mRates.filter((_, i) => i !== ri))}
-                        style={{ fontSize: 13, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--red)', padding: '0 4px' }}>✕</button>
-                    </div>
-                  )
-                })}
-
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-                  <button onClick={() => saveMachineRates(m.id, [...mRates, { kva: 0, hrs: m.hrs_per_unit }])}
-                    style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(137,180,250,.3)', background: 'rgba(137,180,250,.08)', color: 'var(--blue)', cursor: 'pointer' }}>
-                    + เพิ่มขนาด
-                  </button>
-                  {globalRates.length > 0 && (
-                    <button
-                      title="Copy all standard rates as starting point — then edit values you want to change"
-                      onClick={() => {
-                        // Merge: keep existing machine rates, add any global kVA not yet in machine rates
-                        const existingKvas = new Set(mRates.map(r => r.kva))
-                        const newRates = [
-                          ...mRates,
-                          ...globalRates.filter(r => !existingKvas.has(r.kva)).map(r => ({ kva: r.kva, hrs: r.hrs }))
-                        ].sort((a, b) => a.kva - b.kva)
-                        saveMachineRates(m.id, newRates)
-                      }}
-                      style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(166,227,161,.4)', background: 'rgba(166,227,161,.08)', color: 'var(--green)', cursor: 'pointer' }}>
-                      📋 คัดลอกจากมาตรฐาน ({globalRates.length} ขนาด)
-                    </button>
-                  )}
-                  {mRates.length > 0 && (
-                    <button onClick={() => saveMachineRates(m.id, [])}
-                      style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(224,90,78,.3)', background: 'none', color: 'var(--red)', cursor: 'pointer' }}>
-                      ล้างค่าเฉพาะ (กลับไปใช้มาตรฐาน)
-                    </button>
-                  )}
-                </div>
-
-                {/* ── TMC Rate Table ─────────────────────────────── */}
-                <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px dashed var(--bord)' }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--purple)', marginBottom: 6 }}>
-                    ⏱ TMC ตามขนาด (Cast Resin)
-                    <span style={{ fontSize: 9, fontWeight: 400, color: 'var(--txt3)', marginLeft: 8 }}>ใช้เมื่อ B=4 — แทนค่า TMC (h) เดิม · ไม่ได้กำหนด = ใช้ค่า TMC (h) จากตาราง</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, fontSize: 10, fontWeight: 700, color: 'var(--txt3)' }}>
-                    <span style={{ width: 90, textAlign: 'right' }}>ขนาด (kVA)</span>
-                    <span style={{ width: 16 }} />
-                    <span style={{ width: 80, textAlign: 'right' }}>TMC (h)</span>
-                    <span style={{ width: 60 }} />
-                  </div>
-                  {(m.tmc_rates ?? []).length === 0 && (
-                    <div style={{ fontSize: 11, color: 'var(--txt3)', paddingBottom: 6 }}>ยังไม่มี — ใช้ค่า TMC (h) = {m.tmc_hrs ?? 0}h สำหรับทุกขนาด</div>
-                  )}
-                  {[...(m.tmc_rates ?? [])].sort((a, b) => a.kva - b.kva).map((r, ri) => (
-                    <div key={ri} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-                      <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
-                        onChange={e => saveMachineTmcRates(m.id, (m.tmc_rates ?? []).map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
-                        style={{ width: 90, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--blue)', fontFamily: 'var(--mono)', fontWeight: 700, textAlign: 'right' }} />
-                      <span style={{ fontSize: 11, color: 'var(--txt3)' }}>kVA →</span>
-                      <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
-                        onChange={e => saveMachineTmcRates(m.id, (m.tmc_rates ?? []).map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
-                        style={{ width: 80, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--purple)', fontFamily: 'var(--mono)', textAlign: 'right' }} />
-                      <span style={{ fontSize: 11, color: 'var(--txt3)' }}>h TMC</span>
-                      <button onClick={() => saveMachineTmcRates(m.id, (m.tmc_rates ?? []).filter((_, i) => i !== ri))}
-                        style={{ fontSize: 13, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--red)', padding: '0 4px' }}>✕</button>
-                    </div>
-                  ))}
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
-                    <button onClick={() => saveMachineTmcRates(m.id, [...(m.tmc_rates ?? []), { kva: 0, hrs: m.tmc_hrs ?? 0 }])}
-                      style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(203,166,247,.4)', background: 'rgba(203,166,247,.08)', color: 'var(--purple)', cursor: 'pointer' }}>
-                      + เพิ่มขนาด TMC
-                    </button>
-                    <button
-                      title="เติม 23 ขนาดมาตรฐาน Cast Resin — ขนาดที่มีอยู่แล้วจะไม่ถูกเขียนทับ"
-                      onClick={() => {
-                        const existingKvas = new Set((m.tmc_rates ?? []).map((r: { kva: number }) => r.kva))
-                        const newRates = [
-                          ...(m.tmc_rates ?? []),
-                          ...CR_STANDARD_SIZES.filter(kva => !existingKvas.has(kva)).map(kva => ({ kva, hrs: m.tmc_hrs ?? 0 }))
-                        ].sort((a: { kva: number }, b: { kva: number }) => a.kva - b.kva)
-                        saveMachineTmcRates(m.id, newRates)
-                      }}
-                      style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(166,227,161,.4)', background: 'rgba(166,227,161,.08)', color: 'var(--green)', cursor: 'pointer' }}>
-                      📋 คัดลอกจากมาตรฐาน ({CR_STANDARD_SIZES.length} ขนาด)
-                    </button>
-                    {(m.tmc_rates ?? []).length > 0 && (
-                      <button onClick={() => saveMachineTmcRates(m.id, [])}
-                        style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(224,90,78,.3)', background: 'none', color: 'var(--red)', cursor: 'pointer' }}>
-                        ล้าง TMC ตารางนี้
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )
-          })()}
-        </div>
-      </div>
-
-      {/* ── Per-Machine TMC Rates ────────────────────────── */}
-      <div className={styles.card}>
-        <div className={styles.cardHeader}>
-          <span className={styles.sectionTitle}>⏱ TMC ตามขนาด (รายเครื่อง)</span>
-          <span style={{ fontSize: 10, color: 'var(--txt3)' }}>เวลาตัด Cast Resin (B=4) ตามขนาด kVA — ถ้าไม่กำหนด ใช้ค่า TMC (h) จากตารางเครื่อง</span>
-        </div>
-        <div style={{ padding: '10px 16px' }}>
-          {/* Machine tabs */}
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-            {machines.map(m => {
-              const hasTmcRates = (m.tmc_rates ?? []).length > 0
-              const isActive = machineTmcTab === m.id
-              return (
-                <button key={m.id} onClick={() => setMachineTmcTab(isActive ? null : m.id)}
-                  style={{ fontSize: 11, padding: '4px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: isActive ? 700 : 400,
-                    border: `1px solid ${isActive ? 'var(--purple)' : hasTmcRates ? 'rgba(203,166,247,.5)' : 'var(--bord2)'}`,
-                    background: isActive ? 'rgba(203,166,247,.15)' : hasTmcRates ? 'rgba(203,166,247,.08)' : 'var(--bg3)',
-                    color: isActive ? 'var(--purple)' : hasTmcRates ? 'var(--purple)' : 'var(--txt3)',
-                  }}>
-                  {mLabel(m)}{hasTmcRates ? ` (${(m.tmc_rates ?? []).length})` : ''}
-                </button>
-              )
-            })}
-          </div>
-
-          {machineTmcTab !== null && (() => {
-            const m = machines.find(x => x.id === machineTmcTab)
-            if (!m) return null
+            const mRates  = [...(m.rates ?? [])].sort((a, b) => a.kva - b.kva)
             const tmcRates = [...(m.tmc_rates ?? [])].sort((a, b) => a.kva - b.kva)
+            const isCut = machineRateSubTab === 'cut'
             return (
               <div>
                 {/* Machine info */}
-                <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 12, padding: '8px 12px', background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bord)' }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt)' }}>{mLabel(m)}</span>
-                  <span style={{ fontSize: 10, color: 'var(--txt3)' }}>TMC fallback:</span>
-                  <code style={{ fontSize: 11, color: 'var(--purple)', background: 'var(--bg3)', padding: '2px 8px', borderRadius: 4 }}>
-                    {(m.tmc_hrs ?? 0) > 0 ? `${m.tmc_hrs}h` : 'ไม่ได้ตั้ง (ใช้ kVA rate)'}
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, padding: '7px 12px', background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bord)', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--txt)' }}>{mLabel(m)}</span>
+                  <code style={{ fontSize: 11, color: 'var(--amber)', background: 'var(--bg3)', padding: '2px 8px', borderRadius: 4 }}>
+                    เวลา = base × {m.time_mul ?? 1} + {m.tmc_hrs ?? 0}h TMC
                   </code>
-                  <span style={{ fontSize: 9, color: 'var(--txt3)' }}>แก้ไข TMC (h) ได้ในตารางเครื่องด้านบน</span>
+                  <span style={{ fontSize: 9, color: 'var(--txt3)' }}>แก้ไข ×Rate / TMC ได้ในตารางเครื่องด้านบน</span>
                 </div>
 
-                {/* Table header */}
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, fontSize: 10, fontWeight: 700, color: 'var(--txt3)' }}>
-                  <span style={{ width: 90, textAlign: 'right' }}>ขนาด (kVA)</span>
-                  <span style={{ width: 16 }} />
-                  <span style={{ width: 80, textAlign: 'right' }}>TMC (h)</span>
-                  <span style={{ width: 60 }} />
+                {/* Sub-tabs */}
+                <div style={{ display: 'flex', gap: 4, marginBottom: 10, paddingBottom: 8, borderBottom: '1px solid var(--bord)' }}>
+                  <button onClick={() => setMachineRateSubTab('cut')}
+                    style={{ fontSize: 11, padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: isCut ? 700 : 400,
+                      border: `1px solid ${isCut ? 'var(--blue)' : 'var(--bord2)'}`,
+                      background: isCut ? 'rgba(137,180,250,.15)' : 'transparent',
+                      color: isCut ? 'var(--blue)' : 'var(--txt3)' }}>
+                    ✂ เวลาตัด{mRates.length > 0 ? ` (${mRates.length})` : ''}
+                  </button>
+                  <button onClick={() => setMachineRateSubTab('tmc')}
+                    style={{ fontSize: 11, padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: !isCut ? 700 : 400,
+                      border: `1px solid ${!isCut ? 'var(--purple)' : 'var(--bord2)'}`,
+                      background: !isCut ? 'rgba(203,166,247,.15)' : 'transparent',
+                      color: !isCut ? 'var(--purple)' : 'var(--txt3)' }}>
+                    ⚗ TMC Cast Resin{tmcRates.length > 0 ? ` (${tmcRates.length})` : ''}
+                  </button>
                 </div>
 
-                {tmcRates.length === 0 && (
-                  <div style={{ fontSize: 11, color: 'var(--txt3)', padding: '6px 0' }}>ยังไม่มีค่าเฉพาะ — ใช้ TMC (h) = {m.tmc_hrs ?? 0}h สำหรับทุกขนาด</div>
-                )}
-
-                {tmcRates.map((r, ri) => (
-                  <div key={ri} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-                    <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
-                      onChange={e => saveMachineTmcRates(m.id, tmcRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
-                      style={{ width: 90, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--blue)', fontFamily: 'var(--mono)', fontWeight: 700, textAlign: 'right' }} />
-                    <span style={{ fontSize: 11, color: 'var(--txt3)' }}>kVA →</span>
-                    <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
-                      onChange={e => saveMachineTmcRates(m.id, tmcRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
-                      style={{ width: 80, fontSize: 12, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--bord2)', borderRadius: 6, color: 'var(--purple)', fontFamily: 'var(--mono)', textAlign: 'right' }} />
-                    <span style={{ fontSize: 11, color: 'var(--txt3)' }}>h TMC</span>
-                    <button onClick={() => saveMachineTmcRates(m.id, tmcRates.filter((_, i) => i !== ri))}
-                      style={{ fontSize: 13, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--red)', padding: '0 4px' }}>✕</button>
+                {isCut ? (
+                  <div>
+                    <div className={styles.tableWrap}>
+                      <table className={styles.table}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: 'right', width: 110 }}>ขนาด (kVA)</th>
+                            <th style={{ textAlign: 'right', width: 110 }}>เวลาตัด (h)</th>
+                            <th style={{ textAlign: 'right', width: 110, color: 'var(--purple)' }}>รวม TMC</th>
+                            <th style={{ width: 40 }} />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {mRates.length === 0 && (
+                            <tr><td colSpan={4} className={styles.empty}>ยังไม่มีค่าเฉพาะ — ใช้ค่ามาตรฐาน</td></tr>
+                          )}
+                          {mRates.map((r, ri) => {
+                            const finalHrs = r.hrs * (m.time_mul ?? 1) + (m.tmc_hrs ?? 0)
+                            return (
+                              <tr key={ri}>
+                                <td style={{ textAlign: 'right' }}>
+                                  <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
+                                    onChange={e => saveMachineRates(m.id, mRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
+                                    className={styles.inputNum} style={{ width: 80, color: 'var(--blue)', fontWeight: 700 }} />
+                                </td>
+                                <td style={{ textAlign: 'right' }}>
+                                  <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
+                                    onChange={e => saveMachineRates(m.id, mRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
+                                    className={styles.inputNum} style={{ width: 80, color: 'var(--amber)' }} />
+                                </td>
+                                <td style={{ textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--purple)', fontWeight: 600, fontSize: 12 }}>
+                                  = {finalHrs.toFixed(2)}h
+                                </td>
+                                <td>
+                                  <button className={styles.delBtn} onClick={() => saveMachineRates(m.id, mRates.filter((_, i) => i !== ri))}>✕</button>
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '8px 14px' }}>
+                      <button className={styles.btnGhost} onClick={() => saveMachineRates(m.id, [...mRates, { kva: 0, hrs: m.hrs_per_unit }])}>+ เพิ่มขนาด</button>
+                      {globalRates.length > 0 && (
+                        <button className={styles.btnGhost}
+                          title="คัดลอกค่ามาตรฐาน — ขนาดที่มีอยู่แล้วจะไม่ถูกเขียนทับ"
+                          onClick={() => {
+                            const existingKvas = new Set(mRates.map(r => r.kva))
+                            const newRates = [...mRates, ...globalRates.filter(r => !existingKvas.has(r.kva)).map(r => ({ kva: r.kva, hrs: r.hrs }))].sort((a, b) => a.kva - b.kva)
+                            saveMachineRates(m.id, newRates)
+                          }}
+                          style={{ color: 'var(--green)', borderColor: 'rgba(166,227,161,.5)' }}>
+                          📋 คัดลอกมาตรฐาน ({globalRates.length})
+                        </button>
+                      )}
+                      {mRates.length > 0 && (
+                        <button className={styles.btnGhost} onClick={() => saveMachineRates(m.id, [])} style={{ color: 'var(--red)', borderColor: 'rgba(224,90,78,.3)' }}>
+                          ล้างค่าเฉพาะ
+                        </button>
+                      )}
+                    </div>
                   </div>
-                ))}
-
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-                  <button onClick={() => saveMachineTmcRates(m.id, [...tmcRates, { kva: 0, hrs: m.tmc_hrs ?? 0 }])}
-                    style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(203,166,247,.4)', background: 'rgba(203,166,247,.08)', color: 'var(--purple)', cursor: 'pointer' }}>
-                    + เพิ่มขนาด
-                  </button>
-                  <button
-                    title="เติม 23 ขนาดมาตรฐาน Cast Resin — ขนาดที่มีอยู่แล้วจะไม่ถูกเขียนทับ"
-                    onClick={() => {
-                      const existingKvas = new Set(tmcRates.map(r => r.kva))
-                      const newRates = [
-                        ...tmcRates,
-                        ...CR_STANDARD_SIZES.filter(kva => !existingKvas.has(kva)).map(kva => ({ kva, hrs: m.tmc_hrs ?? 0 }))
-                      ].sort((a, b) => a.kva - b.kva)
-                      saveMachineTmcRates(m.id, newRates)
-                    }}
-                    style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(166,227,161,.4)', background: 'rgba(166,227,161,.08)', color: 'var(--green)', cursor: 'pointer' }}>
-                    📋 คัดลอกจากมาตรฐาน ({CR_STANDARD_SIZES.length} ขนาด)
-                  </button>
-                  {tmcRates.length > 0 && (
-                    <button onClick={() => saveMachineTmcRates(m.id, [])}
-                      style={{ fontSize: 11, padding: '5px 16px', borderRadius: 7, border: '1px solid rgba(224,90,78,.3)', background: 'none', color: 'var(--red)', cursor: 'pointer' }}>
-                      ล้างค่า TMC
-                    </button>
-                  )}
-                </div>
+                ) : (
+                  <div>
+                    <div style={{ fontSize: 10, color: 'var(--txt3)', marginBottom: 8 }}>
+                      ใช้เมื่อ B=4 (Cast Resin) · fallback: {(m.tmc_hrs ?? 0) > 0 ? `${m.tmc_hrs}h` : 'ไม่ได้ตั้ง'}
+                    </div>
+                    <div className={styles.tableWrap}>
+                      <table className={styles.table}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: 'right', width: 110 }}>ขนาด (kVA)</th>
+                            <th style={{ textAlign: 'right', width: 110, color: 'var(--purple)' }}>TMC (h)</th>
+                            <th style={{ width: 40 }} />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {tmcRates.length === 0 && (
+                            <tr><td colSpan={3} className={styles.empty}>ยังไม่มี — ใช้ TMC (h) = {m.tmc_hrs ?? 0}h สำหรับทุกขนาด</td></tr>
+                          )}
+                          {tmcRates.map((r, ri) => (
+                            <tr key={ri}>
+                              <td style={{ textAlign: 'right' }}>
+                                <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
+                                  onChange={e => saveMachineTmcRates(m.id, tmcRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
+                                  className={styles.inputNum} style={{ width: 80, color: 'var(--blue)', fontWeight: 700 }} />
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
+                                  onChange={e => saveMachineTmcRates(m.id, tmcRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
+                                  className={styles.inputNum} style={{ width: 80, color: 'var(--purple)' }} />
+                              </td>
+                              <td>
+                                <button className={styles.delBtn} onClick={() => saveMachineTmcRates(m.id, tmcRates.filter((_, i) => i !== ri))}>✕</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '8px 14px' }}>
+                      <button className={styles.btnGhost} onClick={() => saveMachineTmcRates(m.id, [...tmcRates, { kva: 0, hrs: m.tmc_hrs ?? 0 }])} style={{ color: 'var(--purple)', borderColor: 'rgba(203,166,247,.4)' }}>
+                        + เพิ่มขนาด TMC
+                      </button>
+                      <button className={styles.btnGhost}
+                        title="เติม 23 ขนาดมาตรฐาน Cast Resin — ขนาดที่มีอยู่แล้วจะไม่ถูกเขียนทับ"
+                        onClick={() => {
+                          const existingKvas = new Set(tmcRates.map(r => r.kva))
+                          const newRates = [...tmcRates, ...CR_STANDARD_SIZES.filter(kva => !existingKvas.has(kva)).map(kva => ({ kva, hrs: m.tmc_hrs ?? 0 }))].sort((a, b) => a.kva - b.kva)
+                          saveMachineTmcRates(m.id, newRates)
+                        }}
+                        style={{ color: 'var(--green)', borderColor: 'rgba(166,227,161,.4)' }}>
+                        📋 คัดลอกมาตรฐาน ({CR_STANDARD_SIZES.length})
+                      </button>
+                      {tmcRates.length > 0 && (
+                        <button className={styles.btnGhost} onClick={() => saveMachineTmcRates(m.id, [])} style={{ color: 'var(--red)', borderColor: 'rgba(224,90,78,.3)' }}>
+                          ล้าง TMC
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )
           })()}
@@ -1846,7 +1875,7 @@ export default function CuttingMachines() {
                                       const kvaCol = kva <= 400 ? 'var(--blue)' : kva <= 3500 ? 'var(--amber)' : 'var(--red)'
                                       const { typeCode: tc } = decodeItemInfo(w.order.item_code ?? '')
                                       const typeLabel = tc === '4' ? 'CR' : ['1','2','3'].includes(tc) ? 'Oil' : ''
-                                      const totalH = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code)
+                                      const totalH = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
                                       const wireType = detectWireType(w.order.raw_mat)
                                       const wireMatch = wireType === 'laser' ? m.laser : wireType === 'm4' ? m.m4 : true
                                       return (
