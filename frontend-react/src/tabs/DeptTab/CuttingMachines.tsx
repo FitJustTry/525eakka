@@ -1103,6 +1103,11 @@ export default function CuttingMachines() {
                   ↩ {prevCarryQty} ยกมาจากสัปดาห์ก่อน · แผนใหม่ {currentWeekOrders.reduce((s,o)=>s+o.qty,0)} ตัว
                 </span>
               )}
+              {weekData.weekCarryOrders.length > 0 && (
+                <span style={{ fontSize: 10, color: 'var(--amber)', fontWeight: 600, padding: '2px 8px', borderRadius: 10, background: 'rgba(249,226,175,.15)', border: '1px solid rgba(249,226,175,.3)' }}>
+                  ⏭ {weekData.weekCarryOrders.reduce((s,o)=>s+o.qty,0)} ตัวค้างหน้า
+                </span>
+              )}
               {totalOT > 0
                 ? <span className={styles.warn}>⚠ OT สูงสุด {totalOT.toFixed(1)}h/วัน</span>
                 : <span className={styles.ok}>✓ เสร็จในเวลาปกติทุกวัน</span>}
@@ -1458,6 +1463,12 @@ export default function CuttingMachines() {
                   {weekCarryOrders.length > 0 && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
                       {chip('⏭ ค้างสัปดาห์หน้า', weekCarryOrders.length, carryQty, 'var(--amber)')}
+                      <button
+                        title="ไปสัปดาห์หน้าพร้อมนำงานค้างเข้าแผน"
+                        onClick={() => { setWeekOffset(w => w + 1); setIncludePrevCarry(true) }}
+                        style={{ fontSize: 11, padding: '3px 12px', borderRadius: 8, border: '1px solid rgba(249,226,175,.5)', background: 'rgba(249,226,175,.15)', color: 'var(--amber)', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                        → ดูสัปดาห์หน้า + รวมงานค้าง
+                      </button>
                       {weekCarryOrders.map(orderRow)}
                     </div>
                   )}
