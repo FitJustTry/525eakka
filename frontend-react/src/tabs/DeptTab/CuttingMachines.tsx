@@ -137,7 +137,7 @@ export default function CuttingMachines() {
   const [weekOffset, setWeekOffset] = useState(0)
   const [includePrevCarry, setIncludePrevCarry] = useState(false)
   const [showWireData, setShowWireData] = useState(true)   // show Raw Mat / LV / HV in order cards
-  const [workDisplay, setWorkDisplay]   = useState<'order' | 'segment'>('order')
+  const [workDisplay, setWorkDisplay]   = useState<'order' | 'segment' | 'unit'>('order')
   const [planSaving, setPlanSaving] = useState(false)
   const [planSaveMsg, setPlanSaveMsg] = useState<string | null>(null)
   const [snapshots, setSnapshots] = useState<{ id: number; week_start: string; week_end: string; label: string; saved_at: string }[]>([])
@@ -513,10 +513,10 @@ export default function CuttingMachines() {
                       {v === 'cards' ? '📋 รายวัน' : v === 'table' ? '📊 ตาราง' : '🔄 Pipeline'}
                     </button>
                   ))}
-                  <button onClick={() => setWorkDisplay(d => d === 'order' ? 'segment' : 'order')}
-                    title={workDisplay === 'order' ? 'ต่อออเดอร์: รวม segment ของ order เดียวกัน — คลิกเพื่อแยก segment' : 'ต่อเซ็กเมนต์: แสดงทุก segment รวมค้าง — คลิกเพื่อรวมออเดอร์'}
-                    style={{ fontSize: 10, padding: '3px 10px', borderRadius: 12, border: `1px solid ${workDisplay === 'order' ? 'rgba(166,227,161,.5)' : 'rgba(250,179,135,.5)'}`, background: workDisplay === 'order' ? 'rgba(166,227,161,.15)' : 'rgba(250,179,135,.1)', color: workDisplay === 'order' ? 'var(--green)' : 'var(--amber)', cursor: 'pointer', fontWeight: 700 }}>
-                    {workDisplay === 'order' ? '📦 ต่อออเดอร์' : '📋 ต่อเซ็กเมนต์'}
+                  <button onClick={() => setWorkDisplay(d => d === 'order' ? 'segment' : d === 'segment' ? 'unit' : 'order')}
+                    title={workDisplay === 'order' ? 'ต่อออเดอร์: รวม segment ของ order เดียวกัน' : workDisplay === 'segment' ? 'ต่อเซ็กเมนต์: แสดงทุก segment รวมค้าง' : 'ต่อหน่วย: แต่ละ transformer แยกแถว (ขยาย qty)'}
+                    style={{ fontSize: 10, padding: '3px 10px', borderRadius: 12, border: `1px solid ${workDisplay === 'order' ? 'rgba(166,227,161,.5)' : workDisplay === 'segment' ? 'rgba(250,179,135,.5)' : 'rgba(203,166,247,.5)'}`, background: workDisplay === 'order' ? 'rgba(166,227,161,.15)' : workDisplay === 'segment' ? 'rgba(250,179,135,.1)' : 'rgba(203,166,247,.12)', color: workDisplay === 'order' ? 'var(--green)' : workDisplay === 'segment' ? 'var(--amber)' : 'var(--purple)', cursor: 'pointer', fontWeight: 700 }}>
+                    {workDisplay === 'order' ? '📦 ต่อออเดอร์' : workDisplay === 'segment' ? '📋 ต่อเซ็กเมนต์' : '🔩 ต่อหน่วย'}
                   </button>
                   <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 6px', flexShrink: 0 }} />
                   <span style={{ fontSize: 10, color: 'var(--txt3)' }}>OT:</span>
@@ -804,7 +804,7 @@ export default function CuttingMachines() {
               </span>
               <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 10, fontWeight: 600, background: 'var(--bg3)', border: '1px solid var(--bord2)', color: 'var(--txt3)' }}>
                 {viewMode === 'cards' ? '📋' : viewMode === 'table' ? '📊' : '🔄'}
-                {workDisplay === 'order' ? ' 📦' : ''}
+                {workDisplay === 'order' ? ' 📦' : workDisplay === 'unit' ? ' 🔩' : ''}
               </span>
               {balanceMode.startsWith('fastest') && (
                 <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 10, fontWeight: 600, background: 'var(--bg3)', border: '1px solid var(--bord2)', color: stickyOrders ? 'var(--purple)' : 'var(--txt3)' }}>
@@ -900,8 +900,13 @@ export default function CuttingMachines() {
                                         return acc
                                       }, {} as Record<string, DayWork>)
                                   ) as DayWork[]
-                                // ต่อเซ็กเมนต์: each entry with carry-over rows visible
-                                : sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
+                                // ต่อหน่วย: expand qty>1 entries into individual unit rows (split/fastest already per-unit)
+                                : workDisplay === 'unit'
+                                  ? sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).flatMap(w =>
+                                      w.order.qty <= 1 ? [w] : Array.from({length: w.order.qty}, () => ({...w, hrsWorked: w.hrsWorked / w.order.qty, order: {...w.order, qty: 1}}))
+                                    )
+                                  // ต่อเซ็กเมนต์: each entry with carry-over rows visible
+                                  : sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
                               ).map((w, wi) => {
                                 const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
                                 const { typeCode } = decodeItemInfo(w.order.item_code ?? '')
@@ -1056,7 +1061,11 @@ export default function CuttingMachines() {
                                           acc[key].carriesOver = w.carriesOver
                                           return acc
                                         }, {} as Record<string, DayWork>)) as DayWork[]
-                                      : work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
+                                      : workDisplay === 'unit'
+                                        ? work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).flatMap(w =>
+                                            w.order.qty <= 1 ? [w] : Array.from({length: w.order.qty}, () => ({...w, hrsWorked: w.hrsWorked / w.order.qty, order: {...w.order, qty: 1}}))
+                                          )
+                                        : work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
                                     ).map((w, idx) => {
                                       const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
                                       const kvaCol = kva <= 400 ? 'var(--blue)' : kva <= 3500 ? 'var(--amber)' : 'var(--red)'
@@ -1241,7 +1250,11 @@ export default function CuttingMachines() {
                         })
                         return merged
                       })()
-                    : sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
+                    : workDisplay === 'unit'
+                      ? sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).flatMap(w =>
+                          w.order.qty <= 1 ? [w] : Array.from({length: w.order.qty}, () => ({...w, hrsWorked: w.hrsWorked / w.order.qty, order: {...w.order, qty: 1}}))
+                        )
+                      : sched.work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete)
                   workItems.forEach(w => {
                     segs.push({ order: w.order, start: dayStart[di] + within, dur: w.hrsWorked, isCarryOver: w.isCarryOver, carriesOver: w.carriesOver, isComplete: w.isComplete })
                     within += w.hrsWorked
