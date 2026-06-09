@@ -106,7 +106,6 @@
  * ════════════════════════════════════════════════════════════════════
  */
 import { useState, useMemo, useEffect } from 'react'
-import * as XLSX from 'xlsx'
 import { api } from '../../api'
 import { useApp } from '../../context/AppContext'
 import type { CuttingMachine, CuttingRate, Order } from '../../types'
@@ -120,6 +119,14 @@ import {
   mLabel, machineTypeLabel, fmtISO, getWeekRange,
 } from './scheduling/utils'
 import { assignOrders, scheduleFastest, scheduleMode } from './scheduling/engine'
+import { computeWeekData } from './scheduling/weekData'
+import {
+  exportPlanCSV as _exportCSV,
+  exportTXT as _exportTXT,
+  exportXLSX as _exportXLSX,
+  exportJSON as _exportJSON,
+  exportPrint as _exportPrint,
+} from './scheduling/export'
 
 
 export default function CuttingMachines() {
@@ -188,213 +195,12 @@ export default function CuttingMachines() {
   }
 
   // ── Plan snapshot ────────────────────────────────────────────
-  function exportPlanCSV() {
-    const DAY_EN = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
-    const rows: string[][] = []
-
-    // ── Summary header ──────────────────────────────────────────
-    rows.push([`แผนการตัดโลหะ — ${weekLabel}`])
-    rows.push([`Mode: ${balanceMode}`, `Total: ${weekData.totalQtyWeek} ตัว`, `${Math.round(weekData.totalKvaWeek).toLocaleString()} kVA`, `OT: ${weekData.totalOT.toFixed(1)}h`])
-    rows.push([])
-
-    // ── Machine legend ─────────────────────────────────────────
-    rows.push(['# เครื่อง', 'kVA Range', 'h/ตัว', '×Rate', 'TMC'])
-    machines.forEach(m => {
-      rows.push([mLabel(m), `${m.min_kva}–${m.max_kva >= 9999 ? '∞' : m.max_kva}`, m.hrs_per_unit.toString(), (m.time_mul ?? 1).toString(), (m.tmc_hrs ?? 0).toString()])
-    })
-    rows.push([])
-
-    // ── Day-by-day schedule ────────────────────────────────────
-    weekData.dayRows.forEach(row => {
-      const { d, machineCells, dayFinish, actualQty, actualOrderCount: _actualOrderCount } = row
-      const hasWork = machineCells.some(mc => mc.work.length > 0 || mc.machOff)
-      if (!hasWork) return
-
-      const dateStr = fmtISO(d)
-      const dayEN = DAY_EN[d.getDay()]
-      const dayTH = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์'][d.getDay()]
-      const totalKva = row.dayOrders.reduce((s, o) => s + ((o.total_kva ?? 0) > 0 ? (o.total_kva ?? 0) : (o.kva ?? 0) * (o.qty ?? 1)), 0)
-
-      // Day header row
-      rows.push([`${dayTH} ${dateStr}`, `${dayEN}`, `${actualQty} ตัว`, `${Math.round(totalKva).toLocaleString()} kVA`, `เสร็จใน ${dayFinish.toFixed(1)}h`])
-
-      machineCells.forEach(({ m, machOff, sched, work, wall }) => {
-        if (machOff) {
-          rows.push(['', mLabel(m), '🔴 ปิด'])
-          return
-        }
-        if (work.length === 0) return
-
-        const otNote = (sched?.otHrs ?? 0) > 0 ? ` +OT ${sched!.otHrs.toFixed(1)}h` : ''
-        const carryNote = sched?.carriesForward ? ' →' : ''
-        rows.push(['', mLabel(m), `${wall.toFixed(1)}h${otNote}${carryNote}`])
-
-        work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
-          const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-          const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
-          const status = w.isComplete ? '✓' : '→'
-          const carry = w.isCarryOver ? '↩ ' : ''
-          rows.push([
-            '', '',
-            `${carry}${w.order.sap_so ?? w.order.id}`,
-            `${kva.toLocaleString()}kVA ×${w.order.qty}`,
-            w.order.customer ?? '',
-            `${w.hrsWorked.toFixed(1)}h / ${totalHrs.toFixed(1)}h ${status}`,
-          ])
-        })
-      })
-      rows.push([]) // blank line between days
-    })
-
-    const q = (s: string) => `"${s.replace(/"/g, '""')}"`
-    const csv = rows.map(r => r.map(c => q(String(c))).join(',')).join('\n')
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `cutting-plan-${fmtISO(mon)}_${fmtISO(sat)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
-  /** Shared helper: build plan rows for export (CSV/TXT/Excel/JSON) */
-  function buildPlanRows() {
-    const DAY_TH_FULL = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์']
-    type PlanRow = { day: string; date: string; machine: string; machOff: boolean; wallHrs: number; ot: number; carryFwd: boolean; sapSo: string; kva: number; qty: number; customer: string; rawMat: string; hrsWorked: number; totalHrs: number; done: boolean; carryOver: boolean; isCarryIn: boolean }
-    const planRows: PlanRow[] = []
-    weekData.dayRows.forEach(row => {
-      const { d, machineCells } = row
-      const date = fmtISO(d)
-      const day = DAY_TH_FULL[d.getDay()]
-      machineCells.forEach(({ m, machOff, sched, work, wall }) => {
-        if (machOff) { planRows.push({ day, date, machine: mLabel(m), machOff: true, wallHrs: 0, ot: 0, carryFwd: false, sapSo: '', kva: 0, qty: 0, customer: '', rawMat: '', hrsWorked: 0, totalHrs: 0, done: false, carryOver: false, isCarryIn: false }); return }
-        if (work.length === 0) return
-        work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
-          const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-          const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
-          planRows.push({ day, date, machine: mLabel(m), machOff: false, wallHrs: wall, ot: sched?.otHrs ?? 0, carryFwd: sched?.carriesForward ?? false, sapSo: w.order.sap_so ?? w.order.id, kva, qty: w.order.qty, customer: w.order.customer ?? '', rawMat: w.order.raw_mat ?? '', hrsWorked: w.hrsWorked, totalHrs, done: w.isComplete, carryOver: w.carriesOver, isCarryIn: w.isCarryOver })
-        })
-      })
-    })
-    return planRows
-  }
-
-  function exportTXT() {
-    const DAY_TH_FULL = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์']
-    const lines: string[] = []
-    lines.push(`แผนการตัดโลหะ — ${weekLabel}`)
-    lines.push(`${weekData.totalQtyWeek} ตัว · ${Math.round(weekData.totalKvaWeek).toLocaleString()} kVA · OT ${weekData.totalOT.toFixed(1)}h`)
-    lines.push('─'.repeat(60))
-    weekData.dayRows.forEach(row => {
-      const { d, machineCells, dayFinish, actualQty } = row
-      if (!machineCells.some(mc => mc.work.length > 0 || mc.machOff)) return
-      lines.push('')
-      const totalKva = row.dayOrders.reduce((s, o) => s + ((o.total_kva ?? 0) > 0 ? (o.total_kva ?? 0) : (o.kva ?? 0) * (o.qty ?? 1)), 0)
-      lines.push(`${DAY_TH_FULL[d.getDay()]} ${fmtISO(d)}  ${actualQty} ตัว · ${Math.round(totalKva).toLocaleString()} kVA  เสร็จใน ${dayFinish.toFixed(1)}h`)
-      machineCells.forEach(({ m, machOff, sched, work, wall }) => {
-        if (machOff) { lines.push(`  🔴 ${mLabel(m)} ปิด`); return }
-        if (work.length === 0) return
-        const ot = (sched?.otHrs ?? 0) > 0 ? ` +OT ${sched!.otHrs.toFixed(1)}h` : ''
-        lines.push(`  ${mLabel(m).padEnd(18)} ${wall.toFixed(1)}h${ot}${sched?.carriesForward ? ' →' : ''}`)
-        work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
-          const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-          const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
-          const pre = w.isCarryOver ? '↩ ' : '  '
-          lines.push(`    ${pre}${(w.order.sap_so ?? '').padEnd(14)} ${String(kva.toLocaleString() + 'kVA×' + w.order.qty).padEnd(12)} ${w.hrsWorked.toFixed(1)}h/${total.toFixed(1)}h ${w.isComplete ? '✓' : '→'}  ${w.order.customer ?? ''}`)
-        })
-      })
-    })
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url; a.download = `cutting-plan-${fmtISO(mon)}_${fmtISO(sat)}.txt`; a.click(); URL.revokeObjectURL(url)
-  }
-
-  function exportXLSX() {
-    const wb = XLSX.utils.book_new()
-
-    // ── Sheet 1: Schedule ──────────────────────────────────────
-    const schedRows: (string | number)[][] = [
-      [`แผนการตัดโลหะ — ${weekLabel}`],
-      [`${weekData.totalQtyWeek} ตัว`, `${Math.round(weekData.totalKvaWeek).toLocaleString()} kVA`, `OT: ${weekData.totalOT.toFixed(1)}h`, `Mode: ${balanceMode}`],
-      [],
-      ['วัน', 'วันที่', 'เครื่อง', 'SAP SO', 'kVA', 'จำนวน', 'ลูกค้า', 'Raw Mat', 'ชม.ทำงาน', 'ชม.รวม', 'สถานะ', 'ค้าง'],
-    ]
-    buildPlanRows().forEach(r => {
-      if (r.machOff) { schedRows.push([r.day, r.date, r.machine, '🔴 ปิด']); return }
-      schedRows.push([r.day, r.date, r.machine, r.sapSo, r.kva, r.qty, r.customer, r.rawMat, +r.hrsWorked.toFixed(2), +r.totalHrs.toFixed(2), r.done ? '✓ Done' : '→ In Prog', r.carryOver ? '→' : ''])
-    })
-    const ws = XLSX.utils.aoa_to_sheet(schedRows)
-    ws['!cols'] = [10,12,16,14,8,6,18,10,10,10,12,6].map(w => ({ wch: w }))
-    XLSX.utils.book_append_sheet(wb, ws, 'Schedule')
-
-    // ── Sheet 2: Machine Summary ───────────────────────────────
-    const sumRows: (string | number)[][] = [['เครื่อง', 'kVA Range', 'h/ตัว', '×Rate', 'TMC', 'ตัว/สัปดาห์', 'ชม.รวม', 'OT']]
-    machines.forEach((m, i) => {
-      const t = weekData.mTotals[i]
-      sumRows.push([mLabel(m), `${m.min_kva}–${m.max_kva >= 9999 ? '∞' : m.max_kva}`, m.hrs_per_unit, m.time_mul ?? 1, m.tmc_hrs ?? 0, t.qty, +t.wallHrs.toFixed(1), +t.ot.toFixed(1)])
-    })
-    const ws2 = XLSX.utils.aoa_to_sheet(sumRows)
-    ws2['!cols'] = [18,14,8,8,8,14,10,10].map(w => ({ wch: w }))
-    XLSX.utils.book_append_sheet(wb, ws2, 'Machines')
-
-    XLSX.writeFile(wb, `cutting-plan-${fmtISO(mon)}_${fmtISO(sat)}.xlsx`)
-  }
-
-  function exportJSON() {
-    const data = {
-      week: weekLabel,
-      generated: new Date().toISOString(),
-      summary: { qty: weekData.totalQtyWeek, kva: weekData.totalKvaWeek, ot: weekData.totalOT, bottleneck: weekData.bottleneckWall },
-      machines: machines.map((m, i) => ({ ...m, weekly: weekData.mTotals[i] })),
-      schedule: buildPlanRows(),
-    }
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url; a.download = `cutting-plan-${fmtISO(mon)}_${fmtISO(sat)}.json`; a.click(); URL.revokeObjectURL(url)
-  }
-
-  function exportPrint() {
-    const DAY_TH_FULL = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์']
-    let html = `<html><head><meta charset="utf-8"><title>แผนการตัดโลหะ ${weekLabel}</title><style>
-      body{font-family:sans-serif;font-size:11px;margin:12px}
-      h2{font-size:13px;margin:0 0 4px}
-      .sum{color:#666;margin-bottom:10px}
-      .day{font-weight:700;font-size:12px;background:#eee;padding:3px 6px;margin:8px 0 3px;border-radius:3px}
-      .mach{font-weight:600;padding:2px 4px;margin:2px 0;color:#333}
-      .moff{color:#e0534a;padding:2px 4px}
-      table{border-collapse:collapse;width:100%;margin-bottom:2px}
-      td{border:1px solid #ddd;padding:2px 5px;font-size:10px}
-      td.h{background:#f5f5f5;font-weight:600}
-      .done{color:#40a02b}.carry{color:#fe640b}
-      @media print{body{margin:6mm}}
-    </style></head><body>`
-    html += `<h2>แผนการตัดโลหะ — ${weekLabel}</h2>`
-    html += `<div class="sum">${weekData.totalQtyWeek} ตัว · ${Math.round(weekData.totalKvaWeek).toLocaleString()} kVA · OT ${weekData.totalOT.toFixed(1)}h · Mode: ${balanceMode}</div>`
-    weekData.dayRows.forEach(row => {
-      const { d, machineCells, dayFinish, actualQty } = row
-      if (!machineCells.some(mc => mc.work.length > 0 || mc.machOff)) return
-      const totalKva = row.dayOrders.reduce((s, o) => s + ((o.total_kva ?? 0) > 0 ? (o.total_kva ?? 0) : (o.kva ?? 0) * (o.qty ?? 1)), 0)
-      html += `<div class="day">${DAY_TH_FULL[d.getDay()]} ${fmtISO(d)} &nbsp; ${actualQty} ตัว · ${Math.round(totalKva).toLocaleString()} kVA &nbsp; เสร็จใน ${dayFinish.toFixed(1)}h</div>`
-      machineCells.forEach(({ m, machOff, sched, work, wall }) => {
-        if (machOff) { html += `<div class="moff">🔴 ${mLabel(m)} ปิด</div>`; return }
-        if (work.length === 0) return
-        const ot = (sched?.otHrs ?? 0) > 0 ? ` <span style="color:#fe640b">+OT ${sched!.otHrs.toFixed(1)}h</span>` : ''
-        html += `<div class="mach">${mLabel(m)} &nbsp; ${wall.toFixed(1)}h${ot}${sched?.carriesForward ? ' <span class="carry">→</span>' : ''}</div>`
-        html += `<table><tr><td class="h">SAP SO</td><td class="h">kVA</td><td class="h">Qty</td><td class="h">ลูกค้า</td><td class="h">Raw Mat</td><td class="h">ชม.</td><td class="h">สถานะ</td></tr>`
-        work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
-          const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-          const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
-          const st = w.isComplete ? `<span class="done">✓</span>` : `<span class="carry">→</span>`
-          const ci = w.isCarryOver ? '↩ ' : ''
-          html += `<tr><td>${ci}${w.order.sap_so ?? ''}</td><td>${kva.toLocaleString()}</td><td>×${w.order.qty}</td><td>${w.order.customer ?? ''}</td><td>${w.order.raw_mat ?? ''}</td><td>${w.hrsWorked.toFixed(1)}/${total.toFixed(1)}h</td><td>${st}</td></tr>`
-        })
-        html += '</table>'
-      })
-    })
-    html += '</body></html>'
-    const win = window.open('', '_blank')
-    if (win) { win.document.write(html); win.document.close(); win.focus(); setTimeout(() => win.print(), 400) }
-  }
+  function expCtx() { return { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat, balanceMode } }
+  function exportPlanCSV() { _exportCSV(expCtx()) }
+  function exportTXT()     { _exportTXT(expCtx()) }
+  function exportXLSX()    { _exportXLSX(expCtx()) }
+  function exportJSON()    { _exportJSON(expCtx()) }
+  function exportPrint()   { _exportPrint(expCtx()) }
 
   async function savePlan(label: string) {
     setPlanSaving(true); setPlanSaveMsg(null)
@@ -642,121 +448,12 @@ export default function CuttingMachines() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
-  /**
-   * SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
-   * All views (card, table, pipeline) read from weekData only.
-   * No view calculates anything independently.
-   */
-  const weekData = useMemo(() => {
-    // ── Per-machine weekly totals ──────────────────────────────
-    // In fastest mode each DayWork.isComplete = 1 unit (orders split into individual units).
-    // In schedule modes each DayWork.isComplete = whole order (all o.qty units done on this machine).
-    const isFastest = balanceMode.startsWith('fastest')
-    const mTotals = machines.map(m => {
-      let wallHrs = 0, otSum = 0
-      const completedIds = new Set<string>()  // for schedule modes
-      let completedEntries = 0                // for fastest mode (1 entry = 1 unit)
-      days.forEach(d => {
-        const sched = weekSchedule.get(m.id)?.get(fmtISO(d))
-        if (!sched) return
-        wallHrs += sched.regHrs + sched.otHrs
-        otSum   += sched.otHrs
-        sched.work.forEach(w => {
-          if (w.isComplete) { completedIds.add(w.order.id); completedEntries++ }
-        })
-      })
-      const qty = isFastest
-        ? completedEntries
-        : [...completedIds].reduce((s, oid) => {
-            const o = weekOrders.find(x => x.id === oid)
-            return s + (o?.qty ?? 0)
-          }, 0)
-      return { wallHrs, qty, regCap: REG_PER, ot: otSum, over: wallHrs > REG_PER + OT_PER }
-    })
-
-    // ── Per-day data for each machine ──────────────────────────
-    const dayRows = days.map((d, di) => {
-      const dStr = fmtISO(d)
-      const dow = d.getDay()
-      const isSat = dow === 6
-      const dayOrders = weekOrders.filter(o => o.plan_date === dStr)
-      const dayScheduledQty = dayOrders.reduce((a, o) => a + o.qty, 0)
-      const dayKva = dayOrders.reduce((a, o) => a + ((o.total_kva ?? 0) > 0 ? (o.total_kva ?? 0) : (o.kva ?? 0) * (o.qty ?? 1)), 0)
-      const unassigned = dayOrders.filter(o => machines.every(m => !canMachineCut(m, o, products, strictWire, requireDrill)))
-
-      const machineCells = machines.map(m => {
-        const machOff = !isMachineOn(m, dow)
-        const sched = weekSchedule.get(m.id)?.get(dStr)
-        const work = sched?.work ?? []
-        const wall = machOff ? 0 : (sched ? sched.regHrs + sched.otHrs : 0)
-        const { reg: capH } = resolveHours(m, wcConfig, isSat, dow)
-        const grp: Record<number, { drilled: boolean; partial: boolean }> = {}
-        work.forEach(w => {
-          const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-          if (!grp[kva]) grp[kva] = { drilled: drillPrefers(m, w.order), partial: !w.isComplete }
-          if (!w.isComplete) grp[kva].partial = true
-        })
-        return { m, machOff, sched, work, wall, capH, grp }
-      })
-
-      const dayCarryQty = machineCells.reduce((a, mc) => a + mc.work.filter(w => w.isCarryOver).reduce((s, w) => s + w.order.qty, 0), 0)
-      const dayWalls = machineCells.map(mc => mc.wall)
-      const dayFinish = Math.max(...dayWalls, 0)
-      // Use first ACTIVE machine (not a closed one) for day capacity reference
-      const activeMachineRef = machines.find(m => isMachineOn(m, dow)) ?? machines[0]
-      const { reg: dayCapHrs } = activeMachineRef ? resolveHours(activeMachineRef, wcConfig, isSat, dow) : { reg: isSat ? 4 : 8 }
-      const finishCol = dayFinish === 0 ? 'var(--txt3)' : dayFinish <= dayCapHrs ? 'var(--green)' : dayFinish <= dayCapHrs * 2 ? 'var(--amber)' : 'var(--red)'
-
-      // Actual orders/units worked today (from machine cells, not plan_date)
-      // In weekly shared pool, "Friday" orders may have been processed on Monday-Thursday
-      const actualOrderIds = new Set<string>()
-      machineCells.forEach(mc => mc.work.forEach(w => actualOrderIds.add(w.order.id)))
-      const actualQty = [...actualOrderIds].reduce((s, oid) => {
-        const o = weekOrders.find(x => x.id === oid)
-        return s + (o?.qty ?? 0)
-      }, 0)
-      const actualOrderCount = actualOrderIds.size
-
-      return { dStr, d, di, dow, isSat, dayOrders, dayScheduledQty, dayKva, dayCarryQty, unassigned, machineCells, dayWalls, dayFinish, dayCapHrs, finishCol, actualQty, actualOrderCount }
-    })
-
-    const bottleneckWall = mTotals.reduce((a, t) => Math.max(a, t.wallHrs), 0)
-    const totalQtyWeek   = mTotals.reduce((a, t) => a + t.qty, 0)
-    const totalKvaWeek   = weekOrders.reduce((a, o) => a + ((o.total_kva ?? 0) > 0 ? (o.total_kva ?? 0) : (o.kva ?? 0) * (o.qty ?? 1)), 0)
-    // Max OT used in any single day by any machine (actual scheduled OT, not wall-time formula)
-    let maxDailyOT = 0
-    days.forEach(d => {
-      const dStr = fmtISO(d)
-      machines.forEach(m => {
-        const sched = weekSchedule.get(m.id)?.get(dStr)
-        if (sched) maxDailyOT = Math.max(maxDailyOT, sched.otHrs)
-      })
-    })
-    const totalOT       = maxDailyOT
-    const summaryStatus = bottleneckWall > REG_PER + OT_PER ? 'over' : totalOT >= 0.05 ? 'warn' : 'ok'
-
-    // Completion summary: track last-seen isComplete state for each order across all machines & days
-    const orderLastState = new Map<string, { isComplete: boolean; day: string }>()
-    machines.forEach(m => {
-      days.forEach(d => {
-        const dStr = fmtISO(d)
-        const sched = weekSchedule.get(m.id)?.get(dStr)
-        sched?.work.forEach(w => {
-          const cur = orderLastState.get(w.order.id)
-          // Keep the latest day; within same day, prefer isComplete=true
-          if (!cur || dStr > cur.day || (dStr === cur.day && w.isComplete)) {
-            orderLastState.set(w.order.id, { isComplete: w.isComplete, day: dStr })
-          }
-        })
-      })
-    })
-    const weekDoneOrders  = weekOrders.filter(o => orderLastState.get(o.id)?.isComplete === true)
-    const weekCarryOrders = weekOrders.filter(o => { const s = orderLastState.get(o.id); return !!s && !s.isComplete })
-    const weekUnscheduled = weekOrders.filter(o => !orderLastState.has(o.id))
-
-    return { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, summaryStatus, weekDoneOrders, weekCarryOrders, weekUnscheduled }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weekSchedule, balanceMode, strictWire, requireDrill, weekOrders.map(o=>o.id+o.qty).join(','), machines.map(m=>`${m.id}${(m.off_days??[]).join('-')}`).join(',')])
+  // SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
+  const weekData = useMemo(
+    () => computeWeekData({ weekSchedule, weekOrders, machines, days, balanceMode, strictWire, requireDrill, products, wcConfig, globalRates, globalTmcRates }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [weekSchedule, balanceMode, strictWire, requireDrill, weekOrders.map(o=>o.id+o.qty).join(','), machines.map(m=>`${m.id}${(m.off_days??[]).join('-')}`).join(',')]
+  )
 
   const { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek: _totalKvaWeek, totalOT, summaryStatus: _summaryStatus, weekDoneOrders, weekCarryOrders, weekUnscheduled } = weekData
 
