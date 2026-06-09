@@ -1,8 +1,8 @@
 # Handoff: Cutting Machine Scheduler — What Was Done & What To Improve
 
 > Project: Thai transformer factory cutting machine scheduler (React + TypeScript)
-> Repo: https://github.com/FitJustTry/68eakka.git  branch: `master`
-> Last session commits: `063914a` (latest) ← `4bed00f` ← `842123d` ← `044e5ea` ← `2a101e1`
+> Repo: https://github.com/FitJustTry/682eakka.git  branch: `master`
+> Last session commits: `2ffb6c5` (latest) ← `0e33390` ← `b88b2f0` ← `3bc864d` ← `063914a`
 > Key files: `engine.ts`, `CuttingMachines.tsx`, `utils.ts`, `constants.ts`
 
 ---
@@ -32,9 +32,21 @@ src/tabs/DeptTab/
     constants.ts             — DayWork, MachineDaySched interfaces; REG_PER, OT_PER
 docs/
   CUTTING_MACHINE_LOGIC.md   — original architecture doc (pre-session, still accurate for types/utils)
-  SESSION_CHANGELOG.md       — detailed log of all changes made in the previous two sessions
+  SESSION_CHANGELOG.md       — detailed log of all changes made in prior sessions
   NEXT_AI.md                 — this file
 ```
+
+---
+
+## Page Layout (section order in CuttingMachines.tsx render)
+
+Sections appear top-to-bottom in this order:
+1. **แผนการตัดโลหะ — สัปดาห์** — weekly schedule (always open, always first)
+2. **▸ เครื่องตัดโลหะ** — machine config table (collapsed by default, click header to expand)
+3. **▸ ⏱ มาตรฐาน** — global kVA→hours rate table (collapsed)
+4. **▸ ⏱ รายเครื่อง** — per-machine rate overrides (collapsed)
+
+All three config sections show a summary line when collapsed. Click the header to expand.
 
 ---
 
@@ -48,13 +60,17 @@ docs/
 
 Each mode has three OT policies:
 - `'none'` — regular hours only
-- `'smart'` — OT deferred to end of week (see below)
+- `'smart'` — week-ahead formula with lazy/eager toggle (see below)
 - `'full'` — always use full OT every day
 
 Constraint flags (booleans passed to both functions):
 - `strictWire` — enforce wire-type matching (LS→laser, M-4→m4)
 - `requireDrill` — kVA ≥ 315 must go to drill machine
 - `stickyOrders` — all units of one order go to same machine (🔗); false = split freely (🔀)
+- `lazyOT` — `true` = defer OT to end of week (new default); `false` = eager, fires from day 1
+
+The `lazyOT` toggle shows as **🌅 ท้ายสัปดาห์** / **⚡ ต้นสัปดาห์** buttons, always visible
+in the OT row. Only affects `'smart'` policy; ignored for `'none'` and `'full'`.
 
 ---
 
@@ -72,30 +88,34 @@ Order qty=5  →  5 Unit entries  →  sorted by processing time DESC
 - `stickyOrders=false` (🔀): assign individual units LPT to least-loaded eligible machine.
 
 **Phase 3** — each machine simulates its pre-assigned queue day by day independently.
-No pool competition. Uses the lazy OT formula (see below).
+No pool competition. Uses the lazy/eager OT formula (see below).
 
 ---
 
-## Smart OT Formula (lazy / end-of-week)
+## Smart OT Formula — Lazy vs Eager
 
-**Changed in the last commit (`063914a`).** Both `scheduleFastest` Phase 3 and
-`scheduleMode` weekly use the same formula:
+Both `scheduleFastest` Phase 3 and `scheduleMode` weekly use the same formula,
+controlled by the `lazyOt` boolean parameter:
 
 ```typescript
-const regLeft = days.slice(di).reduce(...)      // today + future regular hours
-const otLeft  = days.slice(di + 1).reduce(...)  // FUTURE OT hours only (not today)
+const regLeft = days.slice(di).reduce(...)       // today + future regular hours
+const otLeft  = lazyOt
+  ? days.slice(di + 1).reduce(...)               // FUTURE OT hours (not today) — lazy
+  : 0                                            // no future deduction — eager
 effectiveOtCap = min(otCap, max(0, rem + queueHrs - regLeft - otLeft))
 ```
 
-**Why:** Old formula (`rem + queueHrs - regLeft`) fired OT from day 1 whenever the
-weekly queue exceeded remaining regular hours. By also subtracting `otLeft`, OT only fires
-on a day when the work cannot be absorbed by future days' OT capacity. Result: machines fill
-regular hours first; OT accumulates toward Friday/Saturday.
+**Lazy (🌅 ท้ายสัปดาห์, default):** Subtracts future OT capacity. OT only fires today
+when the work cannot be absorbed by future days' OT either. Machines fill regular hours
+first; OT accumulates toward end of week.
 
-**Example (Machine with 66.7h queue, 48h reg, 20h future OT):**
+**Eager (⚡ ต้นสัปดาห์):** `otLeft=0`, restoring the old formula. OT fires from day 1
+whenever `rem + queueHrs > regLeft`. Useful when the factory prefers to front-load OT.
+
+**Example — Machine with 66.7h queue, 48h reg, 20h future OT (lazy mode):**
 - Monday: `66.7 - 48 - 20 = -1.3` → **0h OT** (deferred)
 - Tuesday: `58.7 - 40 - 16 = 2.7` → **2.7h OT**
-- Wed–Fri: **4h OT each**
+- Wed–Sat: **4h OT each**
 
 ---
 
@@ -120,9 +140,9 @@ The main computed object derived from `weekSchedule`. Contains:
 | `mTotals` | array | per-machine: wallHrs, qty (completed units), ot, over |
 | `dayRows` | array | per-day display data for table view |
 | `weekDoneOrders` | Order[] | orders whose last DayWork has `isComplete=true` |
-| `weekCarryOrders` | Order[] | orders in schedule but not yet complete |
-| `weekUnscheduled` | Order[] | orders in weekOrders that never entered any queue |
-| `totalOT` | number | sum of OT hours across all machines |
+| `weekCarryOrders` | Order[] | orders in schedule but not yet complete (⏭) |
+| `weekUnscheduled` | Order[] | orders in weekOrders that never entered any queue (❌) |
+| `totalOT` | number | max OT used in any single day across all machines |
 
 **`mTotals.qty` mode-awareness (important):**
 ```typescript
@@ -131,8 +151,21 @@ qty = isFastest
   ? completedEntries           // count of isComplete=true DayWork entries (each = 1 unit)
   : [...completedIds].reduce((s, oid) => s + weekOrders.find(x=>x.id===oid)?.qty ?? 0, 0)
 ```
-Why: fastest mode splits multi-unit orders across machines/days — each `isComplete` entry = 1 unit.
+Why: fastest mode splits multi-unit orders — each `isComplete` entry = 1 unit.
 Schedule modes track per-order completion — use `o.qty` for each unique completed order.
+
+---
+
+## Carry-Over UI
+
+- **Section title header** shows `74 ตัว (⏭ 12 ค้าง)` in amber whenever `weekCarryOrders`
+  is non-empty — visible at all times without scrolling.
+- **⏭ ค้างสัปดาห์หน้า row** (below schedule table) shows a button
+  `→ ดูสัปดาห์หน้า + รวมงานค้าง` — one click advances `weekOffset` by 1 and enables
+  `includePrevCarry`, so carry orders appear in next week's plan automatically.
+- **`includePrevCarry`** state: when true, `prevCarryOrders` (orders unfinished last week)
+  are prepended to `weekOrders` before scheduling. The engine picks them up and schedules
+  them alongside the new week's orders.
 
 ---
 
@@ -151,7 +184,7 @@ interface DayWork {
 interface MachineDaySched {
   regHrs: number; otHrs: number; otNeeded: number
   work: DayWork[]
-  hasCarryOver: boolean  // any work entry is a carry-over from yesterday
+  hasCarryOver: boolean   // any work entry is a carry-over from yesterday
   carriesForward: boolean // machine still has work after today
 }
 
@@ -163,51 +196,46 @@ Map<machineId, Map<dateString_ISO, MachineDaySched>>
 
 ## Known Issues & Areas to Improve
 
-### 1. Machine 14 gets 0 orders in ⚠️ (Wire Match) mode
-Machine 14 has no `laser` and no `m4` capability. In the current week's order set,
-every order is either LS0.70 (needs laser) or M-4 (needs m4). So Machine 14
-legitimately gets nothing when Wire Match is active.
+### 1. Machine 14 idle in ⚠️ Wire Match mode  ← NOT YET FIXED
+Machine 14 has no `laser` and no `m4`. When all orders are LS0.70 or M-4 material
+and Wire Match is on, Machine 14 legitimately gets 0 orders.
 
-**Possible improvement:** Add partial constraint relaxation — if a machine is idle for
-the whole week, allow it to take orders even without the exact wire capability (as a
-"can cut but not optimal" fallback). Currently fallback only activates for orders
-with zero eligible machines; it doesn't proactively redistribute from overloaded machines.
+**Fix approach:** In Phase 2 of `scheduleFastest`, after normal assignment is complete,
+check if any machine has an empty queue for the whole week. If so, offer it orders from
+the most-overloaded machine using relaxed constraints (drop wire match first).
+Currently the fallback only fires when an order has zero eligible machines — not when
+a machine has zero orders.
 
-### 2. No inter-machine balancing in Phase 3
+### 2. No inter-machine rebalancing after Phase 3  ← NOT YET FIXED
 Once Phase 2 assigns units, Phase 3 never redistributes. If one machine finishes
-Monday and another is overloaded all week, the idle machine doesn't help.
+early in the week and another is overloaded, the idle machine doesn't help.
 
-**Possible improvement:** After Phase 3 simulation, check for machines that finish
-early and "steal" unstarted units from overloaded machines' queues.
+**Fix approach:** After Phase 3 simulation, find machines that finish before Friday
+and "steal" the last N unstarted units from the most-overloaded machine's queue.
+Constraint-check each stolen unit before moving it.
 
-### 3. Carry-over across weeks not shown
-`weekCarryOrders` shows what carries to next week, but the UI only marks them as ⏭.
-There's no "pre-populate next week" button that automatically adds them to next week's queue.
+### 3. `scheduleMode daily` uses different OT formula  ← INTENTIONAL, low priority
+The `approach='daily'` branch uses `effectiveOtCap = min(otCap, max(0, carryHrs + todayHrs - regCap))`.
+This is a same-day trigger (no week-ahead). Daily mode only knows today's orders —
+there's no queue to look ahead through. Would need a separate approach to fix.
 
-### 4. OT formula fires late if queue is just over capacity
-With the lazy OT formula, if queue = total_capacity + 1h, OT fires on the very last day
-only — but by then it may be too late to complete everything (1h doesn't fit in 1 day's OT).
-The formula is correct but the schedule can look "tight" on the last day.
-
-### 5. `scheduleMode daily` still uses old OT formula logic
-The `approach='daily'` branch in `scheduleMode` uses a simpler per-day OT calculation:
-`effectiveOtCap = min(otCap, max(0, carryHrs + todayHrs - regCap))` — this is a
-same-day OT trigger, not a week-ahead one. It was intentionally left different because
-daily mode only knows about today's orders. No week-ahead data available.
+### 4. 🌅/⚡ buttons visible but inactive for ❌ and 🔥 modes
+The OT timing toggle shows at all times but only affects `⚠️ เมื่อจำเป็น`. For the
+other two OT policies it does nothing. Could grey them out or hide them when irrelevant.
 
 ---
 
 ## Constraint Logic (canMachineCut in utils.ts)
 
 ```
-kva < m.min_kva                          → false (too small)
-m.max_kva < 9999 && kva > m.max_kva     → false (too large)
-strictWire && raw_mat=LS && !m.laser    → false
-strictWire && raw_mat=M-4 && !m.m4     → false
+kva < m.min_kva                                             → false (too small)
+m.max_kva < 9999 && kva > m.max_kva                        → false (too large)
+strictWire && raw_mat=LS && !m.laser                        → false
+strictWire && raw_mat=M-4 && !m.m4                         → false
 requireDrill && kva >= 315 && !m.drill_8mm && !m.drill_22mm → false
 ```
 
-`max_kva >= 9999` = no upper limit (∞). Machine 14 has `max_kva=2500`, `min_kva=160`.
+`max_kva >= 9999` = no upper limit (∞).
 
 ---
 
@@ -225,10 +253,9 @@ App is at http://localhost:5173. The cutting machine scheduler is in the
 
 ## What the User Cares About
 
-- **Completeness:** all 38 orders in the week should get scheduled (no silent drops)
-- **OT behavior:** regular hours should fill first; OT only at end of week when needed
-- **Wire Match accuracy:** LS → laser only, M-4 → m4 only (but if machine is idle, consider relaxing)
+- **Schedule first:** page opens directly on the weekly plan, config sections collapsed below
+- **OT behavior:** regular hours fill first; OT only at end of week (lazy mode default)
+- **Wire Match accuracy:** LS → laser only, M-4 → m4 only
+- **Carry-over visibility:** `(⏭ N ค้าง)` in title, one-click button to next week
 - **Week summary:** ✅ done / ⏭ carry / ❌ unscheduled chips below the table
-- **Unit count (ตัว):** header numbers must match actual completed units, not double-count
-
-All recent bugs in these areas have been fixed. See `SESSION_CHANGELOG.md` for the full history.
+- **Unit count (ตัว):** header numbers match actual completed units, no double-counting
