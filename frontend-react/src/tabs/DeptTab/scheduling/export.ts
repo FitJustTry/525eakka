@@ -288,9 +288,11 @@ export function exportMachinePrint(ctx: ExportContext): void {
     html += `</table></div>`
   })
 
-  html += '</body></html>'
-  const win = window.open('', '_blank')
-  if (win) { win.document.write(html); win.document.close(); win.focus(); setTimeout(() => win.print(), 400) }
+  html += '<script>window.onload=function(){window.print()}<\/script></body></html>'
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  window.open(url, '_blank')
+  setTimeout(() => URL.revokeObjectURL(url), 60000)
 }
 
 export function exportPrint(ctx: ExportContext): void {
