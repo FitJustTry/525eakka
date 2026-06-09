@@ -299,6 +299,13 @@ async function initDatabase() {
     `);
     await client.query(`INSERT INTO cutting_rates (id, rates) VALUES (1, '[]') ON CONFLICT DO NOTHING`);
     await client.query(`
+      CREATE TABLE IF NOT EXISTS cutting_tmc_rates (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        rates JSONB NOT NULL DEFAULT '[]'
+      )
+    `);
+    await client.query(`INSERT INTO cutting_tmc_rates (id, rates) VALUES (1, '[]') ON CONFLICT DO NOTHING`);
+    await client.query(`
       CREATE TABLE IF NOT EXISTS cutting_plan_snapshots (
         id SERIAL PRIMARY KEY,
         week_start DATE NOT NULL,
@@ -950,6 +957,20 @@ app.put('/api/cutting-rates', asyncRoute(async (req, res) => {
   const rates = Array.isArray(req.body) ? req.body : [];
   await pool.query(
     'INSERT INTO cutting_rates (id, rates) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET rates=EXCLUDED.rates',
+    [JSON.stringify(rates)]
+  );
+  res.json(rates);
+}));
+
+app.get('/api/cutting-tmc-rates', asyncRoute(async (req, res) => {
+  const result = await pool.query('SELECT rates FROM cutting_tmc_rates WHERE id=1');
+  res.json(result.rows[0]?.rates ?? []);
+}));
+
+app.put('/api/cutting-tmc-rates', asyncRoute(async (req, res) => {
+  const rates = Array.isArray(req.body) ? req.body : [];
+  await pool.query(
+    'INSERT INTO cutting_tmc_rates (id, rates) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET rates=EXCLUDED.rates',
     [JSON.stringify(rates)]
   );
   res.json(rates);
