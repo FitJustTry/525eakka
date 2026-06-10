@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import styles from './CuttingMachines.module.css'
+import styles from '../cutting/CuttingPage.module.css'
 
 interface CoilMachine {
   id: number; name: string; count: number; type: string

@@ -1,4 +1,4 @@
-import type { CuttingMachine, CuttingRate, Order, WCConfig } from '../../../types'
+import type { CuttingMachine, CuttingRate, Order, WCConfig } from '../../../../types'
 import { DRILL_BONUS, INDEX_BONUS } from './constants'
 import type { DayWork, MachineDaySched } from './constants'
 import { getHrsForKva, resolveHours, canMachineCut, drillPrefers, wirePrefers, catRank, fmtISO } from './utils'

@@ -1,4 +1,4 @@
-import type { CuttingRate, CuttingMachine, Order, WCConfig } from '../../../types'
+import type { CuttingRate, CuttingMachine, Order, WCConfig } from '../../../../types'
 
 export type { CuttingRate, CuttingMachine, Order, WCConfig }
 

@@ -106,11 +106,11 @@
  * ════════════════════════════════════════════════════════════════════
  */
 import { useState, useMemo, useEffect } from 'react'
-import { api } from '../../api'
-import { useApp } from '../../context/AppContext'
-import type { CuttingMachine, CuttingRate, Order } from '../../types'
-import { decodeItemInfo } from '../../utils/itemCodeDecode'
-import styles from './CuttingMachines.module.css'
+import { api } from '../../../api'
+import { useApp } from '../../../context/AppContext'
+import type { CuttingMachine, CuttingRate, Order } from '../../../types'
+import { decodeItemInfo } from '../../../utils/itemCodeDecode'
+import styles from './CuttingPage.module.css'
 import { DAY_TH, DAY_SHORT, REG_PER, OT_PER, CR_STANDARD_SIZES } from './scheduling/constants'
 import type { DayWork, MachineDaySched } from './scheduling/constants'
 import {

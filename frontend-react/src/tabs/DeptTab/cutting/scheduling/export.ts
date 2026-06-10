@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx'
-import type { CuttingMachine, CuttingRate } from '../../../types'
+import type { CuttingMachine, CuttingRate } from '../../../../types'
 import { getHrsForKva, mLabel, fmtISO } from './utils'
 import type { WeekData } from './weekData'
 

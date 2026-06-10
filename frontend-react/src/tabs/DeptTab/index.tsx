@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useApp } from '../../context/AppContext'
-import CuttingMachines from './CuttingMachines'
-import CoilMachines from './CoilMachines'
+import CuttingMachines from './cutting/CuttingPage'
+import CoilMachines from './winding/WindingPage'
 
 type DeptId = 'core' | 'coil' | 'inner' | 'outer'
 

@@ -1,6 +1,6 @@
 import { REG_PER, OT_PER } from './constants'
 import type { MachineDaySched, DayWork } from './constants'
-import type { CuttingMachine, CuttingRate, Order, WCConfig } from '../../../types'
+import type { CuttingMachine, CuttingRate, Order, WCConfig } from '../../../../types'
 import { fmtISO, resolveHours, canMachineCut, drillPrefers, isMachineOn } from './utils'
 
 export type { DayWork }
