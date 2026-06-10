@@ -2,22 +2,33 @@ import type { CuttingMachine, CuttingRate, WCConfig } from '../../../types'
 import { decodeItemInfo } from '../../../utils/itemCodeDecode'
 
 /** Lookup cutting hours for a kVA.
- * Exact match only — if the kVA has a defined rate, use it.
- * Everything else uses m.hrs_per_unit (machine default).
+ * useNearestKva=false (default): exact match only; falls back to m.hrs_per_unit.
+ * useNearestKva=true:            if no exact match, use the closest available kVA entry.
  */
-export function getHrsForKva(m: CuttingMachine, kva: number, globalRates: CuttingRate[], itemCode?: string, globalTmcRates?: CuttingRate[]): number {
+export function getHrsForKva(
+  m: CuttingMachine, kva: number, globalRates: CuttingRate[],
+  itemCode?: string, globalTmcRates?: CuttingRate[], useNearestKva = false
+): number {
+  const pick = (rates: CuttingRate[]): CuttingRate | undefined => {
+    const exact = rates.find(r => r.kva === kva)
+    if (exact) return exact
+    if (useNearestKva && rates.length)
+      return rates.reduce((best, r) => Math.abs(r.kva - kva) < Math.abs(best.kva - kva) ? r : best)
+    return undefined
+  }
+
   // Cast Resin (item code position 1 = '4') — use TMC rate table first, then tmc_hrs fallback
   if (itemCode && itemCode[1] === '4') {
-    const tmcMatch = (m.tmc_rates ?? []).find(r => r.kva === kva)       // per-machine kVA-specific
+    const tmcMatch = pick(m.tmc_rates ?? [])
     if (tmcMatch) return tmcMatch.hrs
-    const globalTmcMatch = (globalTmcRates ?? []).find(r => r.kva === kva) // global TMC standard
+    const globalTmcMatch = pick(globalTmcRates ?? [])
     if (globalTmcMatch) return globalTmcMatch.hrs
     // No TMC rate entry → fall through to normal rate + tmc_hrs addition
   }
   // Priority: machine-specific rate → global rate → hrs_per_unit
-  const machineMatch = (m.rates ?? []).find(r => r.kva === kva)
+  const machineMatch = pick(m.rates ?? [])
   if (machineMatch) return machineMatch.hrs * (m.time_mul ?? 1) + (m.tmc_hrs ?? 0)
-  const globalMatch = globalRates.find(r => r.kva === kva)
+  const globalMatch = pick(globalRates)
   const base = globalMatch ? globalMatch.hrs : m.hrs_per_unit
   return base * (m.time_mul ?? 1) + (m.tmc_hrs ?? 0)
 }

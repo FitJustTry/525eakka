@@ -155,7 +155,7 @@ export default function CuttingMachines() {
     | 'daily_full' | 'weekly_full' | 'fastest_full'
     | 'deadline_full' | 'priority_full' | 'interweek_full' | 'batch_full'
   const [balanceMode, setBalanceMode] = useState<BalanceMode>('weekly_no_ot')
-  const [viewMode, setViewMode] = useState<'table' | 'cards' | 'pipeline'>('cards')
+  const [viewMode, setViewMode] = useState<'table' | 'cards' | 'pipeline'>('table')
   const [globalRates, setGlobalRates]       = useState<CuttingRate[]>([])
   const [globalTmcRates, setGlobalTmcRates] = useState<CuttingRate[]>([])
   const [globalRateSubTab, setGlobalRateSubTab] = useState<'cut' | 'tmc'>('cut')
@@ -166,6 +166,8 @@ export default function CuttingMachines() {
   const [stickyOrders, setStickyOrders] = useState(true)  // true = one machine owns all units of an order
   const isFastest = balanceMode.startsWith('fastest')
   const [lazyOT, setLazyOT] = useState(true)             // true = defer OT to end of week; false = eager (fire from day 1)
+  const [interweekThreshold, setInterweekThreshold] = useState(0.5)
+  const [useNearestKva, setUseNearestKva] = useState(true)
   const [machineTableOpen, setMachineTableOpen] = useState(false)
   const [globalRatesOpen, setGlobalRatesOpen]   = useState(false)
   const [perMachRatesOpen, setPerMachRatesOpen] = useState(false)
@@ -200,7 +202,7 @@ export default function CuttingMachines() {
   }
 
   // ── Plan snapshot ────────────────────────────────────────────
-  function expCtx() { return { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat, balanceMode } }
+  function expCtx() { return { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat, balanceMode, useNearestKva } }
   function exportPlanCSV()      { _exportCSV(expCtx()) }
   function exportTXT()          { _exportTXT(expCtx()) }
   function exportXLSX()         { _exportXLSX(expCtx()) }
@@ -404,6 +406,18 @@ export default function CuttingMachines() {
 
   // Compute optimal daily assignments
   const dailyAssignments = useMemo(() => {
+    // Build bump map: if a day has no active machines, advance orders to the next active day
+    const bumpedPlanDate = new Map<string, string>()
+    days.forEach((d, di) => {
+      const dStr = fmtISO(d)
+      const hasActive = machines.some(m => isMachineOn(m, d.getDay()))
+      if (hasActive) {
+        bumpedPlanDate.set(dStr, dStr)
+      } else {
+        const next = days.slice(di + 1).find(dd => machines.some(m => isMachineOn(m, dd.getDay())))
+        bumpedPlanDate.set(dStr, next ? fmtISO(next) : dStr)
+      }
+    })
     const cumWall = new Map<number, number>()
     machines.forEach(m => cumWall.set(m.id, 0))
     return days.map(d => {
@@ -411,7 +425,8 @@ export default function CuttingMachines() {
       const dow = d.getDay()
       // Only assign to machines that are ON today
       const activeMachines = machines.filter(m => isMachineOn(m, dow))
-      const dayOrds = weekOrders.filter(o => o.plan_date === dStr)
+      // Bump orders from off-days: include orders whose effective plan_date lands on today
+      const dayOrds = weekOrders.filter(o => (bumpedPlanDate.get(o.plan_date ?? '') ?? o.plan_date) === dStr)
       // stickyOrders=false: expand to individual 1-unit orders so each unit can go to a different machine
       const dayOrdsEff = stickyOrders
         ? dayOrds
@@ -424,7 +439,7 @@ export default function CuttingMachines() {
         const mOrd = asgn.get(m.id) ?? []
         const w = mOrd.reduce((a, o) => {
           const kva = o.kva ?? products[o.product]?.kva ?? 0
-          return a + (o.qty * getHrsForKva(m, kva, globalRates, o.item_code, globalTmcRates)) / (m.count || 1)
+          return a + (o.qty * getHrsForKva(m, kva, globalRates, o.item_code, globalTmcRates, useNearestKva)) / (m.count || 1)
         }, 0)
         cumWall.set(m.id, (cumWall.get(m.id) ?? 0) + w)
       })
@@ -439,9 +454,9 @@ export default function CuttingMachines() {
   const weekSchedule = useMemo(() => {
     // ── ❌ ไม่ OT ─────────────────────────────────────────────────
     const mi = new Map(machIdx)
-    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates)
-    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates)
-    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates)
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva)
+    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, useNearestKva)
     const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
       daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
       deadline_no_ot: () => sm('none','deadline'), priority_no_ot: () => sm('none','priority'),
@@ -456,7 +471,7 @@ export default function CuttingMachines() {
     return (modeMap[balanceMode] ?? modeMap['weekly_no_ot'])()
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
+  [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, interweekThreshold, useNearestKva, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
   // SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
   const weekData = useMemo(
@@ -466,6 +481,37 @@ export default function CuttingMachines() {
   )
 
   const { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek: _totalKvaWeek, totalOT, summaryStatus: _summaryStatus, weekDoneOrders, weekCarryOrders, weekUnscheduled } = weekData
+
+  // Orders that finish later than their due_so — shown as 🔴 in work rows
+  const lateOrders = useMemo(() => {
+    const late = new Set<string>()
+    const lastCompDay = new Map<string, string>() // origOrderId → latest dStr where isComplete=true
+    for (const [, machMap] of weekSchedule) {
+      for (const [dStr, sched] of machMap) {
+        for (const w of sched.work) {
+          if (w.isComplete) {
+            const oid = origId(w.order.id)
+            const cur = lastCompDay.get(oid)
+            if (!cur || dStr > cur) lastCompDay.set(oid, dStr)
+          }
+        }
+      }
+    }
+    // Orders completing this week but after their due_so
+    for (const [oid, completedOn] of lastCompDay) {
+      const order = weekOrders.find(o => o.id === oid)
+      const due = order?.due_so
+      if (due && completedOn > due) late.add(oid)
+    }
+    // Orders NOT completing this week — late if due_so is within or before week end
+    const weekEndStr = days.length > 0 ? fmtISO(days[days.length - 1]) : ''
+    for (const o of weekCarryOrders) {
+      const due = o.due_so
+      if (due && weekEndStr && due <= weekEndStr) late.add(origId(o.id))
+    }
+    return late
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weekSchedule, weekOrders, weekCarryOrders, days.map(d => fmtISO(d)).join(',')])
 
   // ── Render ───────────────────────────────────────────────────
   return (
@@ -484,6 +530,11 @@ export default function CuttingMachines() {
                     (⏭ {weekCarryOrders.reduce((s,o)=>s+o.qty,0)} ค้าง)
                   </span>
                 )}
+              </span>
+            )}
+            {lateOrders.size > 0 && (
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--red)', background: 'rgba(224,90,78,.12)', padding: '2px 8px', borderRadius: 8, border: '1px solid rgba(224,90,78,.3)' }}>
+                🔴 {lateOrders.size} ออเดอร์ส่งช้า
               </span>
             )}
           </span>
@@ -577,6 +628,30 @@ export default function CuttingMachines() {
                       {s.label}
                     </button>
                   ))}
+                  {schedKey === 'interweek' && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--txt3)', marginLeft: 4 }}>
+                      threshold:
+                      <input
+                        type="number" min={0.1} max={5} step={0.1}
+                        value={interweekThreshold}
+                        onChange={e => setInterweekThreshold(Math.max(0.01, parseFloat(e.target.value) || 0.5))}
+                        style={{ width: 48, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--txt1)', textAlign: 'center' }}
+                      />
+                    </label>
+                  )}
+                  <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 4px', flexShrink: 0 }} />
+                  <button
+                    onClick={() => setUseNearestKva(v => !v)}
+                    title={useNearestKva
+                      ? 'KVA ใกล้เคียง: ใช้ค่าที่ใกล้ที่สุดเมื่อไม่มีค่าตรง'
+                      : 'KVA ตรงเท่านั้น: ใช้ hrs_per_unit เมื่อไม่มีค่าตรง'}
+                    style={{ fontSize: 10, padding: '3px 10px', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
+                      border: `1px solid ${useNearestKva ? 'var(--purple)' : 'var(--bord2)'}`,
+                      background: useNearestKva ? 'rgba(203,166,247,.2)' : 'var(--bg3)',
+                      color: useNearestKva ? 'var(--purple)' : 'var(--txt2)',
+                      fontWeight: useNearestKva ? 700 : 400 }}>
+                    🎯 KVA {useNearestKva ? 'ใกล้เคียง' : 'ตรงเท่านั้น'}
+                  </button>
                 </div>
               </div>
             )
@@ -979,6 +1054,7 @@ export default function CuttingMachines() {
                                       {typeCode === '4' && <span title={`Cast Resin — uses TMC time: ${(m.tmc_hrs ?? 0) > 0 ? (m.tmc_hrs ?? 0) + 'h' : 'not set (using kVA rate)'}`} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: 'rgba(203,166,247,.2)', color: 'var(--purple)', fontWeight: 700, letterSpacing: '.02em' }}>⏱ TMC</span>}
                                       {drillPrefers(m, w.order) && <span style={{ fontSize: 10 }}>🔩</span>}
                                       {w.order.customer && <span style={{ fontSize: 10, color: 'var(--txt2)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 90 }}>{w.order.customer}</span>}
+                                      {lateOrders.has(origId(w.order.id)) && w.isComplete && <span title={`ส่งช้า — due: ${w.order.due_so}`} style={{ fontSize: 10 }}>🔴</span>}
                                       <span style={{ color: 'var(--txt3)', marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 10 }}>{w.hrsWorked.toFixed(1)}h{w.isComplete ? ' ✓' : w.carriesOver ? ' →' : ''}</span>
                                     </div>
                                     {showWireData && (w.order.raw_mat || w.order.lv || w.order.hv) && (
@@ -1138,7 +1214,7 @@ export default function CuttingMachines() {
                                       const kvaCol = kva <= 400 ? 'var(--blue)' : kva <= 3500 ? 'var(--amber)' : 'var(--red)'
                                       const { typeCode: tc } = decodeItemInfo(w.order.item_code ?? '')
                                       const typeLabel = tc === '4' ? 'CR' : ['1','2','3'].includes(tc) ? 'Oil' : ''
-                                      const totalH = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
+                                      const totalH = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates, useNearestKva)
                                       const wireType = detectWireType(w.order.raw_mat)
                                       const wireMatch = wireType === 'laser' ? m.laser : wireType === 'm4' ? m.m4 : true
                                       return (
@@ -1151,6 +1227,7 @@ export default function CuttingMachines() {
                                             <span style={{ color: 'var(--txt3)', fontSize: 9 }}>×{w.order.qty}</span>
                                             {typeLabel && <span style={{ fontSize: 9, padding: '0 3px', borderRadius: 3, background: tc === '4' ? 'rgba(250,179,135,.2)' : 'rgba(137,180,250,.12)', color: tc === '4' ? 'var(--amber)' : 'var(--blue)' }}>{typeLabel}</span>}
                                             {drillPrefers(m, w.order) && <span style={{ fontSize: 10 }}>🔩</span>}
+                                            {lateOrders.has(origId(w.order.id)) && w.isComplete && <span title={`ส่งช้า — due: ${w.order.due_so}`} style={{ fontSize: 10 }}>🔴</span>}
                                             <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700, color: w.carriesOver ? 'var(--red)' : w.isComplete ? 'var(--green)' : 'var(--amber)' }}>
                                               {w.hrsWorked.toFixed(1)}h{totalH > 0 ? `/${totalH.toFixed(1)}h` : ''}{w.isComplete ? '✓' : '→'}
                                             </span>
@@ -1233,14 +1310,26 @@ export default function CuttingMachines() {
                   <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: col }}>{qty} ตัว</span>
                 </div>
               )
+              const today = fmtISO(new Date())
+              const weekEndStr = days.length > 0 ? fmtISO(days[days.length - 1]) : ''
               const orderRow = (o: Order) => {
                 const kva = o.kva ?? products[o.product]?.kva ?? 0
+                const due = o.due_so
+                const dueCol = !due ? 'var(--txt3)'
+                  : due < today      ? 'var(--red)'
+                  : due <= weekEndStr ? 'var(--amber)'
+                  : 'var(--green)'
+                const isLate = lateOrders.has(origId(o.id))
                 return (
-                  <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 8px', background: 'var(--bg4)', borderRadius: 6, fontSize: 11, whiteSpace: 'nowrap' }}>
+                  <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 6, fontSize: 11, whiteSpace: 'nowrap',
+                    background: isLate ? 'rgba(224,90,78,.08)' : 'var(--bg4)',
+                    border: isLate ? '1px solid rgba(224,90,78,.3)' : '1px solid transparent' }}>
+                    {isLate && <span style={{ fontSize: 10 }}>🔴</span>}
                     <span style={{ fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--txt1)' }}>{o.sap_so ?? o.id.slice(-8)}</span>
                     <span style={{ color: 'var(--txt3)' }}>{kva.toLocaleString()}kVA</span>
                     <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt2)' }}>×{o.qty}</span>
                     {o.customer && <span style={{ color: 'var(--txt3)', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>{o.customer}</span>}
+                    {due && <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: dueCol, fontWeight: due < today ? 700 : 400 }}>due {due}</span>}
                   </div>
                 )
               }
@@ -1382,14 +1471,15 @@ export default function CuttingMachines() {
                             const left = seg.start / totalHrs * 100
                             const width = Math.max(seg.dur / totalHrs * 100, 0.3)
                             return (
-                              <div key={si} title={`${seg.order.sap_so||seg.order.id.slice(-6)} · ${kva.toLocaleString()}kVA×${seg.order.qty} · ${seg.dur.toFixed(1)}h${seg.isCarryOver?' (↩)':''}${seg.carriesOver?' →':seg.isComplete?' ✓':''}`}
+                              <div key={si} title={`${seg.order.sap_so||seg.order.id.slice(-6)} · ${kva.toLocaleString()}kVA×${seg.order.qty} · ${seg.dur.toFixed(1)}h${seg.isCarryOver?' (↩)':''}${seg.carriesOver?' →':seg.isComplete?' ✓':''}${lateOrders.has(origId(seg.order.id)) && seg.isComplete ? ` 🔴 ส่งช้า (due: ${seg.order.due_so||'?'})` : ''}`}
                                 style={{ position: 'absolute', left: `${left}%`, width: `${width}%`, top: 2, bottom: 2, borderRadius: 3, zIndex: 2,
                                   background: color, opacity: seg.isCarryOver ? 0.7 : 0.9,
                                   borderLeft: seg.isCarryOver ? '3px solid rgba(0,0,0,.3)' : undefined,
                                   borderRight: seg.carriesOver ? '3px solid rgba(0,0,0,.4)' : undefined,
+                                  borderTop: lateOrders.has(origId(seg.order.id)) && seg.isComplete ? '2px solid #e4405e' : undefined,
                                   display: 'flex', alignItems: 'center', overflow: 'hidden', paddingLeft: 2 }}>
                                 <span style={{ fontSize: 7, color: '#11111b', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'var(--mono)' }}>
-                                  {kva >= 1000 ? `${kva/1000}k` : kva}{seg.isComplete ? '✓' : seg.carriesOver ? '→' : ''} {seg.dur.toFixed(1)}h
+                                  {lateOrders.has(origId(seg.order.id)) && seg.isComplete ? '🔴' : ''}{kva >= 1000 ? `${kva/1000}k` : kva}{seg.isComplete ? '✓' : seg.carriesOver ? '→' : ''} {seg.dur.toFixed(1)}h
                                 </span>
                               </div>
                             )

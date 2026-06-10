@@ -305,10 +305,10 @@ export default function SapWCLoadTab() {
   useEffect(() => {
     fetch('/api/sap-routing/catalog')
       .then(r => r.json())
-      .then((rows: { mat: string; ops: [string, string, string, number][] }[]) => {
+      .then((rows: { mat: string; ops: { wc: string; op: string; hrs: number }[] }[]) => {
         const m = new Map<string, CatalogEntry>()
         for (const r of rows) {
-          m.set(r.mat, { mat: r.mat, ops: r.ops.map(op => ({ wc: op[1], opName: op[2], avgHrs: op[3] })) })
+          m.set(r.mat, { mat: r.mat, ops: r.ops.map(op => ({ wc: op.wc, opName: op.op, avgHrs: typeof op.hrs === 'number' ? op.hrs : parseFloat(op.hrs) || 0 })) })
         }
         setCatalog(m)
         setLoading(false)

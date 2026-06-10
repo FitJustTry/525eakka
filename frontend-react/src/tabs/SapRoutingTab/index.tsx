@@ -40,16 +40,16 @@ export default function SapRoutingTab() {
   useEffect(() => {
     fetch('/api/sap-routing/catalog')
       .then(r => r.json())
-      .then((rows: { mat: string; ops: [string, string, string, number][] }[]) => {
+      .then((rows: { mat: string; ops: { wc: string; op: string; hrs: number }[] }[]) => {
         if (!rows.length) { setDbEntries(null); setLoading(false); return }
         const entries: CatalogEntry[] = rows.map(r => {
           const s = STATIC_MAP.get(r.mat)
           return {
             mat: r.mat,
-            desc: s?.desc ?? '',
+            desc: s?.desc ?? r.ops[0]?.op ?? '',
             cat: s?.cat ?? 'other',
             rno: s?.rno ?? '',
-            ops: r.ops,
+            ops: r.ops.map(o => ['', o.wc, o.op, typeof o.hrs === 'number' ? o.hrs : parseFloat(o.hrs) || 0] as [string, string, string, number]),
             fromDb: true,
           }
         })

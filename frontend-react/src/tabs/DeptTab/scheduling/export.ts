@@ -13,6 +13,7 @@ export interface ExportContext {
   mon: Date
   sat: Date
   balanceMode: string
+  useNearestKva?: boolean
 }
 
 export interface PlanRow {
@@ -24,7 +25,7 @@ export interface PlanRow {
 
 const DAY_TH_FULL = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์']
 
-export function buildPlanRows({ weekData, products, globalRates, globalTmcRates }: ExportContext): PlanRow[] {
+export function buildPlanRows({ weekData, products, globalRates, globalTmcRates, useNearestKva = false }: ExportContext): PlanRow[] {
   const planRows: PlanRow[] = []
   weekData.dayRows.forEach(row => {
     const { d, machineCells } = row
@@ -38,7 +39,7 @@ export function buildPlanRows({ weekData, products, globalRates, globalTmcRates 
       if (work.length === 0) return
       work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
         const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-        const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
+        const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates, useNearestKva)
         planRows.push({ day, date, machine: mLabel(m), machOff: false, wallHrs: wall, ot: sched?.otHrs ?? 0, carryFwd: sched?.carriesForward ?? false, sapSo: w.order.sap_so ?? w.order.id, kva, qty: w.order.qty, customer: w.order.customer ?? '', rawMat: w.order.raw_mat ?? '', hrsWorked: w.hrsWorked, totalHrs, done: w.isComplete, carryOver: w.carriesOver, isCarryIn: w.isCarryOver })
       })
     })
@@ -47,7 +48,7 @@ export function buildPlanRows({ weekData, products, globalRates, globalTmcRates 
 }
 
 export function exportPlanCSV(ctx: ExportContext): void {
-  const { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat, balanceMode } = ctx
+  const { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat, balanceMode, useNearestKva = false } = ctx
   const DAY_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
   const rows: string[][] = []
 
@@ -74,7 +75,7 @@ export function exportPlanCSV(ctx: ExportContext): void {
       rows.push(['', mLabel(m), `${wall.toFixed(1)}h${otNote}${sched?.carriesForward ? ' →' : ''}`])
       work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
         const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-        const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
+        const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates, useNearestKva)
         rows.push(['', '', `${w.isCarryOver ? '↩ ' : ''}${w.order.sap_so ?? w.order.id}`, `${kva.toLocaleString()}kVA ×${w.order.qty}`, w.order.customer ?? '', `${w.hrsWorked.toFixed(1)}h / ${totalHrs.toFixed(1)}h ${w.isComplete ? '✓' : '→'}`])
       })
     })
@@ -91,7 +92,7 @@ export function exportPlanCSV(ctx: ExportContext): void {
 }
 
 export function exportTXT(ctx: ExportContext): void {
-  const { weekData, products, globalRates, globalTmcRates, weekLabel, mon, sat } = ctx
+  const { weekData, products, globalRates, globalTmcRates, weekLabel, mon, sat, useNearestKva = false } = ctx
   const lines: string[] = []
   lines.push(`แผนการตัดโลหะ — ${weekLabel}`)
   lines.push(`${weekData.totalQtyWeek} ตัว · ${Math.round(weekData.totalKvaWeek).toLocaleString()} kVA · OT ${weekData.totalOT.toFixed(1)}h`)
@@ -109,7 +110,7 @@ export function exportTXT(ctx: ExportContext): void {
       lines.push(`  ${mLabel(m).padEnd(18)} ${wall.toFixed(1)}h${ot}${sched?.carriesForward ? ' →' : ''}`)
       work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
         const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-        const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
+        const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates, useNearestKva)
         const pre = w.isCarryOver ? '↩ ' : '  '
         lines.push(`    ${pre}${(w.order.sap_so ?? '').padEnd(14)} ${String(kva.toLocaleString() + 'kVA×' + w.order.qty).padEnd(12)} ${w.hrsWorked.toFixed(1)}h/${total.toFixed(1)}h ${w.isComplete ? '✓' : '→'}  ${w.order.customer ?? ''}`)
       })
@@ -166,7 +167,7 @@ export function exportJSON(ctx: ExportContext): void {
 
 /** Machine-first XLSX: each machine gets its own sheet showing its full week */
 export function exportMachineXLSX(ctx: ExportContext): void {
-  const { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat } = ctx
+  const { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat, useNearestKva = false } = ctx
   const wb = XLSX.utils.book_new()
 
   machines.forEach((m, mi) => {
@@ -197,7 +198,7 @@ export function exportMachineXLSX(ctx: ExportContext): void {
 
       work.forEach((w, wi) => {
         const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-        const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
+        const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates, useNearestKva)
         rows.push([
           wi === 0 ? dStr : '',
           wi === 0 ? DAY_TH_FULL[d.getDay()] : '',
@@ -222,7 +223,7 @@ export function exportMachineXLSX(ctx: ExportContext): void {
 
 /** Machine-first Print: one assignment card per machine — hand to floor workers */
 export function exportMachinePrint(ctx: ExportContext): void {
-  const { weekData, machines, products, globalRates, globalTmcRates, weekLabel, balanceMode } = ctx
+  const { weekData, machines, products, globalRates, globalTmcRates, weekLabel, balanceMode, useNearestKva = false } = ctx
 
   let html = `<html><head><meta charset="utf-8"><title>แผนต่อเครื่อง ${weekLabel}</title><style>
     body{font-family:sans-serif;font-size:11px;margin:10px}
@@ -267,7 +268,7 @@ export function exportMachinePrint(ctx: ExportContext): void {
       }
       work.forEach((w, wi) => {
         const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-        const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
+        const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates, useNearestKva)
         const status = w.isComplete ? `<span class="done">✓</span>` : `<span class="carry">→</span>`
         const otHrs = mc.sched?.otHrs ?? 0
         html += `<tr>
@@ -296,7 +297,7 @@ export function exportMachinePrint(ctx: ExportContext): void {
 }
 
 export function exportPrint(ctx: ExportContext): void {
-  const { weekData, products, globalRates, globalTmcRates, weekLabel, balanceMode } = ctx
+  const { weekData, products, globalRates, globalTmcRates, weekLabel, balanceMode, useNearestKva = false } = ctx
   let html = `<html><head><meta charset="utf-8"><title>แผนการตัดโลหะ ${weekLabel}</title><style>
     body{font-family:sans-serif;font-size:11px;margin:12px}
     h2{font-size:13px;margin:0 0 4px}
@@ -325,7 +326,7 @@ export function exportPrint(ctx: ExportContext): void {
       html += `<table><tr><td class="h">SAP SO</td><td class="h">kVA</td><td class="h">Qty</td><td class="h">ลูกค้า</td><td class="h">Raw Mat</td><td class="h">ชม.</td><td class="h">สถานะ</td></tr>`
       work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
         const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
-        const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates)
+        const total = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates, useNearestKva)
         const st = w.isComplete ? `<span class="done">✓</span>` : `<span class="carry">→</span>`
         html += `<tr><td>${w.isCarryOver ? '↩ ' : ''}${w.order.sap_so ?? ''}</td><td>${kva.toLocaleString()}</td><td>×${w.order.qty}</td><td>${w.order.customer ?? ''}</td><td>${w.order.raw_mat ?? ''}</td><td>${w.hrsWorked.toFixed(1)}/${total.toFixed(1)}h</td><td>${st}</td></tr>`
       })
