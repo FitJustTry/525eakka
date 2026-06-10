@@ -154,7 +154,7 @@ export default function CuttingMachines() {
     | 'deadline_smart' | 'priority_smart' | 'interweek_smart' | 'batch_smart'
     | 'daily_full' | 'weekly_full' | 'fastest_full'
     | 'deadline_full' | 'priority_full' | 'interweek_full' | 'batch_full'
-  const [balanceMode, setBalanceMode] = useState<BalanceMode>('weekly_no_ot')
+  const [balanceMode, setBalanceMode] = useState<BalanceMode>('fastest_smart')
   const [viewMode, setViewMode] = useState<'table' | 'cards' | 'pipeline'>('table')
   const [globalRates, setGlobalRates]       = useState<CuttingRate[]>([])
   const [globalTmcRates, setGlobalTmcRates] = useState<CuttingRate[]>([])
@@ -165,7 +165,7 @@ export default function CuttingMachines() {
   const [requireDrill, setRequireDrill] = useState(true)
   const [stickyOrders, setStickyOrders] = useState(true)  // true = one machine owns all units of an order
   const isFastest = balanceMode.startsWith('fastest')
-  const [lazyOT, setLazyOT] = useState(true)             // true = defer OT to end of week; false = eager (fire from day 1)
+  const [lazyOT, setLazyOT] = useState(false)            // true = defer OT to end of week; false = eager (fire from day 1)
   const [interweekThreshold, setInterweekThreshold] = useState(0.5)
   const [useNearestKva, setUseNearestKva] = useState(true)
   const [machineTableOpen, setMachineTableOpen] = useState(false)
