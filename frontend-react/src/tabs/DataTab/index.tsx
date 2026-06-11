@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import { useApp } from '../../context/AppContext'
-import type { Order, CuttingMachine, PlanOrder } from '../../types'
+import type { Order, CuttingMachine, PlanOrder, RoutingCrRow } from '../../types'
 
 // ── styles ────────────────────────────────────────────────────────────────────
 const S: Record<string, React.CSSProperties> = {
@@ -745,12 +745,11 @@ function SapRouting() {
 }
 
 // ── 7. ROUTING CR ────────────────────────────────────────────────────────────
-interface RoutingCrRow { id: number; sheet_name: string; size_label: string; size_kva: number; routing_group: string; operation: string; wc_id: string; description: string; qty_per_op: number; unit: string; std_hrs: number }
-
 function RoutingCr() {
   const [rows, setRows] = useState<RoutingCrRow[]>([]); const [loading, setLoading] = useState(true)
   const [q, setQ] = useState(''); const [sf, setSf] = useState(''); const [wf, setWf] = useState('')
   const [busy, setBusy] = useState(false)
+  const [showAgg, setShowAgg] = useState(false)
 
   useEffect(() => {
     apiFetch('/routing-cr').then((d: RoutingCrRow[]) => { setRows(d); setLoading(false) }).catch(() => setLoading(false))
@@ -780,6 +779,17 @@ function RoutingCr() {
     return m
   }, [rows])
 
+  const aggRates = useMemo(() => {
+    const map = new Map<string, number>()
+    rows.forEach(r => {
+      const key = `${r.sheet_name}||${r.size_kva}`
+      map.set(key, (map.get(key) ?? 0) + (Number(r.std_hrs) || 0))
+    })
+    return [...map.entries()]
+      .map(([key, total]) => { const [sheet, kva] = key.split('||'); return { sheet, kva: Number(kva), total } })
+      .sort((a, b) => a.sheet.localeCompare(b.sheet) || a.kva - b.kva)
+  }, [rows])
+
   const SHEET_COLOR: Record<string, string> = {
     'Core Oil Type': 'var(--blue)',
     'Core Dry Type Cast Resin': 'var(--amber)',
@@ -801,7 +811,9 @@ function RoutingCr() {
           {wcs.map(w => <option key={w} value={w}>{w}</option>)}
         </select>
         {(q || sf || wf) && <button style={S.btn} onClick={() => { setQ(''); setSf(''); setWf('') }}>✕ Clear</button>}
-        <button style={{ ...S.btnRed, marginLeft: 'auto' }} disabled={busy || !rows.length} onClick={async () => {
+        <button style={{ ...S.btn, marginLeft: 'auto', border: `1px solid ${showAgg ? 'var(--green)' : 'var(--bord2)'}`, color: showAgg ? 'var(--green)' : 'var(--txt3)' }}
+          onClick={() => setShowAgg(v => !v)}>📊 Agg Rates{aggRates.length > 0 ? ` (${aggRates.length})` : ''}</button>
+        <button style={{ ...S.btnRed }} disabled={busy || !rows.length} onClick={async () => {
           if (!confirm(`ลบ Routing CR ทั้งหมด ${rows.length.toLocaleString()} operations?`)) return
           setBusy(true)
           try { await apiFetch('/routing-cr', 'DELETE'); setRows([]) } catch (e) { alert(String(e)) }
@@ -821,6 +833,33 @@ function RoutingCr() {
               </div>
             )
           })}
+        </div>
+      )}
+
+      {showAgg && aggRates.length > 0 && (
+        <div style={{ flexShrink: 0, borderBottom: '1px solid var(--bord)', maxHeight: 240, overflow: 'auto' }}>
+          <table style={{ ...S.tbl, fontSize: 11 }}>
+            <thead><tr>
+              <th style={S.th}>ประเภท</th>
+              <th style={{ ...S.th, textAlign: 'right' }}>kVA</th>
+              <th style={{ ...S.th, textAlign: 'right' }}>รวม Std Hrs</th>
+              <th style={{ ...S.th, color: 'var(--txt3)', fontWeight: 400 }}>ใช้เป็น</th>
+            </tr></thead>
+            <tbody>
+              {aggRates.map((r, i) => {
+                const col = SHEET_COLOR[r.sheet] ?? 'var(--txt2)'
+                const isCr = r.sheet.toLowerCase().includes('cast resin')
+                return (
+                  <tr key={i}>
+                    <td style={{ ...S.td, color: col, fontWeight: 600, fontSize: 10 }}>{r.sheet}</td>
+                    <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--mono)' }}>{r.kva.toLocaleString()}</td>
+                    <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--amber)', fontWeight: 700 }}>{r.total.toFixed(2)}h</td>
+                    <td style={{ ...S.td, fontSize: 10, color: isCr ? 'var(--purple)' : 'var(--blue)' }}>{isCr ? '⚗ TMC (Cast Resin)' : '✂ Normal'}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
       )}
 

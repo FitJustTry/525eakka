@@ -78,6 +78,12 @@ export interface Snapshot {
   employees?: Record<string, Employee[]>
 }
 
+export interface RoutingCrRow {
+  id: number; sheet_name: string; size_label: string; size_kva: number
+  routing_group: string; operation: string; wc_id: string; description: string
+  qty_per_op: number; unit: string; std_hrs: number
+}
+
 export type TabId =
   | 'simulate' | 'import' | 'orders' | 'catalog' | 'employees'
   | 'timedash' | 'dept' | 'load' | 'gantt' | 'plan'

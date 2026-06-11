@@ -105,10 +105,10 @@
  *    → Increase to give drill machines stronger preference at cost of balance
  * ════════════════════════════════════════════════════════════════════
  */
-import { useState, useMemo, useEffect } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import { api } from '../../../api'
 import { useApp } from '../../../context/AppContext'
-import type { CuttingMachine, CuttingRate, Order } from '../../../types'
+import type { CuttingMachine, CuttingRate, Order, RoutingCrRow } from '../../../types'
 import { decodeItemInfo } from '../../../utils/itemCodeDecode'
 import styles from './CuttingPage.module.css'
 import { DAY_TH, DAY_SHORT, REG_PER, OT_PER, CR_STANDARD_SIZES } from './scheduling/constants'
@@ -121,6 +121,7 @@ import {
 import { assignOrders, scheduleFastest, scheduleMode } from './scheduling/engine'
 import type { ShiftMode } from './scheduling/engine'
 import { computeWeekData } from './scheduling/weekData'
+import { buildRoutingCrRates, getRoutingOps } from './scheduling/routingRates'
 import {
   exportPlanCSV as _exportCSV,
   exportTXT as _exportTXT,
@@ -176,6 +177,10 @@ export default function CuttingMachines() {
   const [machineTableOpen, setMachineTableOpen] = useState(false)
   const [globalRatesOpen, setGlobalRatesOpen]   = useState(false)
   const [perMachRatesOpen, setPerMachRatesOpen] = useState(false)
+  const [routingCrData, setRoutingCrData]     = useState<RoutingCrRow[]>([])
+  const [useRoutingCr, setUseRoutingCr]       = useState(false)
+  const [routingRatesOpen, setRoutingRatesOpen] = useState(false)
+  const [expandedRoutingRow, setExpandedRoutingRow] = useState<string | null>(null)
 
   // Stable string key for manualShiftDays — used in useMemo deps
   const manualShiftKey = useMemo(() =>
@@ -183,6 +188,49 @@ export default function CuttingMachines() {
       .map(([mid, s]) => `${mid}:${[...s].sort().join(',')}`)
       .join('|')
   , [manualShiftDays])
+
+  const { normalRates: routingNormalRates, crRates: routingCrRates } = useMemo(
+    () => buildRoutingCrRates(routingCrData),
+    [routingCrData]
+  )
+
+  const effectiveGlobalRates    = useRoutingCr && routingNormalRates.length > 0 ? routingNormalRates : globalRates
+  const effectiveGlobalTmcRates = useRoutingCr && routingCrRates.length    > 0 ? routingCrRates    : globalTmcRates
+
+  function getTimeDebugTitle(m: CuttingMachine, kva: number, itemCode: string | undefined): string {
+    const isCr = itemCode?.[1] === '4'
+    const typeLabel = isCr ? 'Cast Resin (CR)' : 'Normal'
+    const routingPool = isCr ? routingCrRates : routingNormalRates
+    const routingHit  = useRoutingCr ? routingPool.find(r => r.kva === kva) : undefined
+    const isFallback  = useRoutingCr && !routingHit
+
+    if (isFallback) {
+      const fallbackHrs = getHrsForKva(m, kva, globalRates, itemCode, globalTmcRates, useNearestKva)
+      return `⚠ Routing Missing\n${kva.toLocaleString()}kVA · ${typeLabel}\n📊 Manual fallback: ${fallbackHrs.toFixed(2)}h`
+    }
+
+    if (!useRoutingCr) {
+      const hrs = getHrsForKva(m, kva, globalRates, itemCode, globalTmcRates, useNearestKva)
+      return `📊 Manual Table\n${kva.toLocaleString()}kVA · ${typeLabel}\nFinal Hours: ${hrs.toFixed(2)}h`
+    }
+
+    // Routing CR hit — show operations
+    const ops = getRoutingOps(routingCrData, kva, isCr)
+    const totalOps = ops.reduce((s, r) => s + Number(r.std_hrs), 0)
+    const pad = ops.length ? Math.min(36, Math.max(...ops.map(o => `${o.operation} ${o.description}`.length))) : 0
+    let txt = `🏭 Routing CR\n${kva.toLocaleString()}kVA · ${typeLabel}\n`
+    if (ops.length > 0) {
+      txt += '\n'
+      for (const op of ops) {
+        const label = `${op.operation} ${op.description}`
+        txt += `${label.padEnd(pad)} = ${Number(op.std_hrs).toFixed(2)}h\n`
+      }
+      txt += `${'─'.repeat(pad + 9)}\n${'Total'.padEnd(pad)} = ${totalOps.toFixed(2)}h`
+    } else {
+      txt += `Total: ${(routingHit?.hrs ?? 0).toFixed(2)}h`
+    }
+    return txt
+  }
 
   function toggleManualShift(machineId: number, dStr: string) {
     setManualShiftDays(prev => {
@@ -197,6 +245,7 @@ export default function CuttingMachines() {
   useEffect(() => {
     fetch('/api/cutting-rates').then(r => r.json()).then(setGlobalRates).catch(() => {})
     fetch('/api/cutting-tmc-rates').then(r => r.json()).then(setGlobalTmcRates).catch(() => {})
+    api.routingCr.list().then(rows => setRoutingCrData(rows as RoutingCrRow[])).catch(() => {})
   }, [])
 
   async function saveGlobalRates(rates: CuttingRate[]) {
@@ -224,7 +273,7 @@ export default function CuttingMachines() {
   }
 
   // ── Plan snapshot ────────────────────────────────────────────
-  function expCtx() { return { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat, balanceMode, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays } }
+  function expCtx() { return { weekData, machines, products, globalRates: effectiveGlobalRates, globalTmcRates: effectiveGlobalTmcRates, weekLabel, mon, sat, balanceMode, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr } }
   function exportPlanCSV()      { _exportCSV(expCtx()) }
   function exportTXT()          { _exportTXT(expCtx()) }
   function exportXLSX()         { _exportXLSX(expCtx()) }
@@ -248,7 +297,8 @@ export default function CuttingMachines() {
             shiftNDays,
             shiftHrsDefault,
             manualShiftDays: [...manualShiftDays.entries()].map(([machineId, days]) => ({ machineId, days: [...days] })),
-            cutting_rates: globalRates,       // ⏱ เวลาตัดโลหะตามขนาด
+            useRoutingCr,
+            cutting_rates: effectiveGlobalRates,   // ⏱ เวลาตัดโลหะตามขนาด
             machines: machines.map(m => ({    // machine config at time of save
               id: m.id, name: m.name, count: m.count,
               min_kva: m.min_kva, max_kva: m.max_kva,
@@ -408,12 +458,12 @@ export default function CuttingMachines() {
     const prevDailyAsgn = prevDays.map(d => {
       const dStr = fmtISO(d); const dow = d.getDay()
       const active = machines.filter(m => isMachineOn(m, dow))
-      const asgn = assignOrders(prevOrders.filter(o => o.plan_date === dStr), active, products, globalRates, new Map(), new Map(machIdx), false, false, globalTmcRates)
+      const asgn = assignOrders(prevOrders.filter(o => o.plan_date === dStr), active, products, effectiveGlobalRates, new Map(), new Map(machIdx), false, false, effectiveGlobalTmcRates)
       return { dStr, asgn }
     })
     const prevApproach = balanceMode.startsWith('weekly') ? 'weekly' : 'daily'
     const prevOtPolicy = balanceMode.endsWith('_no_ot') ? 'none' : balanceMode.endsWith('_smart') ? 'smart' : 'full'
-    const prevSched = scheduleMode(prevOrders, prevDailyAsgn, machines, products, globalRates, wcConfig, prevDays, new Map(machIdx), prevApproach as 'daily'|'weekly', prevOtPolicy as 'none'|'smart'|'full', 'plan_date', [], false, false, true, globalTmcRates)
+    const prevSched = scheduleMode(prevOrders, prevDailyAsgn, machines, products, effectiveGlobalRates, wcConfig, prevDays, new Map(machIdx), prevApproach as 'daily'|'weekly', prevOtPolicy as 'none'|'smart'|'full', 'plan_date', [], false, false, true, effectiveGlobalTmcRates)
     // Find orders that were NOT completed (still in machine queues at week end)
     const completedIds = new Set<string>()
     machines.forEach(m => {
@@ -461,20 +511,20 @@ export default function CuttingMachines() {
         : dayOrds.flatMap(o => Array.from({length: o.qty}, (_, ui) => ({...o, id: `${o.id}__u${ui}`, qty: 1})))
       const initWall = new Map<number, number>()
       const isBatch = balanceMode.includes('batch_kva')
-      const asgn = assignOrders(dayOrdsEff, activeMachines, products, globalRates, initWall, new Map(machIdx), strictWire, requireDrill, globalTmcRates, isBatch)
+      const asgn = assignOrders(dayOrdsEff, activeMachines, products, effectiveGlobalRates, initWall, new Map(machIdx), strictWire, requireDrill, effectiveGlobalTmcRates, isBatch)
       // Always accumulate for weekly mode reference
       activeMachines.forEach(m => {
         const mOrd = asgn.get(m.id) ?? []
         const w = mOrd.reduce((a, o) => {
           const kva = o.kva ?? products[o.product]?.kva ?? 0
-          return a + (o.qty * getHrsForKva(m, kva, globalRates, o.item_code, globalTmcRates, useNearestKva)) / (m.count || 1)
+          return a + (o.qty * getHrsForKva(m, kva, effectiveGlobalRates, o.item_code, effectiveGlobalTmcRates, useNearestKva)) / (m.count || 1)
         }, 0)
         cumWall.set(m.id, (cumWall.get(m.id) ?? 0) + w)
       })
       return { dStr, asgn }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [balanceMode, strictWire, requireDrill, stickyOrders, globalRates.map(r => `${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${+m.laser}${+m.m4}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(',')])
+  }, [balanceMode, strictWire, requireDrill, stickyOrders, effectiveGlobalRates.map(r => `${r.kva}:${r.hrs}`).join(','), effectiveGlobalTmcRates.map(r => `${r.kva}:${r.hrs}`).join(','), weekOrders.map(o => o.id + o.qty).join(','), machines.map(m => `${m.id}${m.count}${m.hrs_per_unit}${m.min_kva}${m.max_kva}${+m.drill_8mm}${+m.drill_22mm}${+m.laser}${+m.m4}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(',')])
 
 
 
@@ -482,9 +532,9 @@ export default function CuttingMachines() {
   const weekSchedule = useMemo(() => {
     // ── ❌ ไม่ OT ─────────────────────────────────────────────────
     const mi = new Map(machIdx)
-    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays)
-    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays)
-    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays)
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays)
+    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, effectiveGlobalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays)
     const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
       daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
       deadline_no_ot: () => sm('none','deadline'), priority_no_ot: () => sm('none','priority'),
@@ -499,11 +549,11 @@ export default function CuttingMachines() {
     return (modeMap[balanceMode] ?? modeMap['weekly_no_ot'])()
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftKey, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
+  [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftKey, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), effectiveGlobalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), effectiveGlobalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
   // SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
   const weekData = useMemo(
-    () => computeWeekData({ weekSchedule, weekOrders, machines, days, balanceMode, strictWire, requireDrill, stickyOrders, products, wcConfig, globalRates, globalTmcRates }),
+    () => computeWeekData({ weekSchedule, weekOrders, machines, days, balanceMode, strictWire, requireDrill, stickyOrders, products, wcConfig, globalRates: effectiveGlobalRates, globalTmcRates: effectiveGlobalTmcRates }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [weekSchedule, balanceMode, strictWire, requireDrill, weekOrders.map(o=>o.id+o.qty).join(','), machines.map(m=>`${m.id}${(m.off_days??[]).join('-')}`).join(',')]
   )
@@ -561,11 +611,11 @@ export default function CuttingMachines() {
     const mi2 = new Map(machIdx)
     let noShiftSched: Map<number, Map<string, MachineDaySched>>
     if (isFastest) {
-      noShiftSched = scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, otPolicy, strictWire, requireDrill, stickyOrders, otPolicy === 'smart' ? lazyOT : true, globalTmcRates, useNearestKva, 'none', 0, shiftHrsDefault, new Map())
+      noShiftSched = scheduleFastest(weekOrders, machines, products, effectiveGlobalRates, wcConfig, days, otPolicy, strictWire, requireDrill, stickyOrders, otPolicy === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, useNearestKva, 'none', 0, shiftHrsDefault, new Map())
     } else {
       const sortStr = balanceMode.includes('deadline') ? 'deadline' : balanceMode.includes('priority') ? 'priority' : balanceMode.includes('interweek') ? 'interweek' : balanceMode.includes('batch') ? 'batch_kva' : 'plan_date'
       const approach = balanceMode.startsWith('daily') ? 'daily' : 'weekly' as 'daily'|'weekly'
-      noShiftSched = scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi2, approach, otPolicy, sortStr, nextWeekOrders, strictWire, requireDrill, stickyOrders, otPolicy === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva, 'none', 0, shiftHrsDefault, new Map())
+      noShiftSched = scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi2, approach, otPolicy, sortStr, nextWeekOrders, strictWire, requireDrill, stickyOrders, otPolicy === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, 'none', 0, shiftHrsDefault, new Map())
     }
     // Count late orders in no-shift schedule
     const late = new Set<string>()
@@ -1477,9 +1527,13 @@ export default function CuttingMachines() {
                                       const kvaCol = kva <= 400 ? 'var(--blue)' : kva <= 3500 ? 'var(--amber)' : 'var(--red)'
                                       const { typeCode: tc } = decodeItemInfo(w.order.item_code ?? '')
                                       const typeLabel = tc === '4' ? 'CR' : ['1','2','3'].includes(tc) ? 'Oil' : ''
-                                      const totalH = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates, useNearestKva)
+                                      const totalH = w.order.qty * getHrsForKva(m, kva, effectiveGlobalRates, w.order.item_code, effectiveGlobalTmcRates, useNearestKva)
                                       const wireType = detectWireType(w.order.raw_mat)
                                       const wireMatch = wireType === 'laser' ? m.laser : wireType === 'm4' ? m.m4 : true
+                                      const isCrOrder = w.order.item_code?.[1] === '4'
+                                      const routingPool = isCrOrder ? routingCrRates : routingNormalRates
+                                      const routingMiss = useRoutingCr && !routingPool.some(r => r.kva === kva)
+                                      const debugTitle  = getTimeDebugTitle(m, kva, w.order.item_code)
                                       return (
                                         <div key={idx} style={{ borderBottom: idx < work.length - 1 ? '1px solid var(--bord)' : 'none', paddingBottom: 4, marginBottom: 4 }}>
                                           {/* Row 1: SAP SO + kVA + status */}
@@ -1491,7 +1545,12 @@ export default function CuttingMachines() {
                                             {typeLabel && <span style={{ fontSize: 9, padding: '0 3px', borderRadius: 3, background: tc === '4' ? 'rgba(250,179,135,.2)' : 'rgba(137,180,250,.12)', color: tc === '4' ? 'var(--amber)' : 'var(--blue)' }}>{typeLabel}</span>}
                                             {drillPrefers(m, w.order) && <span style={{ fontSize: 10 }}>🔩</span>}
                                             {lateOrders.has(origId(w.order.id)) && w.isComplete && <span title={`ส่งช้า — due: ${w.order.due_so}`} style={{ fontSize: 10 }}>🔴</span>}
-                                            <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700, color: w.carriesOver ? 'var(--red)' : w.isComplete ? 'var(--green)' : 'var(--amber)' }}>
+                                            {useRoutingCr && (
+                                              routingMiss
+                                                ? <span title={debugTitle} style={{ fontSize: 9, cursor: 'help', color: 'var(--red)' }}>⚠</span>
+                                                : <span title={debugTitle} style={{ fontSize: 9, cursor: 'help', color: 'var(--green)' }}>🏭</span>
+                                            )}
+                                            <span title={!useRoutingCr ? debugTitle : undefined} style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700, cursor: useRoutingCr ? undefined : 'help', color: w.carriesOver ? 'var(--red)' : w.isComplete ? 'var(--green)' : 'var(--amber)' }}>
                                               {w.hrsWorked.toFixed(1)}h{totalH > 0 ? `/${totalH.toFixed(1)}h` : ''}{w.isComplete ? '✓' : '→'}
                                             </span>
                                           </div>
@@ -2013,6 +2072,35 @@ export default function CuttingMachines() {
               </span>
             )}
           </span>
+          <span style={{ display: 'flex', gap: 4, marginLeft: 'auto' }} onClick={e => e.stopPropagation()}>
+            <button
+              onClick={() => setUseRoutingCr(false)}
+              style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, cursor: 'pointer', fontWeight: !useRoutingCr ? 700 : 400,
+                border: `1px solid ${!useRoutingCr ? 'var(--blue)' : 'var(--bord2)'}`,
+                background: !useRoutingCr ? 'rgba(137,180,250,.15)' : 'transparent',
+                color: !useRoutingCr ? 'var(--blue)' : 'var(--txt3)' }}>
+              📊 Manual
+            </button>
+            <button
+              onClick={() => setUseRoutingCr(true)}
+              title={routingCrData.length === 0 ? 'ยังไม่มีข้อมูล Routing CR' : `${routingNormalRates.length} ขนาด · TMC ${routingCrRates.length} ขนาด`}
+              style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, cursor: 'pointer', fontWeight: useRoutingCr ? 700 : 400,
+                border: `1px solid ${useRoutingCr ? 'var(--green)' : 'var(--bord2)'}`,
+                background: useRoutingCr ? 'rgba(166,227,161,.15)' : 'transparent',
+                color: routingCrData.length === 0 ? 'var(--txt3)' : useRoutingCr ? 'var(--green)' : 'var(--txt3)' }}>
+              🏭 Routing CR{routingCrData.length > 0 ? ` (${routingNormalRates.length}+${routingCrRates.length})` : ' —'}
+            </button>
+            {routingCrData.length > 0 && (
+              <button
+                onClick={() => setRoutingRatesOpen(v => !v)}
+                style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+                  border: `1px solid ${routingRatesOpen ? 'var(--amber)' : 'var(--bord2)'}`,
+                  background: routingRatesOpen ? 'rgba(249,226,175,.15)' : 'transparent',
+                  color: routingRatesOpen ? 'var(--amber)' : 'var(--txt3)' }}>
+                👁 View
+              </button>
+            )}
+          </span>
         </div>
         {!globalRatesOpen ? null : <>
         {/* Global sub-tabs */}
@@ -2335,6 +2423,90 @@ export default function CuttingMachines() {
           })()}
         </div>}
       </div>
+
+      {/* ── Routing CR Rates (dedicated section) ──────── */}
+      {routingCrData.length > 0 && (
+        <div className={styles.card}>
+          <div className={styles.cardHeader} style={{ cursor: 'pointer' }} onClick={() => setRoutingRatesOpen(v => !v)}>
+            <span className={styles.sectionTitle}>
+              {routingRatesOpen ? '▾' : '▸'} 🏭 เวลาตัดโลหะ — Routing CR
+              {!routingRatesOpen && (
+                <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--txt3)', marginLeft: 10 }}>
+                  ✂ Normal {routingNormalRates.length} ขนาด · ⚗ CR {routingCrRates.length} ขนาด · คลิกแถวเพื่อดู Operations
+                </span>
+              )}
+            </span>
+          </div>
+          {routingRatesOpen && (() => {
+            const rateTable = (rates: typeof routingNormalRates, isCr: boolean) => {
+              const col   = isCr ? 'var(--purple)' : 'var(--blue)'
+              const label = isCr ? '⚗ Cast Resin Rates' : '✂ Normal Rates'
+              const Th = ({ children, right }: { children: React.ReactNode; right?: boolean }) => (
+                <th style={{ padding: '4px 8px', background: 'var(--bg3)', fontWeight: 600, fontSize: 10, color: 'var(--txt3)', textAlign: right ? 'right' : 'left', whiteSpace: 'nowrap', borderBottom: '1px solid var(--bord)' }}>{children}</th>
+              )
+              return (
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: col, padding: '8px 12px 4px' }}>{label} ({rates.length})</div>
+                  <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 11 }}>
+                    <thead><tr><Th>kVA</Th><Th right>Std Hrs</Th><Th right>Ops</Th></tr></thead>
+                    <tbody>
+                      {[...rates].sort((a, b) => a.kva - b.kva).map(r => {
+                        const rowKey = `${isCr ? 'cr' : 'n'}_${r.kva}`
+                        const expanded = expandedRoutingRow === rowKey
+                        const ops = getRoutingOps(routingCrData, r.kva, isCr)
+                        return (
+                          <React.Fragment key={r.kva}>
+                            <tr
+                              onClick={() => setExpandedRoutingRow(expanded ? null : rowKey)}
+                              style={{ cursor: 'pointer', background: expanded ? 'rgba(137,180,250,.06)' : undefined }}>
+                              <td style={{ padding: '4px 8px', fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--txt1)' }}>
+                                {expanded ? '▾ ' : '▸ '}{r.kva.toLocaleString()}
+                              </td>
+                              <td style={{ padding: '4px 8px', fontFamily: 'var(--mono)', textAlign: 'right', color: 'var(--amber)', fontWeight: 700 }}>{r.hrs.toFixed(2)}h</td>
+                              <td style={{ padding: '4px 8px', textAlign: 'right', color: 'var(--txt3)', fontSize: 10 }}>{ops.length}</td>
+                            </tr>
+                            {expanded && (
+                              <tr>
+                                <td colSpan={3} style={{ padding: '0 8px 8px 28px', background: 'var(--bg3)' }}>
+                                  <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 10, fontFamily: 'var(--mono)' }}>
+                                    <tbody>
+                                      {ops.map((op, oi) => (
+                                        <tr key={oi}>
+                                          <td style={{ padding: '1px 6px 1px 0', color: 'var(--blue)', fontWeight: 600, whiteSpace: 'nowrap' }}>{op.operation}</td>
+                                          <td style={{ padding: '1px 6px', color: 'var(--txt2)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{op.description}</td>
+                                          <td style={{ padding: '1px 0', textAlign: 'right', color: 'var(--amber)', fontWeight: 700, whiteSpace: 'nowrap' }}>{Number(op.std_hrs).toFixed(2)}h</td>
+                                        </tr>
+                                      ))}
+                                      <tr style={{ borderTop: '1px solid var(--bord)' }}>
+                                        <td colSpan={2} style={{ padding: '2px 6px 2px 0', fontWeight: 700, color: 'var(--txt2)' }}>Total</td>
+                                        <td style={{ padding: '2px 0', textAlign: 'right', color: col, fontWeight: 700 }}>{r.hrs.toFixed(2)}h</td>
+                                      </tr>
+                                    </tbody>
+                                  </table>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            }
+            return (
+              <div style={{ display: 'flex', gap: 0, padding: 0 }}>
+                {routingNormalRates.length > 0 && rateTable(routingNormalRates, false)}
+                {routingCrRates.length > 0 && (
+                  <div style={{ borderLeft: '1px solid var(--bord)', flex: '0 0 auto', minWidth: 200 }}>
+                    {rateTable(routingCrRates, true)}
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+        </div>
+      )}
 
     </div>
   )
