@@ -64,4 +64,10 @@ export const api = {
     list: (weekStart?: string) =>
       request<object[]>('/coil-plan' + (weekStart ? `?week_start=${encodeURIComponent(weekStart)}` : '')),
   },
+
+  routingCr: {
+    batch: (rows: object[]) =>
+      request<{ inserted: number }>('/routing-cr/batch', { method: 'POST', body: JSON.stringify(rows) }),
+    list: () => request<object[]>('/routing-cr'),
+  },
 }

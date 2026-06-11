@@ -333,6 +333,25 @@ async function initDatabase() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )
     `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS routing_cr (
+        id SERIAL PRIMARY KEY,
+        sheet_name TEXT NOT NULL DEFAULT '',
+        size_label TEXT NOT NULL DEFAULT '',
+        size_kva INTEGER NOT NULL DEFAULT 0,
+        routing_group TEXT NOT NULL DEFAULT '',
+        operation TEXT NOT NULL DEFAULT '',
+        wc_id TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        qty_per_op NUMERIC NOT NULL DEFAULT 1,
+        unit TEXT NOT NULL DEFAULT '',
+        std_hrs NUMERIC(10,4) NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_routing_cr_routing_group ON routing_cr(routing_group)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_routing_cr_wc ON routing_cr(wc_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_routing_cr_size ON routing_cr(size_kva)');
     await client.query('COMMIT');
     console.log('✅ PostgreSQL tables ready');
   } catch (err) {
@@ -1312,6 +1331,68 @@ app.post('/api/sap-routing/batch', asyncRoute(async (req, res) => {
 
 app.delete('/api/sap-routing', asyncRoute(async (req, res) => {
   const result = await pool.query('DELETE FROM sap_routing');
+  res.json({ deleted: result.rowCount });
+}));
+
+// ── Routing CR (เหล็กแกน) ──
+app.get('/api/routing-cr', asyncRoute(async (req, res) => {
+  const { routing_group, wc_id, size_kva } = req.query;
+  let sql = 'SELECT * FROM routing_cr';
+  const params = [];
+  const wheres = [];
+  if (routing_group) { wheres.push(`routing_group=$${params.length+1}`); params.push(routing_group); }
+  if (wc_id) { wheres.push(`wc_id=$${params.length+1}`); params.push(wc_id); }
+  if (size_kva) { wheres.push(`size_kva=$${params.length+1}`); params.push(parseInt(size_kva)); }
+  if (wheres.length) sql += ' WHERE ' + wheres.join(' AND ');
+  sql += ' ORDER BY sheet_name, size_kva, routing_group, operation';
+  const result = await pool.query(sql, params);
+  res.json(result.rows);
+}));
+
+app.post('/api/routing-cr/batch', asyncRoute(async (req, res) => {
+  const rows = req.body;
+  if (!Array.isArray(rows) || rows.length === 0)
+    return res.status(400).json({ error: 'Expected non-empty array' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM routing_cr');
+    const CHUNK = 500;
+    let inserted = 0;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK);
+      const vals = chunk.map((_, j) => {
+        const b = j * 10;
+        return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9},$${b+10})`;
+      }).join(',');
+      const params = chunk.flatMap(r => [
+        String(r.sheet_name || ''),
+        String(r.size_label || ''),
+        parseInt(r.size_kva) || 0,
+        String(r.routing_group || ''),
+        String(r.operation || ''),
+        String(r.wc_id || ''),
+        String(r.description || ''),
+        parseFloat(r.qty_per_op) || 1,
+        String(r.unit || ''),
+        parseFloat(r.std_hrs) || 0,
+      ]);
+      await client.query(
+        `INSERT INTO routing_cr(sheet_name,size_label,size_kva,routing_group,operation,wc_id,description,qty_per_op,unit,std_hrs) VALUES ${vals}`,
+        params
+      );
+      inserted += chunk.length;
+    }
+    await client.query('COMMIT');
+    res.json({ inserted });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally { client.release(); }
+}));
+
+app.delete('/api/routing-cr', asyncRoute(async (req, res) => {
+  const result = await pool.query('DELETE FROM routing_cr');
   res.json({ deleted: result.rowCount });
 }));
 

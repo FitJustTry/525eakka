@@ -4,7 +4,7 @@ import { api } from '../../api'
 import type { EmpDir } from '../../api'
 import type { Order, Employee, Product } from '../../types'
 
-type SubTab = 'masterplan' | 'plandetail' | 'coilplan' | 'employees' | 'catalog' | 'sap' | 'help'
+type SubTab = 'masterplan' | 'plandetail' | 'coilplan' | 'employees' | 'catalog' | 'sap' | 'routing_cr' | 'help'
 
 // ── Shared styles ──
 const thStyle: React.CSSProperties = {
@@ -374,6 +374,71 @@ function guessCatalogCols(headers: string[]) {
   }
 }
 
+// ── Routing CR (เหล็กแกน) helpers ──
+
+interface ParsedRoutingCrRow {
+  sheet_name: string
+  size_label: string
+  size_kva: number
+  routing_group: string
+  operation: string
+  wc_id: string
+  description: string
+  qty_per_op: number
+  unit: string
+  std_hrs: number
+}
+
+function parseSizeKva(raw: unknown): number {
+  if (!raw && raw !== 0) return 0
+  const s = String(raw).trim()
+  const m = s.match(/(\d[\d,]*)/)
+  if (!m) return 0
+  return parseInt(m[1].replace(/,/g, '')) || 0
+}
+
+function parseRoutingCr(wb: { SheetNames: string[]; Sheets: Record<string, unknown> }, sheetToJson: (ws: unknown, opts: object) => unknown[][]): ParsedRoutingCrRow[] {
+  const result: ParsedRoutingCrRow[] = []
+  const dataSheets = wb.SheetNames.filter(n => n.trim().toLowerCase() !== 'sheet2' && n.trim() !== '')
+  for (const sheetName of dataSheets) {
+    const ws = wb.Sheets[sheetName]
+    const rows: unknown[][] = sheetToJson(ws, { header: 1, defval: '' })
+    if (rows.length < 2) continue
+    let currentSizeLabel = ''
+    let currentSizeKva = 0
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i] as unknown[]
+      const sizeRaw = row[0]
+      const routingGroup = String(row[1] ?? '').trim()
+      const operation = String(row[2] ?? '').trim()
+      const wcId = String(row[3] ?? '').trim()
+      const description = String(row[4] ?? '').trim()
+      const qtyRaw = parseFloat(String(row[5] ?? '').replace(/,/g, '')) || 1
+      const unit = String(row[6] ?? '').trim()
+      const stdHrs = parseFloat(String(row[7] ?? '').replace(/,/g, '')) || 0
+
+      if (sizeRaw !== '' && sizeRaw !== null && sizeRaw !== undefined) {
+        currentSizeLabel = String(sizeRaw).trim()
+        currentSizeKva = parseSizeKva(sizeRaw)
+      }
+      if (!routingGroup || !operation || !wcId) continue
+      result.push({
+        sheet_name: sheetName,
+        size_label: currentSizeLabel,
+        size_kva: currentSizeKva,
+        routing_group: routingGroup,
+        operation,
+        wc_id: wcId,
+        description,
+        qty_per_op: qtyRaw,
+        unit,
+        std_hrs: stdHrs,
+      })
+    }
+  }
+  return result
+}
+
 // ── Main Component ──
 
 export default function ImportTab() {
@@ -432,6 +497,13 @@ export default function ImportTab() {
   const [pdResult, setPdResult] = useState<string | null>(null)
   const pdFileRef = useRef<HTMLInputElement>(null)
 
+  // Routing CR state
+  const [crDragOver, setCrDragOver] = useState(false)
+  const [crParsed, setCrParsed] = useState<ParsedRoutingCrRow[]>([])
+  const [crImporting, setCrImporting] = useState(false)
+  const [crResult, setCrResult] = useState<string | null>(null)
+  const crFileRef = useRef<HTMLInputElement>(null)
+
   // Master Plan (coil-format) state
   const [mpCoilDragOver, setMpCoilDragOver] = useState(false)
   const [mpCoilParsed, setMpCoilParsed] = useState<ParsedCoilRow[]>([])
@@ -442,6 +514,35 @@ export default function ImportTab() {
   const [mpCoilActiveDay, setMpCoilActiveDay] = useState<string | null>(null)
   const [mpCoilMapOpen, setMpCoilMapOpen] = useState(false)
   const mpCoilFileRef = useRef<HTMLInputElement>(null)
+
+  // ── Routing CR handlers ──
+
+  async function handleCrFile(file: File) {
+    setCrResult(null); setCrParsed([])
+    try {
+      const XLSX = await import('xlsx')
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
+      if (wb.SheetNames.length === 0) { alert('ไม่พบ Sheet ในไฟล์'); return }
+      const result = parseRoutingCr(wb as unknown as { SheetNames: string[]; Sheets: Record<string, unknown> }, XLSX.utils.sheet_to_json.bind(XLSX.utils) as (ws: unknown, opts: object) => unknown[][])
+      if (result.length === 0) { setCrResult('❌ ไม่พบข้อมูล — ตรวจสอบโครงสร้างไฟล์ (ต้องมี Routing Group, Operation, Work Center)'); return }
+      setCrParsed(result)
+    } catch (e) { alert('อ่านไฟล์ไม่ได้: ' + (e instanceof Error ? e.message : String(e))) }
+  }
+
+  async function handleCrImport() {
+    if (crParsed.length === 0) return
+    setCrImporting(true)
+    try {
+      const { inserted } = await api.routingCr.batch(crParsed)
+      const sheets = [...new Set(crParsed.map(r => r.sheet_name))]
+      const wcCount = new Set(crParsed.map(r => r.wc_id)).size
+      setCrResult(`✅ นำเข้าสำเร็จ — ${inserted} operations · ${sheets.length} ประเภท · ${wcCount} Work Centers`)
+      setCrParsed([])
+    } catch (e) {
+      setCrResult('❌ เกิดข้อผิดพลาด: ' + (e instanceof Error ? e.message : String(e)))
+    } finally { setCrImporting(false) }
+  }
 
   // ── Master Plan handlers ──
 
@@ -997,6 +1098,7 @@ export default function ImportTab() {
     { id: 'employees',   label: 'พนักงาน' },
     { id: 'catalog',     label: 'Catalog' },
     { id: 'sap',         label: 'SAP' },
+    { id: 'routing_cr',  label: 'Routing CR' },
     { id: 'help',        label: 'คู่มือ' },
   ]
 
@@ -1669,6 +1771,94 @@ export default function ImportTab() {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* ────────────── ROUTING CR (เหล็กแกน) ────────────── */}
+      {subTab === 'routing_cr' && (
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          {crParsed.length === 0 && (
+            <DropZone dragOver={crDragOver} setDragOver={setCrDragOver} fileRef={crFileRef}
+              onFile={handleCrFile} label="วางไฟล์ Excel Routing CR (เหล็กแกน) ที่นี่" />
+          )}
+          {crResult && <ResultBanner msg={crResult} onClear={() => setCrResult(null)} />}
+          {crParsed.length > 0 && (() => {
+            const sheets = [...new Set(crParsed.map(r => r.sheet_name))]
+            const wcCount = new Set(crParsed.map(r => r.wc_id)).size
+            const routingGroups = new Set(crParsed.map(r => r.routing_group)).size
+            const grouped = sheets.map(sheet => {
+              const rows = crParsed.filter(r => r.sheet_name === sheet)
+              const sizes = [...new Set(rows.map(r => r.size_label))]
+              return { sheet, rows, sizes }
+            })
+            return (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexShrink: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{crParsed.length} Operations</div>
+                  <div style={{ fontSize: 11, color: 'var(--txt3)', marginRight: 'auto' }}>
+                    {sheets.length} ประเภท · {routingGroups} Routing Groups · {wcCount} Work Centers — ตรวจสอบก่อนกด Import
+                  </div>
+                  <button onClick={() => setCrParsed([])} style={cancelBtn}>✕ ยกเลิก</button>
+                  <button onClick={handleCrImport} disabled={crImporting}
+                    style={{ ...importBtn, background: crImporting ? 'var(--bord2)' : 'var(--green)' }}>
+                    {crImporting ? 'กำลังนำเข้า…' : `✓ Import ${crParsed.length} Operations`}
+                  </button>
+                </div>
+                {/* Sheet summary chips */}
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8, flexShrink: 0 }}>
+                  {grouped.map(({ sheet, rows, sizes }) => (
+                    <div key={sheet} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 20, background: 'var(--bg3)', border: '1px solid var(--bord)', fontSize: 11 }}>
+                      <span style={{ fontWeight: 700, color: 'var(--blue)' }}>{sheet}</span>
+                      <span style={{ color: 'var(--txt3)' }}>·</span>
+                      <span style={{ color: 'var(--txt2)' }}>{sizes.length} ขนาด</span>
+                      <span style={{ color: 'var(--txt3)' }}>·</span>
+                      <span style={{ color: 'var(--amber)', fontFamily: 'var(--mono)' }}>{rows.length} ops</span>
+                    </div>
+                  ))}
+                </div>
+                {/* Preview table */}
+                <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 8 }}>
+                  <table style={{ borderCollapse: 'collapse', minWidth: '100%' }}>
+                    <thead>
+                      <tr>
+                        {(['ประเภท', 'ขนาด', 'Routing Group', 'Operation', 'Work Center', 'Description', 'Qty', 'Unit', 'Std Hrs'] as string[]).map(h => (
+                          <th key={h} style={thStyle}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {grouped.map(({ sheet, rows }) => (
+                        <>
+                          <tr key={'hdr-' + sheet} style={{ background: 'rgba(137,180,250,.07)', borderTop: '2px solid rgba(137,180,250,.2)' }}>
+                            <td colSpan={9} style={{ ...tdStyle, padding: '7px 12px' }}>
+                              <span style={{ fontWeight: 700, fontSize: 12, color: 'var(--blue)' }}>{sheet}</span>
+                              <span style={{ marginLeft: 10, fontSize: 11, color: 'var(--txt2)' }}>{rows.length} operations</span>
+                            </td>
+                          </tr>
+                          {rows.map((r, i) => {
+                            const mono: React.CSSProperties = { ...tdStyle, fontFamily: 'var(--mono)', fontSize: 10, whiteSpace: 'nowrap' }
+                            return (
+                              <tr key={sheet + i} style={{ background: i % 2 ? 'var(--bg3)' : undefined }}>
+                                <td style={{ ...tdStyle, fontSize: 10, color: 'var(--txt3)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sheet_name}</td>
+                                <td style={{ ...mono, color: 'var(--amber)', fontWeight: 700 }}>{r.size_label}</td>
+                                <td style={{ ...mono, color: 'var(--blue)' }}>{r.routing_group}</td>
+                                <td style={{ ...mono, color: 'var(--txt2)' }}>{r.operation}</td>
+                                <td style={{ ...mono, color: 'var(--green)', fontWeight: 700 }}>{r.wc_id}</td>
+                                <td style={{ ...tdStyle, fontSize: 10 }}>{r.description}</td>
+                                <td style={{ ...mono, textAlign: 'right' }}>{r.qty_per_op}</td>
+                                <td style={{ ...mono, color: 'var(--txt3)' }}>{r.unit}</td>
+                                <td style={{ ...mono, textAlign: 'right', color: 'var(--amber)', fontWeight: 700 }}>{r.std_hrs.toFixed(2)}</td>
+                              </tr>
+                            )
+                          })}
+                        </>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )
+          })()}
         </div>
       )}
 
