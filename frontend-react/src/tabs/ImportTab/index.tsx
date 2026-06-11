@@ -4,7 +4,7 @@ import { api } from '../../api'
 import type { EmpDir } from '../../api'
 import type { Order, Employee, Product } from '../../types'
 
-type SubTab = 'masterplan' | 'plandetail' | 'coilplan' | 'employees' | 'catalog' | 'sap' | 'routing_cr' | 'routing_hv' | 'routing_lv' | 'help'
+type SubTab = 'masterplan' | 'plandetail' | 'coilplan' | 'employees' | 'catalog' | 'sap' | 'routing_cr' | 'routing_hv' | 'routing_lv' | 'cap' | 'help'
 
 // ── Shared styles ──
 const thStyle: React.CSSProperties = {
@@ -374,6 +374,92 @@ function guessCatalogCols(headers: string[]) {
   }
 }
 
+// ── CAP (Capacity / พันคอยล์) helpers ──
+
+interface ParsedCapRate {
+  station_type: string   // 'LV-Foil', 'LV-Wire', 'HV'
+  section: string        // '' for LV, '22kV-L1' etc for HV
+  kva: number
+  hrs_per_unit: number
+  efficiency: number
+  machines: number
+  hrs_per_day: number
+  working_days: number
+  available_hrs: number
+  source_file: string
+}
+
+function parseCapFile(wb: { SheetNames: string[]; Sheets: Record<string, unknown> }, sheetToJson: (ws: unknown, opts: object) => unknown[][], fileName: string): ParsedCapRate[] {
+  const result: ParsedCapRate[] = []
+
+  // ── Foil sheet ──
+  const foilWs = wb.Sheets['Foil']
+  if (foilWs) {
+    const rows = sheetToJson(foilWs, { header: 1, defval: '' }) as unknown[][]
+    const efficiency    = parseFloat(String(rows[4]?.[2] ?? '')) || 0
+    const machines      = parseInt(String(rows[5]?.[2] ?? '')) || 0
+    const hrs_per_day   = parseFloat(String(rows[6]?.[2] ?? '')) || 0
+    const working_days  = parseFloat(String(rows[7]?.[2] ?? '')) || 0
+    const available_hrs = parseFloat(String(rows[8]?.[2] ?? '')) || 0
+    const base = { station_type: 'LV-Foil', section: '', efficiency, machines, hrs_per_day, working_days, available_hrs, source_file: fileName }
+    for (let i = 13; i < rows.length; i++) {
+      const kva = parseFloat(String(rows[i]?.[0] ?? ''))
+      const hrs = parseFloat(String(rows[i]?.[1] ?? ''))
+      if (!kva || isNaN(kva) || !hrs || isNaN(hrs)) continue
+      result.push({ ...base, kva, hrs_per_unit: hrs })
+    }
+  }
+
+  // ── Wire sheet ──
+  const wireWs = wb.Sheets['wire']
+  if (wireWs) {
+    const rows = sheetToJson(wireWs, { header: 1, defval: '' }) as unknown[][]
+    const efficiency    = parseFloat(String(rows[4]?.[2] ?? '')) || 0
+    const machines      = parseInt(String(rows[5]?.[2] ?? '')) || 0
+    const hrs_per_day   = parseFloat(String(rows[6]?.[2] ?? '')) || 0
+    const working_days  = parseFloat(String(rows[7]?.[2] ?? '')) || 0
+    const available_hrs = parseFloat(String(rows[8]?.[2] ?? '')) || 0
+    const base = { station_type: 'LV-Wire', section: '', efficiency, machines, hrs_per_day, working_days, available_hrs, source_file: fileName }
+    for (let i = 13; i < rows.length; i++) {
+      const kva = parseFloat(String(rows[i]?.[0] ?? ''))
+      const hrs = parseFloat(String(rows[i]?.[1] ?? ''))
+      if (!kva || isNaN(kva) || !hrs || isNaN(hrs)) continue
+      result.push({ ...base, kva, hrs_per_unit: hrs })
+    }
+  }
+
+  // ── HV sheet ──
+  const hvWs = wb.Sheets['HV']
+  if (hvWs) {
+    const rows = sheetToJson(hvWs, { header: 1, defval: '' }) as unknown[][]
+    const efficiency    = parseFloat(String(rows[3]?.[2] ?? '')) || 0
+    const machines      = parseInt(String(rows[4]?.[2] ?? '')) || 0
+    const hrs_per_day   = parseFloat(String(rows[5]?.[2] ?? '')) || 0
+    const working_days  = parseFloat(String(rows[6]?.[2] ?? '')) || 0
+    const available_hrs = parseFloat(String(rows[7]?.[2] ?? '')) || 0
+    const baseHv = { station_type: 'HV', efficiency, machines, hrs_per_day, working_days, available_hrs, source_file: fileName }
+    // 6 sections: each has [kvaCol, hrsCol, section]
+    const HV_SECTIONS: [number, number, string][] = [
+      [0,  1,  '22kV-L1'],
+      [6,  7,  '22kV-L2'],
+      [12, 13, '22kV-L4'],
+      [19, 20, '33kV-L1'],
+      [25, 26, '33kV-L2'],
+      [31, 32, '33kV-L4'],
+    ]
+    for (let i = 16; i < rows.length; i++) {
+      for (const [kvaCol, hrsCol, section] of HV_SECTIONS) {
+        const kva = parseFloat(String(rows[i]?.[kvaCol] ?? ''))
+        const hrs = parseFloat(String(rows[i]?.[hrsCol] ?? ''))
+        if (!kva || isNaN(kva) || !hrs || isNaN(hrs)) continue
+        result.push({ ...baseHv, section, kva, hrs_per_unit: hrs })
+      }
+    }
+  }
+
+  return result
+}
+
 // ── Routing CR (เหล็กแกน) helpers ──
 
 interface ParsedRoutingCrRow {
@@ -581,6 +667,13 @@ export default function ImportTab() {
   const [pdResult, setPdResult] = useState<string | null>(null)
   const pdFileRef = useRef<HTMLInputElement>(null)
 
+  // CAP state
+  const [capDragOver, setCapDragOver] = useState(false)
+  const [capParsed, setCapParsed] = useState<ParsedCapRate[]>([])
+  const [capImporting, setCapImporting] = useState(false)
+  const [capResult, setCapResult] = useState<string | null>(null)
+  const capFileRef = useRef<HTMLInputElement>(null)
+
   // Routing CR state
   const [crDragOver, setCrDragOver] = useState(false)
   const [crParsed, setCrParsed] = useState<ParsedRoutingCrRow[]>([])
@@ -669,6 +762,37 @@ export default function ImportTab() {
     } catch (e) {
       setLvResult('❌ เกิดข้อผิดพลาด: ' + (e instanceof Error ? e.message : String(e)))
     } finally { setLvImporting(false) }
+  }
+
+  // ── CAP handlers ──
+
+  async function handleCapFile(file: File) {
+    setCapResult(null); setCapParsed([])
+    try {
+      const XLSX = await import('xlsx')
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
+      const result = parseCapFile(
+        wb as unknown as { SheetNames: string[]; Sheets: Record<string, unknown> },
+        XLSX.utils.sheet_to_json.bind(XLSX.utils) as (ws: unknown, opts: object) => unknown[][],
+        file.name,
+      )
+      if (result.length === 0) { setCapResult('❌ ไม่พบข้อมูล — ตรวจสอบว่าไฟล์มี Sheet ชื่อ Foil, wire, หรือ HV'); return }
+      setCapParsed(result)
+    } catch (e) { alert('อ่านไฟล์ไม่ได้: ' + (e instanceof Error ? e.message : String(e))) }
+  }
+
+  async function handleCapImport() {
+    if (capParsed.length === 0) return
+    setCapImporting(true)
+    try {
+      const { inserted } = await api.capRates.batch(capParsed)
+      const stations = [...new Set(capParsed.map(r => r.station_type))]
+      setCapResult(`✅ นำเข้าสำเร็จ — ${inserted} rates · ${stations.join(', ')}`)
+      setCapParsed([])
+    } catch (e) {
+      setCapResult('❌ เกิดข้อผิดพลาด: ' + (e instanceof Error ? e.message : String(e)))
+    } finally { setCapImporting(false) }
   }
 
   // ── Routing CR handlers ──
@@ -1257,6 +1381,7 @@ export default function ImportTab() {
     { id: 'routing_cr',  label: 'Routing CR' },
     { id: 'routing_hv',  label: 'Routing HV' },
     { id: 'routing_lv',  label: 'Routing LV' },
+    { id: 'cap',         label: 'CAP พันคอยล์' },
     { id: 'help',        label: 'คู่มือ' },
   ]
 
@@ -2178,6 +2303,99 @@ export default function ImportTab() {
                                 <td style={{ ...mono, textAlign: 'right' }}>{r.qty_per_op}</td>
                                 <td style={{ ...mono, color: 'var(--txt3)' }}>{r.unit}</td>
                                 <td style={{ ...mono, textAlign: 'right', color: 'var(--amber)', fontWeight: 700 }}>{r.std_hrs.toFixed(2)}</td>
+                              </tr>
+                            )
+                          })}
+                        </>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )
+          })()}
+        </div>
+      )}
+
+      {/* ────────────── CAP พันคอยล์ ────────────── */}
+      {subTab === 'cap' && (
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          {capParsed.length === 0 && (
+            <DropZone dragOver={capDragOver} setDragOver={setCapDragOver} fileRef={capFileRef}
+              onFile={handleCapFile} label="วางไฟล์ Excel CAP พันคอยล์ (มี Sheet: Foil, wire, HV)" />
+          )}
+          {capResult && <ResultBanner msg={capResult} onClear={() => setCapResult(null)} />}
+          {capParsed.length > 0 && (() => {
+            const STATION_COLOR: Record<string, string> = {
+              'LV-Foil': 'var(--blue)', 'LV-Wire': 'var(--green)', 'HV': 'var(--amber)',
+            }
+            const stations = [...new Set(capParsed.map(r => r.station_type))]
+            const grouped = stations.map(st => {
+              const rows = capParsed.filter(r => r.station_type === st)
+              const sections = [...new Set(rows.map(r => r.section))].filter(Boolean)
+              const p = rows[0]
+              return { station_type: st, rows, sections, efficiency: p.efficiency, machines: p.machines, hrs_per_day: p.hrs_per_day, working_days: p.working_days, available_hrs: p.available_hrs }
+            })
+            return (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexShrink: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{capParsed.length} Rates</div>
+                  <div style={{ fontSize: 11, color: 'var(--txt3)', marginRight: 'auto' }}>
+                    {stations.length} สถานี — ตรวจสอบก่อนกด Import
+                  </div>
+                  <button onClick={() => setCapParsed([])} style={cancelBtn}>✕ ยกเลิก</button>
+                  <button onClick={handleCapImport} disabled={capImporting}
+                    style={{ ...importBtn, background: capImporting ? 'var(--bord2)' : 'var(--green)' }}>
+                    {capImporting ? 'กำลังนำเข้า…' : `✓ Import ${capParsed.length} Rates`}
+                  </button>
+                </div>
+                {/* Station summary chips */}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8, flexShrink: 0 }}>
+                  {grouped.map(g => {
+                    const col = STATION_COLOR[g.station_type] ?? 'var(--txt2)'
+                    return (
+                      <div key={g.station_type} style={{ padding: '6px 12px', borderRadius: 8, background: 'var(--bg3)', border: `1px solid ${col}44`, fontSize: 11 }}>
+                        <span style={{ fontWeight: 700, color: col }}>{g.station_type}</span>
+                        <span style={{ marginLeft: 8, color: 'var(--txt3)' }}>eff {(g.efficiency * 100).toFixed(0)}% · {g.machines} เครื่อง · {g.hrs_per_day}h/วัน · {g.working_days}วัน</span>
+                        <span style={{ marginLeft: 8, color: 'var(--amber)', fontFamily: 'var(--mono)' }}>{g.available_hrs.toLocaleString()} h</span>
+                        {g.sections.length > 0 && <span style={{ marginLeft: 8, color: 'var(--txt3)', fontSize: 10 }}>[{g.sections.join(', ')}]</span>}
+                        <span style={{ marginLeft: 8, color: 'var(--txt2)' }}>{g.rows.length} kVA sizes</span>
+                      </div>
+                    )
+                  })}
+                </div>
+                {/* Rate preview table */}
+                <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 8 }}>
+                  <table style={{ borderCollapse: 'collapse', minWidth: '100%' }}>
+                    <thead>
+                      <tr>
+                        {(['สถานี', 'Section', 'kVA', 'Hrs/Unit', 'Efficiency', 'เครื่อง', 'Hrs/Day', 'วันทำงาน', 'Hrs พร้อมใช้'] as string[]).map(h => (
+                          <th key={h} style={{ ...thStyle, textAlign: ['kVA','Hrs/Unit','เครื่อง','Hrs/Day','วันทำงาน','Hrs พร้อมใช้'].includes(h) ? 'right' : 'left' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {grouped.map(({ station_type, rows }) => (
+                        <>
+                          <tr key={'hdr-' + station_type} style={{ background: 'rgba(137,180,250,.07)', borderTop: '2px solid rgba(137,180,250,.2)' }}>
+                            <td colSpan={9} style={{ ...thStyle, padding: '7px 12px', position: 'static', fontSize: 12, color: STATION_COLOR[station_type] ?? 'var(--blue)', fontWeight: 700 }}>
+                              {station_type} — {rows.length} rates
+                            </td>
+                          </tr>
+                          {rows.map((r, i) => {
+                            const col = STATION_COLOR[r.station_type] ?? 'var(--txt2)'
+                            const m: React.CSSProperties = { ...thStyle, fontFamily: 'var(--mono)', fontSize: 10, position: 'static', background: i % 2 ? 'var(--bg3)' : 'var(--bg2)', fontWeight: 400, borderBottom: '0.5px solid var(--bord)', whiteSpace: 'nowrap' }
+                            return (
+                              <tr key={station_type + r.section + r.kva}>
+                                <td style={{ ...m, color: col, fontWeight: 700 }}>{r.station_type}</td>
+                                <td style={{ ...m, color: 'var(--txt2)' }}>{r.section || '—'}</td>
+                                <td style={{ ...m, textAlign: 'right', color: 'var(--amber)', fontWeight: 700 }}>{r.kva.toLocaleString()}</td>
+                                <td style={{ ...m, textAlign: 'right', color: 'var(--green)', fontWeight: 700 }}>{r.hrs_per_unit.toFixed(2)}</td>
+                                <td style={{ ...m, textAlign: 'right' }}>{(r.efficiency * 100).toFixed(0)}%</td>
+                                <td style={{ ...m, textAlign: 'right' }}>{r.machines}</td>
+                                <td style={{ ...m, textAlign: 'right' }}>{r.hrs_per_day}</td>
+                                <td style={{ ...m, textAlign: 'right' }}>{r.working_days}</td>
+                                <td style={{ ...m, textAlign: 'right' }}>{r.available_hrs.toLocaleString()}</td>
                               </tr>
                             )
                           })}

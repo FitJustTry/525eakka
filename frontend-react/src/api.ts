@@ -82,4 +82,10 @@ export const api = {
       request<{ inserted: number }>('/routing-lv/batch', { method: 'POST', body: JSON.stringify(rows) }),
     list: () => request<object[]>('/routing-lv'),
   },
+
+  capRates: {
+    batch: (rows: object[]) =>
+      request<{ inserted: number }>('/cap-rates/batch', { method: 'POST', body: JSON.stringify(rows) }),
+    list: () => request<object[]>('/cap-rates'),
+  },
 }

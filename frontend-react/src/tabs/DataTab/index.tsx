@@ -23,7 +23,7 @@ const S: Record<string, React.CSSProperties> = {
   count:  { fontSize: 10, padding: '2px 8px', borderRadius: 10, background: 'rgba(137,180,250,.15)', color: 'var(--blue)', fontWeight: 600 },
 }
 
-type SubTab = 'overview' | 'orders' | 'planorders' | 'coil' | 'machines' | 'employees' | 'holidays' | 'sap' | 'routing_cr' | 'routing_hv' | 'routing_lv' | 'wc' | 'itemcodes'
+type SubTab = 'overview' | 'orders' | 'planorders' | 'coil' | 'machines' | 'employees' | 'holidays' | 'sap' | 'routing_cr' | 'routing_hv' | 'routing_lv' | 'cap' | 'wc' | 'itemcodes'
 const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: 'overview',    label: '📊 Overview' },
   { id: 'orders',      label: '📋 Master Plan' },
@@ -36,6 +36,7 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: 'routing_cr',  label: '🪛 Routing CR' },
   { id: 'routing_hv',  label: '🔴 Routing HV' },
   { id: 'routing_lv',  label: '🔵 Routing LV' },
+  { id: 'cap',         label: '📈 CAP พันคอยล์' },
   { id: 'wc',          label: '🏭 WC Config' },
   { id: 'itemcodes',   label: '🔑 Item Codes' },
 ]
@@ -1018,6 +1019,132 @@ function RoutingTable({ endpoint, label, accentColor }: { endpoint: string; labe
   )
 }
 
+// ── CAP RATES ─────────────────────────────────────────────────────────────────
+interface CapRateRow {
+  id: number
+  station_type: string
+  section: string
+  kva: number
+  hrs_per_unit: number
+  efficiency: number
+  machines: number
+  hrs_per_day: number
+  working_days: number
+  available_hrs: number
+  source_file: string
+}
+
+function CapRates() {
+  const [rows, setRows] = useState<CapRateRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [sf, setSf] = useState('')
+  const [sec, setSec] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    apiFetch('/cap-rates').then((d: CapRateRow[]) => { setRows(d); setLoading(false) }).catch(() => setLoading(false))
+  }, [])
+
+  const stations = useMemo(() => [...new Set(rows.map(r => r.station_type))].sort(), [rows])
+  const sections = useMemo(() => [...new Set(rows.filter(r => !sf || r.station_type === sf).map(r => r.section))].filter(Boolean).sort(), [rows, sf])
+
+  const filtered = useMemo(() =>
+    rows.filter(r => (!sf || r.station_type === sf) && (!sec || r.section === sec)),
+    [rows, sf, sec])
+
+  const STATION_COLOR: Record<string, string> = { 'LV-Foil': 'var(--blue)', 'LV-Wire': 'var(--green)', 'HV': 'var(--amber)' }
+
+  const stationSummary = useMemo(() => {
+    const m: Record<string, { count: number; avail: number }> = {}
+    rows.forEach(r => {
+      if (!m[r.station_type]) m[r.station_type] = { count: 0, avail: r.available_hrs }
+      m[r.station_type].count++
+    })
+    return m
+  }, [rows])
+
+  return (
+    <div style={{ ...S.card, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ ...S.bar, padding: '10px 14px', borderBottom: '1px solid var(--bord)' }}>
+        <span style={S.count}>{filtered.length.toLocaleString()} / {rows.length.toLocaleString()} rates</span>
+        <select style={S.search} value={sf} onChange={e => { setSf(e.target.value); setSec('') }}>
+          <option value="">ทุกสถานี</option>
+          {stations.map(s => <option key={s} value={s}>{s} — {stationSummary[s]?.count ?? 0} rates</option>)}
+        </select>
+        {sections.length > 0 && (
+          <select style={S.search} value={sec} onChange={e => setSec(e.target.value)}>
+            <option value="">ทุก Section</option>
+            {sections.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
+        {(sf || sec) && <button style={S.btn} onClick={() => { setSf(''); setSec('') }}>✕ Clear</button>}
+        <button style={{ ...S.btnRed, marginLeft: 'auto' }} disabled={busy || !rows.length} onClick={async () => {
+          if (!confirm(`ลบ CAP Rates ทั้งหมด ${rows.length.toLocaleString()} rows?`)) return
+          setBusy(true)
+          try { await apiFetch('/cap-rates', 'DELETE'); setRows([]) } catch (e) { alert(String(e)) }
+          setBusy(false)
+        }}>🗑 Delete All</button>
+      </div>
+
+      {rows.length > 0 && (
+        <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--bord)', display: 'flex', gap: 12, flexWrap: 'wrap', flexShrink: 0 }}>
+          {stations.map(s => {
+            const col = STATION_COLOR[s] ?? 'var(--txt2)'
+            const sum = stationSummary[s]
+            const ex = rows.find(r => r.station_type === s)
+            return (
+              <div key={s} style={{ fontSize: 10, cursor: 'pointer' }} onClick={() => setSf(sf === s ? '' : s)}>
+                <span style={{ fontWeight: 700, color: sf === s ? col : 'var(--txt)', borderBottom: sf === s ? `1px solid ${col}` : 'none' }}>{s}</span>
+                {' '}<span style={{ color: 'var(--txt3)' }}>{sum?.count} sizes</span>
+                {ex && <span style={{ color: 'var(--txt3)', marginLeft: 4 }}>· eff {(ex.efficiency * 100).toFixed(0)}% · {ex.machines}m · {ex.available_hrs.toLocaleString()}h</span>}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <div style={S.wrap}>
+        {loading ? <div style={{ padding: 28, textAlign: 'center', color: 'var(--txt3)' }}>Loading…</div> : (
+          <table style={S.tbl}>
+            <thead><tr>
+              <th style={{ ...S.th, textAlign: 'center' }}>#</th>
+              {(['สถานี', 'Section', 'kVA', 'Hrs/Unit', 'Efficiency', 'เครื่อง', 'Hrs/Day', 'วันทำงาน', 'Hrs พร้อมใช้', 'ไฟล์'] as string[]).map(h => (
+                <th key={h} style={{ ...S.th, textAlign: ['kVA','Hrs/Unit','เครื่อง','Hrs/Day','วันทำงาน','Hrs พร้อมใช้'].includes(h) ? 'right' as const : 'left' as const }}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {filtered.length === 0 && (
+                <tr><td colSpan={11} style={{ ...S.td, textAlign: 'center', color: 'var(--txt3)', padding: 28 }}>
+                  {rows.length === 0 ? 'ไม่มีข้อมูล — นำเข้าจาก Import → CAP พันคอยล์' : 'ไม่พบผลลัพธ์'}
+                </td></tr>
+              )}
+              {filtered.map((r, i) => {
+                const col = STATION_COLOR[r.station_type] ?? 'var(--txt2)'
+                const m: React.CSSProperties = { ...S.td, fontFamily: 'var(--mono)', fontSize: 10, whiteSpace: 'nowrap' }
+                return (
+                  <tr key={r.id} style={{ borderLeft: `3px solid ${col}22` }}>
+                    <td style={{ ...S.td, color: 'var(--txt3)', fontSize: 10, fontFamily: 'var(--mono)', textAlign: 'center' }}>{i + 1}</td>
+                    <td style={{ ...S.td, fontSize: 10, color: col, fontWeight: 700, whiteSpace: 'nowrap' }}>{r.station_type}</td>
+                    <td style={{ ...m, color: 'var(--txt2)' }}>{r.section || '—'}</td>
+                    <td style={{ ...m, textAlign: 'right', color: 'var(--amber)', fontWeight: 700 }}>{r.kva.toLocaleString()}</td>
+                    <td style={{ ...m, textAlign: 'right', color: 'var(--green)', fontWeight: 700 }}>{Number(r.hrs_per_unit).toFixed(2)}</td>
+                    <td style={{ ...m, textAlign: 'right' }}>{(Number(r.efficiency) * 100).toFixed(0)}%</td>
+                    <td style={{ ...m, textAlign: 'right' }}>{r.machines}</td>
+                    <td style={{ ...m, textAlign: 'right' }}>{r.hrs_per_day}</td>
+                    <td style={{ ...m, textAlign: 'right' }}>{r.working_days}</td>
+                    <td style={{ ...m, textAlign: 'right', color: 'var(--amber)' }}>{Number(r.available_hrs).toLocaleString()}</td>
+                    <td style={{ ...S.td, fontSize: 9, color: 'var(--txt3)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.source_file}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── 8. OVERVIEW ──────────────────────────────────────────────────────────────
 interface DBCounts {
   planOrders: number | null
@@ -1029,11 +1156,12 @@ interface DBCounts {
   routingCrGroups: number | null
   routingHvOps: number | null
   routingLvOps: number | null
+  capRates: number | null
 }
 
 function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
   const { state } = useApp()
-  const [counts, setCounts] = useState<DBCounts>({ planOrders: null, coil: null, sapOps: null, sapMaterials: null, sapWCs: null, routingCrOps: null, routingCrGroups: null, routingHvOps: null, routingLvOps: null })
+  const [counts, setCounts] = useState<DBCounts>({ planOrders: null, coil: null, sapOps: null, sapMaterials: null, sapWCs: null, routingCrOps: null, routingCrGroups: null, routingHvOps: null, routingLvOps: null, capRates: null })
 
   useEffect(() => {
     apiFetch('/plan-orders').then((d: unknown[]) => setCounts(p => ({ ...p, planOrders: d.length }))).catch(() => setCounts(p => ({ ...p, planOrders: 0 })))
@@ -1048,6 +1176,7 @@ function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
     }).catch(() => setCounts(p => ({ ...p, routingCrOps: 0, routingCrGroups: 0 })))
     apiFetch('/routing-hv').then((d: unknown[]) => setCounts(p => ({ ...p, routingHvOps: d.length }))).catch(() => setCounts(p => ({ ...p, routingHvOps: 0 })))
     apiFetch('/routing-lv').then((d: unknown[]) => setCounts(p => ({ ...p, routingLvOps: d.length }))).catch(() => setCounts(p => ({ ...p, routingLvOps: 0 })))
+    apiFetch('/cap-rates').then((d: unknown[]) => setCounts(p => ({ ...p, capRates: d.length }))).catch(() => setCounts(p => ({ ...p, capRates: 0 })))
   }, [])
 
   const orders = state.orders ?? []
@@ -1070,6 +1199,7 @@ function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
     { id: 'routing_cr', icon: '🪛', label: 'Routing CR',    count: counts.routingCrOps,  sub: counts.routingCrGroups != null ? `${counts.routingCrGroups} routing groups` : undefined, color: '#cba6f7' },
     { id: 'routing_hv', icon: '🔴', label: 'Routing HV',   count: counts.routingHvOps,  sub: 'พันคอยล์แรงสูง',  color: 'var(--amber)' },
     { id: 'routing_lv', icon: '🔵', label: 'Routing LV',   count: counts.routingLvOps,  sub: 'พันคอยล์แรงต่ำ',  color: '#89b4fa' },
+    { id: 'cap',        icon: '📈', label: 'CAP พันคอยล์', count: counts.capRates,       sub: 'kVA rate entries', color: 'var(--green)' },
     { id: 'wc',         icon: '🏭', label: 'Work Centers',  count: wcs,                  sub: 'WC configured',                          color: 'var(--purple)' },
     { id: 'itemcodes',  icon: '🔑', label: 'Item Codes',    count: itemCodes,            sub: 'codes in catalog',                       color: '#3dc9b0'       },
     { id: 'orders',     icon: '📦', label: 'Products',      count: products,             sub: 'product types',                          color: 'var(--txt2)'   },
@@ -1222,6 +1352,7 @@ export default function DataTab() {
         {sub === 'routing_cr' && <RoutingCr />}
         {sub === 'routing_hv' && <RoutingTable endpoint="/routing-hv" label="Routing HV" accentColor="var(--amber)" />}
         {sub === 'routing_lv' && <RoutingTable endpoint="/routing-lv" label="Routing LV" accentColor="#89b4fa" />}
+        {sub === 'cap'        && <CapRates />}
         {sub === 'wc'         && <WCConfig />}
         {sub === 'itemcodes'  && <ItemCodes />}
       </div>
