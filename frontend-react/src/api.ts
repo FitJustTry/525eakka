@@ -70,4 +70,16 @@ export const api = {
       request<{ inserted: number }>('/routing-cr/batch', { method: 'POST', body: JSON.stringify(rows) }),
     list: () => request<object[]>('/routing-cr'),
   },
+
+  routingHv: {
+    batch: (rows: object[]) =>
+      request<{ inserted: number }>('/routing-hv/batch', { method: 'POST', body: JSON.stringify(rows) }),
+    list: () => request<object[]>('/routing-hv'),
+  },
+
+  routingLv: {
+    batch: (rows: object[]) =>
+      request<{ inserted: number }>('/routing-lv/batch', { method: 'POST', body: JSON.stringify(rows) }),
+    list: () => request<object[]>('/routing-lv'),
+  },
 }
