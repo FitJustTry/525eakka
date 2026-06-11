@@ -234,6 +234,20 @@ async function initDatabase() {
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS tmc_rates JSONB NOT NULL DEFAULT '[]'`);
     await client.query(`UPDATE cutting_machines SET laser = laser_m4 WHERE laser = false AND laser_m4 = true`);
     await client.query(`
+      CREATE TABLE IF NOT EXISTS coil_machines (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT '',
+        station_type TEXT NOT NULL DEFAULT '',
+        wc_id TEXT NOT NULL DEFAULT '',
+        count INTEGER NOT NULL DEFAULT 1,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        notes TEXT NOT NULL DEFAULT '',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query(`
       CREATE TABLE IF NOT EXISTS coil_plan (
         id SERIAL PRIMARY KEY,
         plan_date TEXT NOT NULL,
@@ -959,6 +973,39 @@ app.put('/api/cutting-machines/:id', asyncRoute(async (req, res) => {
 
 app.delete('/api/cutting-machines/:id', asyncRoute(async (req, res) => {
   await pool.query('DELETE FROM cutting_machines WHERE id = $1', [req.params.id]);
+  res.status(204).send();
+}));
+
+// ── Coil Machines ─────────────────────────────────────────────────────────────
+app.get('/api/coil-machines', asyncRoute(async (req, res) => {
+  const result = await pool.query('SELECT * FROM coil_machines ORDER BY sort_order, id');
+  res.json(result.rows);
+}));
+
+app.post('/api/coil-machines', asyncRoute(async (req, res) => {
+  const { name, station_type, wc_id, count, is_active, notes } = req.body;
+  const result = await pool.query(
+    `INSERT INTO coil_machines (name, station_type, wc_id, count, is_active, notes, sort_order)
+     VALUES ($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(sort_order),0)+1 FROM coil_machines))
+     RETURNING *`,
+    [name||'เครื่องพันคอยล์', station_type||'', wc_id||'', toInt(count,1), is_active !== false, notes||'']
+  );
+  res.status(201).json(result.rows[0]);
+}));
+
+app.put('/api/coil-machines/:id', asyncRoute(async (req, res) => {
+  const { name, station_type, wc_id, count, is_active, notes } = req.body;
+  const result = await pool.query(
+    `UPDATE coil_machines SET name=$2, station_type=$3, wc_id=$4, count=$5, is_active=$6, notes=$7, updated_at=now()
+     WHERE id=$1 RETURNING *`,
+    [req.params.id, name, station_type, wc_id, toInt(count,1), !!is_active, notes]
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+  res.json(result.rows[0]);
+}));
+
+app.delete('/api/coil-machines/:id', asyncRoute(async (req, res) => {
+  await pool.query('DELETE FROM coil_machines WHERE id = $1', [req.params.id]);
   res.status(204).send();
 }));
 

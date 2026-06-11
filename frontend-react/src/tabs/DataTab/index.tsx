@@ -23,22 +23,23 @@ const S: Record<string, React.CSSProperties> = {
   count:  { fontSize: 10, padding: '2px 8px', borderRadius: 10, background: 'rgba(137,180,250,.15)', color: 'var(--blue)', fontWeight: 600 },
 }
 
-type SubTab = 'overview' | 'orders' | 'planorders' | 'coil' | 'machines' | 'employees' | 'holidays' | 'sap' | 'routing_cr' | 'routing_hv' | 'routing_lv' | 'cap' | 'wc' | 'itemcodes'
+type SubTab = 'overview' | 'orders' | 'planorders' | 'coil' | 'machines' | 'coil_machines' | 'employees' | 'holidays' | 'sap' | 'routing_cr' | 'routing_hv' | 'routing_lv' | 'cap' | 'wc' | 'itemcodes'
 const SUB_TABS: { id: SubTab; label: string }[] = [
-  { id: 'overview',    label: '📊 Overview' },
-  { id: 'orders',      label: '📋 Master Plan' },
-  { id: 'planorders',  label: '🗂 Plan Orders' },
-  { id: 'coil',        label: '🔄 Coil Plan' },
-  { id: 'machines',    label: '⚙️ เครื่องตัด' },
-  { id: 'employees',   label: '👷 พนักงาน' },
-  { id: 'holidays',    label: '📆 วันหยุด' },
-  { id: 'sap',         label: '🔧 SAP Routing' },
-  { id: 'routing_cr',  label: '🪛 Routing CR' },
-  { id: 'routing_hv',  label: '🔴 Routing HV' },
-  { id: 'routing_lv',  label: '🔵 Routing LV' },
-  { id: 'cap',         label: '📈 CAP พันคอยล์' },
-  { id: 'wc',          label: '🏭 WC Config' },
-  { id: 'itemcodes',   label: '🔑 Item Codes' },
+  { id: 'overview',      label: '📊 Overview' },
+  { id: 'orders',        label: '📋 Master Plan' },
+  { id: 'planorders',    label: '🗂 Plan Orders' },
+  { id: 'coil',          label: '🔄 Coil Plan' },
+  { id: 'machines',      label: '⚙️ เครื่องตัด' },
+  { id: 'coil_machines', label: '🧲 เครื่องพันคอยล์' },
+  { id: 'employees',     label: '👷 พนักงาน' },
+  { id: 'holidays',      label: '📆 วันหยุด' },
+  { id: 'sap',           label: '🔧 SAP Routing' },
+  { id: 'routing_cr',    label: '🪛 Routing CR' },
+  { id: 'routing_hv',    label: '🔴 Routing HV' },
+  { id: 'routing_lv',    label: '🔵 Routing LV' },
+  { id: 'cap',           label: '📈 CAP พันคอยล์' },
+  { id: 'wc',            label: '🏭 WC Config' },
+  { id: 'itemcodes',     label: '🔑 Item Codes' },
 ]
 
 // ── shared: inline editable cell ─────────────────────────────────────────────
@@ -368,6 +369,114 @@ function CuttingMachines() {
             {!machines.length && <tr><td colSpan={13} style={{ ...S.td, textAlign: 'center', color: 'var(--txt3)', padding: 28 }}>ยังไม่มีเครื่องตัด</td></tr>}
           </tbody>
         </table>
+      </div>
+    </div>
+  )
+}
+
+// ── COIL MACHINES ─────────────────────────────────────────────────────────────
+interface CoilMachineRow { id: number; name: string; station_type: string; wc_id: string; count: number; is_active: boolean; notes: string }
+
+const STATION_TYPES = ['LV-Foil', 'LV-Wire', 'HV']
+const STATION_COLOR: Record<string, string> = { 'LV-Foil': 'var(--blue)', 'LV-Wire': 'var(--green)', 'HV': 'var(--amber)' }
+
+function CoilMachines() {
+  const [rows, setRows] = useState<CoilMachineRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState<number | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [draft, setDraft] = useState({ name: '', station_type: 'LV-Foil', wc_id: '', count: 1, notes: '' })
+
+  useEffect(() => {
+    apiFetch('/coil-machines').then((d: CoilMachineRow[]) => { setRows(d); setLoading(false) }).catch(() => setLoading(false))
+  }, [])
+
+  const save = async (id: number, field: string, val: unknown) => {
+    setBusy(id)
+    try {
+      const row = rows.find(r => r.id === id)!
+      const updated = await apiFetch(`/coil-machines/${id}`, 'PUT', { ...row, [field]: val })
+      setRows(prev => prev.map(r => r.id === id ? updated : r))
+    } catch (e) { alert(String(e)) }
+    setBusy(null)
+  }
+  const del = async (id: number, name: string) => {
+    if (!confirm(`ลบ "${name}"?`)) return
+    await apiFetch(`/coil-machines/${id}`, 'DELETE')
+    setRows(prev => prev.filter(r => r.id !== id))
+  }
+  const addNew = async () => {
+    if (!draft.name.trim()) return
+    setBusy(-1)
+    try {
+      const created = await apiFetch('/coil-machines', 'POST', draft)
+      setRows(prev => [...prev, created])
+      setDraft({ name: '', station_type: 'LV-Foil', wc_id: '', count: 1, notes: '' })
+      setAdding(false)
+    } catch (e) { alert(String(e)) }
+    setBusy(null)
+  }
+
+  return (
+    <div style={S.card}>
+      <div style={{ ...S.bar, padding: '10px 14px', borderBottom: '1px solid var(--bord)' }}>
+        <span style={S.count}>{rows.length} เครื่อง</span>
+        <span style={{ fontSize: 10, color: 'var(--txt3)' }}>คลิกเซลล์เพื่อแก้ไข</span>
+        <button style={{ ...S.btn, marginLeft: 'auto', background: 'rgba(137,180,250,.12)', color: 'var(--blue)', border: '1px solid rgba(137,180,250,.3)' }}
+          onClick={() => setAdding(v => !v)}>+ เพิ่มเครื่อง</button>
+      </div>
+      {adding && (
+        <div style={{ ...S.bar, padding: '8px 14px', borderBottom: '1px solid var(--bord)', background: 'var(--bg3)', flexWrap: 'wrap', gap: 8 }}>
+          <input style={{ ...S.search, width: 160 }} placeholder="ชื่อเครื่อง *" value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} />
+          <select style={S.search} value={draft.station_type} onChange={e => setDraft(d => ({ ...d, station_type: e.target.value }))}>
+            {STATION_TYPES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <input style={{ ...S.search, width: 80 }} placeholder="WC ID" value={draft.wc_id} onChange={e => setDraft(d => ({ ...d, wc_id: e.target.value }))} />
+          <input style={{ ...S.search, width: 55 }} type="number" min={1} placeholder="จำนวน" value={draft.count} onChange={e => setDraft(d => ({ ...d, count: parseInt(e.target.value) || 1 }))} />
+          <input style={{ ...S.search, width: 200 }} placeholder="หมายเหตุ" value={draft.notes} onChange={e => setDraft(d => ({ ...d, notes: e.target.value }))} />
+          <button style={{ ...S.btn, background: 'rgba(166,227,161,.12)', color: 'var(--green)', border: '1px solid rgba(166,227,161,.3)' }}
+            disabled={busy === -1 || !draft.name.trim()} onClick={addNew}>✓ เพิ่ม</button>
+          <button style={S.btn} onClick={() => setAdding(false)}>✕</button>
+        </div>
+      )}
+      <div style={S.wrap}>
+        {loading ? <div style={{ padding: 28, textAlign: 'center', color: 'var(--txt3)' }}>Loading…</div> : (
+          <table style={S.tbl}>
+            <thead><tr>
+              {(['ชื่อเครื่อง','สถานี','WC','จำนวน','Active','หมายเหตุ',''] as string[]).map((h, i) => (
+                <th key={i} style={{ ...S.th, textAlign: i === 3 || i === 4 ? 'center' as const : 'left' as const }}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {rows.map(r => {
+                const col = STATION_COLOR[r.station_type] ?? 'var(--txt2)'
+                return (
+                  <tr key={r.id} style={{ opacity: busy === r.id ? 0.5 : 1, borderLeft: `3px solid ${col}33` }}>
+                    <td style={S.td}><EC v={r.name} w={150} onSave={v => save(r.id, 'name', v)} /></td>
+                    <td style={{ ...S.td }}>
+                      <select style={{ ...S.inp, color: col, fontWeight: 700 }} value={r.station_type}
+                        onChange={e => save(r.id, 'station_type', e.target.value)}>
+                        {STATION_TYPES.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </td>
+                    <td style={{ ...S.td, fontFamily: 'var(--mono)', color: 'var(--amber)' }}>
+                      <EC mono v={r.wc_id} w={80} onSave={v => save(r.id, 'wc_id', v)} />
+                    </td>
+                    <td style={{ ...S.td, textAlign: 'center' }}>
+                      <EC mono v={String(r.count)} w={38} onSave={v => save(r.id, 'count', parseInt(v) || 1)} />
+                    </td>
+                    <td style={{ ...S.td, textAlign: 'center' }}>
+                      <TC v={r.is_active} onToggle={() => save(r.id, 'is_active', !r.is_active)} />
+                    </td>
+                    <td style={S.td}><EC v={r.notes} w={200} onSave={v => save(r.id, 'notes', v)} /></td>
+                    <td style={S.td}><button style={S.del} onClick={() => del(r.id, r.name)}>🗑</button></td>
+                  </tr>
+                )
+              })}
+              {!rows.length && <tr><td colSpan={7} style={{ ...S.td, textAlign: 'center', color: 'var(--txt3)', padding: 28 }}>ยังไม่มีเครื่องพันคอยล์ — กด "+ เพิ่มเครื่อง"</td></tr>}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   )
@@ -1157,11 +1266,12 @@ interface DBCounts {
   routingHvOps: number | null
   routingLvOps: number | null
   capRates: number | null
+  coilMachines: number | null
 }
 
 function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
   const { state } = useApp()
-  const [counts, setCounts] = useState<DBCounts>({ planOrders: null, coil: null, sapOps: null, sapMaterials: null, sapWCs: null, routingCrOps: null, routingCrGroups: null, routingHvOps: null, routingLvOps: null, capRates: null })
+  const [counts, setCounts] = useState<DBCounts>({ planOrders: null, coil: null, sapOps: null, sapMaterials: null, sapWCs: null, routingCrOps: null, routingCrGroups: null, routingHvOps: null, routingLvOps: null, capRates: null, coilMachines: null })
 
   useEffect(() => {
     apiFetch('/plan-orders').then((d: unknown[]) => setCounts(p => ({ ...p, planOrders: d.length }))).catch(() => setCounts(p => ({ ...p, planOrders: 0 })))
@@ -1177,6 +1287,7 @@ function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
     apiFetch('/routing-hv').then((d: unknown[]) => setCounts(p => ({ ...p, routingHvOps: d.length }))).catch(() => setCounts(p => ({ ...p, routingHvOps: 0 })))
     apiFetch('/routing-lv').then((d: unknown[]) => setCounts(p => ({ ...p, routingLvOps: d.length }))).catch(() => setCounts(p => ({ ...p, routingLvOps: 0 })))
     apiFetch('/cap-rates').then((d: unknown[]) => setCounts(p => ({ ...p, capRates: d.length }))).catch(() => setCounts(p => ({ ...p, capRates: 0 })))
+    apiFetch('/coil-machines').then((d: unknown[]) => setCounts(p => ({ ...p, coilMachines: d.length }))).catch(() => setCounts(p => ({ ...p, coilMachines: 0 })))
   }, [])
 
   const orders = state.orders ?? []
@@ -1192,7 +1303,8 @@ function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
     { id: 'orders',     icon: '📋', label: 'Master Plan',    count: orders.length,        sub: `${totalKva.toLocaleString()} kVA รวม`,  color: 'var(--blue)'   },
     { id: 'planorders', icon: '🗂',  label: 'Plan Orders',   count: counts.planOrders,    sub: 'plan order rows',                        color: 'var(--green)'  },
     { id: 'coil',       icon: '🔄', label: 'Coil Plan',     count: counts.coil,          sub: 'coil plan rows',                         color: '#89b4fa'       },
-    { id: 'machines',   icon: '⚙️', label: 'Cutting Machines', count: machines.length,   sub: 'เครื่องตัด',                             color: 'var(--amber)'  },
+    { id: 'machines',      icon: '⚙️', label: 'Cutting Machines',  count: machines.length,       sub: 'เครื่องตัด',        color: 'var(--amber)'  },
+    { id: 'coil_machines', icon: '🧲', label: 'Coil Machines',     count: counts.coilMachines,   sub: 'เครื่องพันคอยล์',   color: '#cba6f7'       },
     { id: 'employees',  icon: '👷', label: 'Employees',     count: employees,            sub: `${Object.values(state.employees ?? {}).flat().filter((e: { is_active: boolean }) => e.is_active).length} active`, color: 'var(--green)' },
     { id: 'holidays',   icon: '📆', label: 'Factory Holidays', count: holidays,          sub: 'วันหยุด',                                color: 'var(--red)'    },
     { id: 'sap',        icon: '🔧', label: 'SAP Routing',   count: counts.sapOps,        sub: counts.sapWCs != null ? `${counts.sapWCs} WCs` : undefined, color: 'var(--amber)' },
@@ -1345,8 +1457,9 @@ export default function DataTab() {
         {sub === 'orders'     && <MasterPlan />}
         {sub === 'planorders' && <PlanOrders />}
         {sub === 'coil'       && <CoilPlan />}
-        {sub === 'machines'   && <CuttingMachines />}
-        {sub === 'employees'  && <Employees />}
+        {sub === 'machines'      && <CuttingMachines />}
+        {sub === 'coil_machines' && <CoilMachines />}
+        {sub === 'employees'     && <Employees />}
         {sub === 'holidays'   && <Holidays />}
         {sub === 'sap'        && <SapRouting />}
         {sub === 'routing_cr' && <RoutingCr />}
