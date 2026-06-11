@@ -171,6 +171,7 @@ export default function CuttingMachines() {
   const [useNearestKva, setUseNearestKva] = useState(true)
   const [shiftMode, setShiftMode] = useState<ShiftMode>('none')
   const [shiftNDays, setShiftNDays] = useState(2)
+  const [shiftHrsDefault, setShiftHrsDefault] = useState(9)
   const [machineTableOpen, setMachineTableOpen] = useState(false)
   const [globalRatesOpen, setGlobalRatesOpen]   = useState(false)
   const [perMachRatesOpen, setPerMachRatesOpen] = useState(false)
@@ -324,6 +325,7 @@ export default function CuttingMachines() {
       if (field === 'min_face_mm')  next.min_face_mm  = Math.max(1, parseInt(raw) || 1)
       if (field === 'max_face_mm')  next.max_face_mm  = Math.max(1, parseInt(raw) || 9999)
       if (field === 'notes')        next.notes        = raw
+      if (field === 'shift_hrs')   next.shift_hrs    = Math.max(0, parseFloat(raw) || 9)
       return next
     })
     dispatch({ type: 'SET_CUTTING_MACHINES', machines: updated })
@@ -344,7 +346,7 @@ export default function CuttingMachines() {
     setSaving(null)
   }
 
-  async function handleToggle(id: number, field: 'laser' | 'm4' | 'drill_8mm' | 'drill_22mm') {
+  async function handleToggle(id: number, field: 'laser' | 'm4' | 'drill_8mm' | 'drill_22mm' | 'shift_enabled') {
     const updated = machines.map(m => m.id !== id ? m : { ...m, [field]: !m[field] })
     dispatch({ type: 'SET_CUTTING_MACHINES', machines: updated })
     const machine = updated.find(m => m.id === id)!
@@ -460,9 +462,9 @@ export default function CuttingMachines() {
   const weekSchedule = useMemo(() => {
     // ── ❌ ไม่ OT ─────────────────────────────────────────────────
     const mi = new Map(machIdx)
-    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays)
-    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays)
-    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, useNearestKva, shiftMode, shiftNDays)
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault)
+    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault)
     const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
       daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
       deadline_no_ot: () => sm('none','deadline'), priority_no_ot: () => sm('none','priority'),
@@ -477,7 +479,7 @@ export default function CuttingMachines() {
     return (modeMap[balanceMode] ?? modeMap['weekly_no_ot'])()
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, interweekThreshold, useNearestKva, shiftMode, shiftNDays, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
+  [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
   // SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
   const weekData = useMemo(
@@ -518,6 +520,58 @@ export default function CuttingMachines() {
     return late
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weekSchedule, weekOrders, weekCarryOrders, days.map(d => fmtISO(d)).join(',')])
+
+  // Days that actually received shift capacity (any machine shiftHrs > 0)
+  const shiftDays = useMemo(() => {
+    const set = new Set<string>()
+    if (shiftMode === 'none') return set
+    for (const [, machMap] of weekSchedule) {
+      for (const [dStr, sched] of machMap) {
+        if ((sched.shiftHrs ?? 0) > 0.01) set.add(dStr)
+      }
+    }
+    return set
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shiftMode, weekSchedule])
+
+  // Late order count WITHOUT shift (baseline for comparison panel)
+  const baselineLateCount = useMemo(() => {
+    if (shiftMode === 'none') return lateOrders.size
+    const otPolicy = (balanceMode.endsWith('_no_ot') ? 'none' : balanceMode.endsWith('_smart') ? 'smart' : 'full') as 'none'|'smart'|'full'
+    const mi2 = new Map(machIdx)
+    let noShiftSched: Map<number, Map<string, MachineDaySched>>
+    if (isFastest) {
+      noShiftSched = scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, otPolicy, strictWire, requireDrill, stickyOrders, otPolicy === 'smart' ? lazyOT : true, globalTmcRates, useNearestKva, 'none', 0, shiftHrsDefault)
+    } else {
+      const sortStr = balanceMode.includes('deadline') ? 'deadline' : balanceMode.includes('priority') ? 'priority' : balanceMode.includes('interweek') ? 'interweek' : balanceMode.includes('batch') ? 'batch_kva' : 'plan_date'
+      const approach = balanceMode.startsWith('daily') ? 'daily' : 'weekly' as 'daily'|'weekly'
+      noShiftSched = scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi2, approach, otPolicy, sortStr, nextWeekOrders, strictWire, requireDrill, stickyOrders, otPolicy === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva, 'none', 0, shiftHrsDefault)
+    }
+    // Count late orders in no-shift schedule
+    const late = new Set<string>()
+    const lastComp = new Map<string, string>()
+    for (const [, machMap] of noShiftSched) {
+      for (const [dStr, sched] of machMap) {
+        for (const w of sched.work) {
+          if (w.isComplete) {
+            const oid = origId(w.order.id)
+            if (!lastComp.has(oid) || dStr > lastComp.get(oid)!) lastComp.set(oid, dStr)
+          }
+        }
+      }
+    }
+    for (const [oid, completedOn] of lastComp) {
+      const o = weekOrders.find(x => x.id === oid)
+      if (o?.due_so && completedOn > o.due_so) late.add(oid)
+    }
+    const weekEndStr2 = days.length > 0 ? fmtISO(days[days.length - 1]) : ''
+    for (const o of weekOrders) {
+      const due = o.due_so
+      if (due && weekEndStr2 && due <= weekEndStr2 && !lastComp.has(origId(o.id))) late.add(origId(o.id))
+    }
+    return late.size
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shiftMode, shiftHrsDefault, weekSchedule, weekOrders, days.map(d => fmtISO(d)).join(',')])
 
   // ── Render ───────────────────────────────────────────────────
   return (
@@ -660,13 +714,13 @@ export default function CuttingMachines() {
                   </button>
                 </div>
                 {/* Row 3: Shift mode */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 10, color: 'var(--txt3)', minWidth: 40 }}>กะ:</span>
                   {([
                     { id: 'none',   label: '❌ ไม่มีกะ',  col: 'var(--txt3)',   title: 'ไม่ใช้กะกลางคืน' },
                     { id: 'smart',  label: '⚠ Smart',     col: 'var(--amber)',  title: 'เปิดกะเมื่องานล้น reg+OT ของสัปดาห์ที่เหลือ' },
                     { id: 'every',  label: '🌙 ทุกวัน',   col: 'var(--blue)',   title: 'เพิ่มกะกลางคืนทุกวัน' },
-                    { id: 'n_days', label: '📅 N วัน',    col: 'var(--purple)', title: 'เลือก N วันที่ต้องการกะมากที่สุด' },
+                    { id: 'n_days', label: '📅 N วัน',    col: 'var(--purple)', title: 'เลือก N วันที่ต้องการกะมากที่สุด (auto-select busiest)' },
                   ] as const).map(s => (
                     <button key={s.id} onClick={() => setShiftMode(s.id)} title={s.title} style={{
                       fontSize: 10, padding: '3px 10px', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
@@ -681,15 +735,71 @@ export default function CuttingMachines() {
                   {shiftMode === 'n_days' && (
                     <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--txt3)', marginLeft: 4 }}>
                       จำนวนวัน:
-                      <input
-                        type="number" min={1} max={6} step={1}
-                        value={shiftNDays}
+                      <input type="number" min={1} max={6} step={1} value={shiftNDays}
                         onChange={e => setShiftNDays(Math.max(1, Math.min(6, parseInt(e.target.value) || 2)))}
-                        style={{ width: 44, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--txt1)', textAlign: 'center' }}
-                      />
+                        style={{ width: 44, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--txt1)', textAlign: 'center' }} />
                     </label>
                   )}
+                  {shiftMode !== 'none' && (
+                    <>
+                      <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 4px', flexShrink: 0 }} />
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--txt3)' }}
+                        title="ชั่วโมงกะ/คืน (default ถ้าไม่ได้ตั้งค่า per-machine)">
+                        🌙 ชม:
+                        <input type="number" min={1} max={24} step={0.5} value={shiftHrsDefault}
+                          onChange={e => setShiftHrsDefault(Math.max(1, parseFloat(e.target.value) || 9))}
+                          style={{ width: 48, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--blue)', fontWeight: 700, textAlign: 'center' }} />
+                        h
+                      </label>
+                    </>
+                  )}
                 </div>
+                {/* Shift info panel — shown when shift is active */}
+                {shiftMode !== 'none' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px', background: 'rgba(137,180,250,.07)', border: '1px solid rgba(137,180,250,.2)', borderRadius: 8, flexWrap: 'wrap', fontSize: 10 }}>
+                    <span style={{ color: 'var(--blue)', fontWeight: 700, fontSize: 9, textTransform: 'uppercase', letterSpacing: '.04em' }}>🌙 กะที่ใช้:</span>
+                    {days.map(d => {
+                      const dStr = fmtISO(d)
+                      const hasShift = shiftDays.has(dStr)
+                      return (
+                        <span key={dStr} style={{
+                          padding: '2px 7px', borderRadius: 6, fontWeight: hasShift ? 700 : 400,
+                          background: hasShift ? 'rgba(137,180,250,.25)' : 'var(--bg3)',
+                          color: hasShift ? 'var(--blue)' : 'var(--txt3)',
+                          border: `1px solid ${hasShift ? 'rgba(137,180,250,.5)' : 'var(--bord2)'}`,
+                          fontSize: 9,
+                        }}>
+                          {DAY_SHORT[d.getDay()]} {String(d.getDate()).padStart(2,'0')}/{String(d.getMonth()+1).padStart(2,'0')}
+                          {hasShift ? ' 🌙' : ''}
+                        </span>
+                      )
+                    })}
+                    <span style={{ width: 1, height: 16, background: 'var(--bord2)', flexShrink: 0 }} />
+                    {weekData.totalShift >= 0.05 ? (
+                      <span style={{ color: 'var(--blue)', fontWeight: 700 }}>+{weekData.totalShift.toFixed(1)}h/สัปดาห์</span>
+                    ) : (
+                      <span style={{ color: 'var(--txt3)' }}>+0h (ไม่มีงานล้น)</span>
+                    )}
+                    {lateOrders.size !== baselineLateCount && (
+                      <>
+                        <span style={{ width: 1, height: 16, background: 'var(--bord2)', flexShrink: 0 }} />
+                        <span style={{ color: 'var(--txt3)', fontSize: 9 }}>🔴 ส่งช้า:</span>
+                        <span style={{ fontWeight: 700, color: baselineLateCount > lateOrders.size ? 'var(--green)' : 'var(--red)' }}>
+                          {baselineLateCount} → {lateOrders.size}
+                          {baselineLateCount > lateOrders.size
+                            ? ` (−${baselineLateCount - lateOrders.size} ดีขึ้น)`
+                            : ` (+${lateOrders.size - baselineLateCount})`}
+                        </span>
+                      </>
+                    )}
+                    {lateOrders.size === baselineLateCount && weekData.totalShift >= 0.05 && (
+                      <>
+                        <span style={{ width: 1, height: 16, background: 'var(--bord2)', flexShrink: 0 }} />
+                        <span style={{ color: 'var(--txt3)', fontSize: 9 }}>🔴 ส่งช้า: {lateOrders.size} (ไม่เปลี่ยน)</span>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             )
           })()}
@@ -1581,6 +1691,7 @@ export default function CuttingMachines() {
                   <th style={{ textAlign: 'center' }}>OT สูงสุด/วัน</th>
                   <th style={{ textAlign: 'center', color: 'var(--amber)' }} title="Speed multiplier: final_hrs = base × ×Rate + TMC">×Rate</th>
                   <th style={{ textAlign: 'center', color: 'var(--purple)' }} title="TMC: fixed setup/overhead hours added per order">TMC (h)</th>
+                  <th style={{ textAlign: 'center', color: 'var(--blue)' }} title="กะกลางคืน: เปิด/ปิด + ชั่วโมง/คืน (blank = ใช้ค่า default ของแผน)">🌙 กะ</th>
                   <th style={{ textAlign: 'center', minWidth: 160 }}>วันทำงาน (คลิกปิด)</th>
                   <th style={{ textAlign: 'left', minWidth: 180 }}>หมายเหตุ / ข้อจำกัด</th>
                   <th style={{ textAlign: 'left' }}>หม้อแปลงที่รองรับ</th>
@@ -1699,6 +1810,27 @@ export default function CuttingMachines() {
                           title="TMC — fixed setup hours added per order"
                           style={{ width: 52, color: 'var(--purple)', fontWeight: 700 }} />
                         <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 2 }}>h</span>
+                      </td>
+                      {/* Shift: enabled toggle + per-machine hrs */}
+                      <td style={{ textAlign: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                          <button onClick={() => handleToggle(m.id, 'shift_enabled')}
+                            title={(m.shift_enabled ?? true) ? 'กะเปิด — คลิกเพื่อปิด' : 'กะปิด — คลิกเพื่อเปิด'}
+                            style={{ fontSize: 12, background: 'none', border: 'none', cursor: 'pointer', opacity: (m.shift_enabled ?? true) ? 1 : 0.35, padding: '2px 4px' }}>
+                            {(m.shift_enabled ?? true) ? '🌙' : '🌑'}
+                          </button>
+                          {(m.shift_enabled ?? true) && (
+                            <>
+                              <input className={styles.inputNum} type="number" min={1} max={24} step={0.5}
+                                defaultValue={m.shift_hrs ?? ''}
+                                placeholder={String(shiftHrsDefault)}
+                                onBlur={e => { if (e.target.value) handleChange(m.id, 'shift_hrs', e.target.value) }}
+                                title="ชั่วโมงกะ/คืน (blank = ใช้ค่า default)"
+                                style={{ width: 44, color: 'var(--blue)', fontWeight: 700 }} />
+                              <span style={{ fontSize: 9, color: 'var(--txt3)' }}>h</span>
+                            </>
+                          )}
+                        </div>
                       </td>
                       {/* Day-on/off picker — Mon=1 … Sat=6 */}
                       <td style={{ textAlign: 'center' }}>

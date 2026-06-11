@@ -131,6 +131,7 @@ export function scheduleFastest(
   useNearestKva = false,
   shiftMode: ShiftMode = 'none',
   shiftNDays = 0,
+  shiftHrsDefault = 9,
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
   if (!machines.length || !weekOrders.length) return result
@@ -316,7 +317,7 @@ export function scheduleFastest(
       }
 
       // ── NEW: Shift tier — entirely independent from OT logic ──
-      const shiftCap = resolveShift(m) * (m.count || 1)
+      const shiftCap = resolveShift(m, shiftHrsDefault) * (m.count || 1)
       let effectiveShiftCap = 0
       if (shiftCap > 0 && shiftMode !== 'none') {
         if (activeShiftDays.has(dStr)) {
@@ -465,6 +466,7 @@ export function scheduleMode(
   useNearestKva = false,
   shiftMode: ShiftMode = 'none',
   shiftNDays = 0,
+  shiftHrsDefault = 9,
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
 
@@ -559,7 +561,7 @@ export function scheduleMode(
         }
 
         // ── NEW: Shift tier ──────────────────────────────────────
-        const shiftCap = resolveShift(m) * (m.count || 1)
+        const shiftCap = resolveShift(m, shiftHrsDefault) * (m.count || 1)
         let effectiveShiftCap = 0
         if (shiftCap > 0 && shiftMode !== 'none') {
           if (activeShiftDaysW.has(dStr)) {
@@ -679,7 +681,7 @@ export function scheduleMode(
       }
 
       // ── NEW: Shift tier ──────────────────────────────────────
-      const shiftCap = resolveShift(m) * (m.count || 1)
+      const shiftCap = resolveShift(m, shiftHrsDefault) * (m.count || 1)
       let effectiveShiftCap = 0
       if (shiftCap > 0 && shiftMode !== 'none') {
         if (activeShiftDaysD.has(dStr)) {
