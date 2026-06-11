@@ -32,8 +32,9 @@ export function assignOrders(
   strictWire = false,
   requireDrill = false,
   globalTmcRates: CuttingRate[] = [],
-  batchKva = false,   // when true: penalise over-qualified machines → small orders → small machines
-  useNearestKva = false
+  batchKva = false,
+  useNearestKva = false,
+  routingRates = false,
 ): Map<number, Order[]> {
   const assigned = new Map<number, Order[]>()
   const wall     = new Map<number, number>()
@@ -52,7 +53,7 @@ export function assignOrders(
   for (const o of dayOrders) {
     const oe = el(o)
     if (oe.length === 1) {
-      const h = o.qty * getHrsForKva(oe[0], kvaOf(o), globalRates, o.item_code, globalTmcRates, useNearestKva)
+      const h = o.qty * getHrsForKva(oe[0], kvaOf(o), globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates)
       machExcl.set(oe[0].id, (machExcl.get(oe[0].id) ?? 0) + h)
     }
   }
@@ -95,7 +96,7 @@ export function assignOrders(
 
     assigned.get(best.id)!.push(o)
     const kva = o.kva ?? products[o.product ?? '']?.kva ?? 0
-    wall.set(best.id, (wall.get(best.id) ?? 0) + (o.qty * getHrsForKva(best, kva, globalRates, o.item_code, globalTmcRates, useNearestKva)) / (best.count || 1))
+    wall.set(best.id, (wall.get(best.id) ?? 0) + (o.qty * getHrsForKva(best, kva, globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates)) / (best.count || 1))
   }
   return assigned
 }
@@ -133,6 +134,7 @@ export function scheduleFastest(
   shiftNDays = 0,
   shiftHrsDefault = 9,
   manualShiftDays: Map<number, Set<string>> = new Map(),
+  routingRates = false,
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
   if (!machines.length || !weekOrders.length) return result
@@ -148,7 +150,7 @@ export function scheduleFastest(
 
   // Rate helper per (machine, unit)
   const uHrs = (m: CuttingMachine, u: Unit) =>
-    getHrsForKva(m, u.order.kva ?? products[u.order.product]?.kva ?? 0, globalRates, u.order.item_code, globalTmcRates, useNearestKva)
+    getHrsForKva(m, u.order.kva ?? products[u.order.product]?.kva ?? 0, globalRates, u.order.item_code, globalTmcRates, useNearestKva, routingRates)
 
   // LPT sort: use the fastest eligible machine's rate as the ordering key
   const refMach = (u: Unit) =>
@@ -201,7 +203,7 @@ export function scheduleFastest(
     // ── Whole-order assignment: exclusive-first, then LPT ──────
     const ordEl  = (o: Order) => machines.filter(m => canMachineCut(m, o, products, strictWire, requireDrill))
     const ordHrs = (m: CuttingMachine, o: Order) =>
-      o.qty * getHrsForKva(m, o.kva ?? products[o.product ?? '']?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva)
+      o.qty * getHrsForKva(m, o.kva ?? products[o.product ?? '']?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates)
 
     const sortedOrders = [...weekOrders].sort((a, b) => {
       const ae = ordEl(a), be = ordEl(b)
@@ -383,7 +385,7 @@ export function sortPool(
   useNearestKva = false
 ): Order[] {
   const m0 = thisMachine ?? machines[0]
-  const hrs = (o: Order) => m0 ? o.qty * getHrsForKva(m0, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva) : 0
+  const hrs = (o: Order) => m0 ? o.qty * getHrsForKva(m0, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates) : 0
   const kvaOf = (o: Order) => o.kva ?? products[o.product]?.kva ?? 0
   const pool = [...orders]
 
@@ -471,6 +473,7 @@ export function scheduleMode(
   shiftNDays = 0,
   shiftHrsDefault = 9,
   manualShiftDays: Map<number, Set<string>> = new Map(),
+  routingRates = false,
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
 
@@ -500,7 +503,7 @@ export function scheduleMode(
       const assignedOrders = sortPool(asgn.get(m.id) ?? [], sortStrategy, products, globalRates, machines, nextWeekOrders, globalTmcRates, interweekThreshold, m, useNearestKva)
       const queue: QItem[] = assignedOrders.map(o => ({
         order: o,
-        remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product ?? '']?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva),
+        remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product ?? '']?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates),
         isCarryOver: false,
       }))
 
@@ -641,7 +644,7 @@ export function scheduleMode(
         const { reg, ot } = resolveHours(m, wcConfig, dow === 6, dow)
         let pa = (reg + ot) * (m.count || 1), pu = 0
         const todayEst = (dailyAssignments[di]?.asgn.get(m.id) ?? []).map(o => ({
-          remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva)
+          remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates)
         }))
         const all = [...pCarry, ...todayEst]; pCarry = []
         for (const item of all) {
@@ -681,7 +684,7 @@ export function scheduleMode(
         const carryHrs  = carryItems.reduce((s, c) => s + c.remainingHrs, 0)
         const futureHrs = days.slice(di).reduce((s, _dd, i) =>
           s + (dailyAssignments[di + i]?.asgn.get(m.id) ?? [])
-            .reduce((ss, o) => ss + o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva), 0)
+            .reduce((ss, o) => ss + o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates), 0)
         , 0)
         effectiveOtCap = Math.min(otCap, Math.max(0, carryHrs + futureHrs - regLeft - otLeft))
       }
@@ -700,7 +703,7 @@ export function scheduleMode(
           const carryHrs2 = carryItems.reduce((s, c) => s + c.remainingHrs, 0)
           const futureHrs2 = days.slice(di).reduce((s, _dd, i) =>
             s + (dailyAssignments[di + i]?.asgn.get(m.id) ?? [])
-              .reduce((ss, o) => ss + o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva), 0)
+              .reduce((ss, o) => ss + o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates), 0)
           , 0)
           effectiveShiftCap = (carryHrs2 + futureHrs2 > weekRegOtLeft) ? shiftCap : 0
         } else if (shiftMode === 'manual') {
@@ -716,7 +719,7 @@ export function scheduleMode(
         // ── Daily: carry queue + today's new orders ───────────
         const todayOrders = dailyAssignments[di]?.asgn.get(m.id) ?? []
         const todayItems: QItem[] = todayOrders.map(o => ({
-          order: o, remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva), isCarryOver: false
+          order: o, remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates), isCarryOver: false
         }))
         const fullQueue = [...carryItems, ...todayItems]
         carryItems = []

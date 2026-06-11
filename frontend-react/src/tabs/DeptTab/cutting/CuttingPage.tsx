@@ -121,7 +121,7 @@ import {
 import { assignOrders, scheduleFastest, scheduleMode } from './scheduling/engine'
 import type { ShiftMode } from './scheduling/engine'
 import { computeWeekData } from './scheduling/weekData'
-import { buildRoutingCrRates, getRoutingOps } from './scheduling/routingRates'
+import { buildRoutingCrRates, getRoutingOps, DEFAULT_CUTTING_WCS } from './scheduling/routingRates'
 import {
   exportPlanCSV as _exportCSV,
   exportTXT as _exportTXT,
@@ -179,6 +179,7 @@ export default function CuttingMachines() {
   const [perMachRatesOpen, setPerMachRatesOpen] = useState(false)
   const [routingCrData, setRoutingCrData]     = useState<RoutingCrRow[]>([])
   const [useRoutingCr, setUseRoutingCr]       = useState(false)
+  const [routingWcFilter, setRoutingWcFilter] = useState<string[]>(DEFAULT_CUTTING_WCS)
   const [routingRatesOpen, setRoutingRatesOpen] = useState(false)
   const [expandedRoutingRow, setExpandedRoutingRow] = useState<string | null>(null)
 
@@ -189,9 +190,15 @@ export default function CuttingMachines() {
       .join('|')
   , [manualShiftDays])
 
-  const { normalRates: routingNormalRates, crRates: routingCrRates } = useMemo(
-    () => buildRoutingCrRates(routingCrData),
+  const availableRoutingWcs = useMemo(
+    () => [...new Set(routingCrData.map(r => r.wc_id))].sort(),
     [routingCrData]
+  )
+
+  const { normalRates: routingNormalRates, crRates: routingCrRates } = useMemo(
+    () => buildRoutingCrRates(routingCrData, routingWcFilter),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [routingCrData, routingWcFilter.join(',')]
   )
 
   const effectiveGlobalRates    = useRoutingCr && routingNormalRates.length > 0 ? routingNormalRates : globalRates
@@ -215,7 +222,7 @@ export default function CuttingMachines() {
     }
 
     // Routing CR hit — show operations
-    const ops = getRoutingOps(routingCrData, kva, isCr)
+    const ops = getRoutingOps(routingCrData, kva, isCr, routingWcFilter)
     const totalOps = ops.reduce((s, r) => s + Number(r.std_hrs), 0)
     const pad = ops.length ? Math.min(36, Math.max(...ops.map(o => `${o.operation} ${o.description}`.length))) : 0
     let txt = `🏭 Routing CR\n${kva.toLocaleString()}kVA · ${typeLabel}\n`
@@ -458,12 +465,12 @@ export default function CuttingMachines() {
     const prevDailyAsgn = prevDays.map(d => {
       const dStr = fmtISO(d); const dow = d.getDay()
       const active = machines.filter(m => isMachineOn(m, dow))
-      const asgn = assignOrders(prevOrders.filter(o => o.plan_date === dStr), active, products, effectiveGlobalRates, new Map(), new Map(machIdx), false, false, effectiveGlobalTmcRates)
+      const asgn = assignOrders(prevOrders.filter(o => o.plan_date === dStr), active, products, effectiveGlobalRates, new Map(), new Map(machIdx), false, false, effectiveGlobalTmcRates, false, false, useRoutingCr)
       return { dStr, asgn }
     })
     const prevApproach = balanceMode.startsWith('weekly') ? 'weekly' : 'daily'
     const prevOtPolicy = balanceMode.endsWith('_no_ot') ? 'none' : balanceMode.endsWith('_smart') ? 'smart' : 'full'
-    const prevSched = scheduleMode(prevOrders, prevDailyAsgn, machines, products, effectiveGlobalRates, wcConfig, prevDays, new Map(machIdx), prevApproach as 'daily'|'weekly', prevOtPolicy as 'none'|'smart'|'full', 'plan_date', [], false, false, true, effectiveGlobalTmcRates)
+    const prevSched = scheduleMode(prevOrders, prevDailyAsgn, machines, products, effectiveGlobalRates, wcConfig, prevDays, new Map(machIdx), prevApproach as 'daily'|'weekly', prevOtPolicy as 'none'|'smart'|'full', 'plan_date', [], false, false, true, effectiveGlobalTmcRates, 0.5, false, 'none', 0, 9, new Map(), useRoutingCr)
     // Find orders that were NOT completed (still in machine queues at week end)
     const completedIds = new Set<string>()
     machines.forEach(m => {
@@ -511,13 +518,13 @@ export default function CuttingMachines() {
         : dayOrds.flatMap(o => Array.from({length: o.qty}, (_, ui) => ({...o, id: `${o.id}__u${ui}`, qty: 1})))
       const initWall = new Map<number, number>()
       const isBatch = balanceMode.includes('batch_kva')
-      const asgn = assignOrders(dayOrdsEff, activeMachines, products, effectiveGlobalRates, initWall, new Map(machIdx), strictWire, requireDrill, effectiveGlobalTmcRates, isBatch)
+      const asgn = assignOrders(dayOrdsEff, activeMachines, products, effectiveGlobalRates, initWall, new Map(machIdx), strictWire, requireDrill, effectiveGlobalTmcRates, isBatch, useNearestKva, useRoutingCr)
       // Always accumulate for weekly mode reference
       activeMachines.forEach(m => {
         const mOrd = asgn.get(m.id) ?? []
         const w = mOrd.reduce((a, o) => {
           const kva = o.kva ?? products[o.product]?.kva ?? 0
-          return a + (o.qty * getHrsForKva(m, kva, effectiveGlobalRates, o.item_code, effectiveGlobalTmcRates, useNearestKva)) / (m.count || 1)
+          return a + (o.qty * getHrsForKva(m, kva, effectiveGlobalRates, o.item_code, effectiveGlobalTmcRates, useNearestKva, useRoutingCr)) / (m.count || 1)
         }, 0)
         cumWall.set(m.id, (cumWall.get(m.id) ?? 0) + w)
       })
@@ -532,9 +539,9 @@ export default function CuttingMachines() {
   const weekSchedule = useMemo(() => {
     // ── ❌ ไม่ OT ─────────────────────────────────────────────────
     const mi = new Map(machIdx)
-    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays)
-    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays)
-    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, effectiveGlobalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays)
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr)
+    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, effectiveGlobalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr)
     const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
       daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
       deadline_no_ot: () => sm('none','deadline'), priority_no_ot: () => sm('none','priority'),
@@ -611,11 +618,11 @@ export default function CuttingMachines() {
     const mi2 = new Map(machIdx)
     let noShiftSched: Map<number, Map<string, MachineDaySched>>
     if (isFastest) {
-      noShiftSched = scheduleFastest(weekOrders, machines, products, effectiveGlobalRates, wcConfig, days, otPolicy, strictWire, requireDrill, stickyOrders, otPolicy === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, useNearestKva, 'none', 0, shiftHrsDefault, new Map())
+      noShiftSched = scheduleFastest(weekOrders, machines, products, effectiveGlobalRates, wcConfig, days, otPolicy, strictWire, requireDrill, stickyOrders, otPolicy === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, useNearestKva, 'none', 0, shiftHrsDefault, new Map(), useRoutingCr)
     } else {
       const sortStr = balanceMode.includes('deadline') ? 'deadline' : balanceMode.includes('priority') ? 'priority' : balanceMode.includes('interweek') ? 'interweek' : balanceMode.includes('batch') ? 'batch_kva' : 'plan_date'
       const approach = balanceMode.startsWith('daily') ? 'daily' : 'weekly' as 'daily'|'weekly'
-      noShiftSched = scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi2, approach, otPolicy, sortStr, nextWeekOrders, strictWire, requireDrill, stickyOrders, otPolicy === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, 'none', 0, shiftHrsDefault, new Map())
+      noShiftSched = scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi2, approach, otPolicy, sortStr, nextWeekOrders, strictWire, requireDrill, stickyOrders, otPolicy === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, 'none', 0, shiftHrsDefault, new Map(), useRoutingCr)
     }
     // Count late orders in no-shift schedule
     const late = new Set<string>()
@@ -1527,7 +1534,7 @@ export default function CuttingMachines() {
                                       const kvaCol = kva <= 400 ? 'var(--blue)' : kva <= 3500 ? 'var(--amber)' : 'var(--red)'
                                       const { typeCode: tc } = decodeItemInfo(w.order.item_code ?? '')
                                       const typeLabel = tc === '4' ? 'CR' : ['1','2','3'].includes(tc) ? 'Oil' : ''
-                                      const totalH = w.order.qty * getHrsForKva(m, kva, effectiveGlobalRates, w.order.item_code, effectiveGlobalTmcRates, useNearestKva)
+                                      const totalH = w.order.qty * getHrsForKva(m, kva, effectiveGlobalRates, w.order.item_code, effectiveGlobalTmcRates, useNearestKva, useRoutingCr)
                                       const wireType = detectWireType(w.order.raw_mat)
                                       const wireMatch = wireType === 'laser' ? m.laser : wireType === 'm4' ? m.m4 : true
                                       const isCrOrder = w.order.item_code?.[1] === '4'
@@ -2103,6 +2110,28 @@ export default function CuttingMachines() {
           </span>
         </div>
         {!globalRatesOpen ? null : <>
+        {/* WC filter — only shown when routing CR is active */}
+        {useRoutingCr && availableRoutingWcs.length > 0 && (
+          <div style={{ display: 'flex', gap: 6, padding: '6px 14px', borderBottom: '1px solid var(--bord)', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: 10, color: 'var(--txt3)', whiteSpace: 'nowrap' }}>Work Centers ที่นับ:</span>
+            {availableRoutingWcs.map(wc => {
+              const active = routingWcFilter.includes(wc)
+              return (
+                <button key={wc}
+                  onClick={() => setRoutingWcFilter(prev => active ? prev.filter(w => w !== wc) : [...prev, wc])}
+                  style={{ fontSize: 10, padding: '2px 8px', borderRadius: 5, cursor: 'pointer', fontWeight: active ? 700 : 400,
+                    border: `1px solid ${active ? 'var(--green)' : 'var(--bord2)'}`,
+                    background: active ? 'rgba(166,227,161,.15)' : 'transparent',
+                    color: active ? 'var(--green)' : 'var(--txt3)' }}>
+                  {wc}
+                </button>
+              )
+            })}
+            <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 4 }}>
+              {routingWcFilter.length === 0 ? '(ทั้งหมด)' : `${routingWcFilter.length}/${availableRoutingWcs.length} WC`}
+            </span>
+          </div>
+        )}
         {/* Global sub-tabs */}
         <div style={{ display: 'flex', gap: 4, padding: '8px 14px', borderBottom: '1px solid var(--bord)' }}>
           <button onClick={() => setGlobalRateSubTab('cut')}
@@ -2110,60 +2139,79 @@ export default function CuttingMachines() {
               border: `1px solid ${globalRateSubTab === 'cut' ? 'var(--blue)' : 'var(--bord2)'}`,
               background: globalRateSubTab === 'cut' ? 'rgba(137,180,250,.15)' : 'transparent',
               color: globalRateSubTab === 'cut' ? 'var(--blue)' : 'var(--txt3)' }}>
-            ✂ เวลาตัด{globalRates.length > 0 ? ` (${globalRates.length})` : ''}
+            ✂ เวลาตัด{effectiveGlobalRates.length > 0 ? ` (${effectiveGlobalRates.length})` : ''}
+            {useRoutingCr && routingNormalRates.length > 0 && <span style={{ marginLeft: 4, fontSize: 9, color: 'var(--green)' }}>🏭</span>}
           </button>
           <button onClick={() => setGlobalRateSubTab('tmc')}
             style={{ fontSize: 11, padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: globalRateSubTab === 'tmc' ? 700 : 400,
               border: `1px solid ${globalRateSubTab === 'tmc' ? 'var(--purple)' : 'var(--bord2)'}`,
               background: globalRateSubTab === 'tmc' ? 'rgba(203,166,247,.15)' : 'transparent',
               color: globalRateSubTab === 'tmc' ? 'var(--purple)' : 'var(--txt3)' }}>
-            ⚗ TMC Cast Resin{globalTmcRates.length > 0 ? ` (${globalTmcRates.length})` : ''}
+            ⚗ TMC Cast Resin{effectiveGlobalTmcRates.length > 0 ? ` (${effectiveGlobalTmcRates.length})` : ''}
+            {useRoutingCr && routingCrRates.length > 0 && <span style={{ marginLeft: 4, fontSize: 9, color: 'var(--green)' }}>🏭</span>}
           </button>
         </div>
 
         {globalRateSubTab === 'cut' ? (
           <>
+            {useRoutingCr && routingNormalRates.length > 0 && (
+              <div style={{ padding: '5px 14px', background: 'rgba(166,227,161,.08)', borderBottom: '1px solid rgba(166,227,161,.2)', fontSize: 10, color: 'var(--green)' }}>
+                🏭 แสดงเวลาจาก Routing CR — อ่านอย่างเดียว (สลับเป็น 📊 Manual เพื่อแก้ไข)
+              </div>
+            )}
             <div className={styles.tableWrap}>
               <table className={styles.table}>
                 <thead>
                   <tr>
                     <th style={{ textAlign: 'right', width: 110 }}>ขนาด (kVA)</th>
                     <th style={{ textAlign: 'right', width: 110 }}>เวลาตัด (h)</th>
-                    <th style={{ width: 40 }} />
+                    {!useRoutingCr && <th style={{ width: 40 }} />}
                   </tr>
                 </thead>
                 <tbody>
-                  {globalRates.length === 0 && (
+                  {effectiveGlobalRates.length === 0 && (
                     <tr><td colSpan={3} className={styles.empty}>ยังไม่มีข้อมูล — ใช้ค่า h/ตัว ของแต่ละเครื่องแทน</td></tr>
                   )}
-                  {[...globalRates].sort((a, b) => a.kva - b.kva).map((r, ri) => (
-                    <tr key={ri}>
-                      <td style={{ textAlign: 'right' }}>
-                        <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
-                          onChange={e => saveGlobalRates(globalRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
-                          className={styles.inputNum} style={{ width: 80, color: 'var(--blue)', fontWeight: 700 }} />
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
-                          onChange={e => saveGlobalRates(globalRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
-                          className={styles.inputNum} style={{ width: 80, color: 'var(--amber)' }} />
-                      </td>
-                      <td>
-                        <button className={styles.delBtn} onClick={() => saveGlobalRates(globalRates.filter((_, i) => i !== ri))}>✕</button>
-                      </td>
-                    </tr>
-                  ))}
+                  {useRoutingCr
+                    ? [...effectiveGlobalRates].sort((a, b) => a.kva - b.kva).map((r, ri) => (
+                      <tr key={ri}>
+                        <td style={{ textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--blue)', padding: '4px 8px' }}>{r.kva.toLocaleString()}</td>
+                        <td style={{ textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--amber)', fontWeight: 700, padding: '4px 8px' }}>{r.hrs.toFixed(2)}h</td>
+                      </tr>
+                    ))
+                    : [...globalRates].sort((a, b) => a.kva - b.kva).map((r, ri) => (
+                      <tr key={ri}>
+                        <td style={{ textAlign: 'right' }}>
+                          <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
+                            onChange={e => saveGlobalRates(globalRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
+                            className={styles.inputNum} style={{ width: 80, color: 'var(--blue)', fontWeight: 700 }} />
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
+                            onChange={e => saveGlobalRates(globalRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
+                            className={styles.inputNum} style={{ width: 80, color: 'var(--amber)' }} />
+                        </td>
+                        <td>
+                          <button className={styles.delBtn} onClick={() => saveGlobalRates(globalRates.filter((_, i) => i !== ri))}>✕</button>
+                        </td>
+                      </tr>
+                    ))
+                  }
                 </tbody>
               </table>
             </div>
-            <div style={{ padding: '8px 14px' }}>
-              <button className={styles.btnGhost} onClick={() => saveGlobalRates([...globalRates, { kva: 0, hrs: 2.5 }])}>+ เพิ่มขนาด</button>
-            </div>
+            {!useRoutingCr && (
+              <div style={{ padding: '8px 14px' }}>
+                <button className={styles.btnGhost} onClick={() => saveGlobalRates([...globalRates, { kva: 0, hrs: 2.5 }])}>+ เพิ่มขนาด</button>
+              </div>
+            )}
           </>
         ) : (
           <>
-            <div style={{ fontSize: 10, color: 'var(--txt3)', padding: '6px 14px 0' }}>
-              ใช้เมื่อ B=4 (Cast Resin) · ลำดับ: รายเครื่อง → มาตรฐาน → TMC (h) ของเครื่อง
+            <div style={{ fontSize: 10, color: useRoutingCr && routingCrRates.length > 0 ? 'var(--green)' : 'var(--txt3)', padding: '6px 14px 0' }}>
+              {useRoutingCr && routingCrRates.length > 0
+                ? '🏭 แสดงเวลาจาก Routing CR (Cast Resin) — อ่านอย่างเดียว'
+                : 'ใช้เมื่อ B=4 (Cast Resin) · ลำดับ: รายเครื่อง → มาตรฐาน → TMC (h) ของเครื่อง'}
             </div>
             <div className={styles.tableWrap}>
               <table className={styles.table}>
@@ -2171,53 +2219,63 @@ export default function CuttingMachines() {
                   <tr>
                     <th style={{ textAlign: 'right', width: 110 }}>ขนาด (kVA)</th>
                     <th style={{ textAlign: 'right', width: 110, color: 'var(--purple)' }}>TMC (h)</th>
-                    <th style={{ width: 40 }} />
+                    {!useRoutingCr && <th style={{ width: 40 }} />}
                   </tr>
                 </thead>
                 <tbody>
-                  {globalTmcRates.length === 0 && (
+                  {effectiveGlobalTmcRates.length === 0 && (
                     <tr><td colSpan={3} className={styles.empty}>ยังไม่มีข้อมูล — ใช้ค่า TMC (h) ของแต่ละเครื่องแทน</td></tr>
                   )}
-                  {[...globalTmcRates].sort((a, b) => a.kva - b.kva).map((r, ri) => (
-                    <tr key={ri}>
-                      <td style={{ textAlign: 'right' }}>
-                        <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
-                          onChange={e => saveGlobalTmcRates(globalTmcRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
-                          className={styles.inputNum} style={{ width: 80, color: 'var(--blue)', fontWeight: 700 }} />
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
-                          onChange={e => saveGlobalTmcRates(globalTmcRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
-                          className={styles.inputNum} style={{ width: 80, color: 'var(--purple)' }} />
-                      </td>
-                      <td>
-                        <button className={styles.delBtn} onClick={() => saveGlobalTmcRates(globalTmcRates.filter((_, i) => i !== ri))}>✕</button>
-                      </td>
-                    </tr>
-                  ))}
+                  {useRoutingCr
+                    ? [...effectiveGlobalTmcRates].sort((a, b) => a.kva - b.kva).map((r, ri) => (
+                      <tr key={ri}>
+                        <td style={{ textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--blue)', padding: '4px 8px' }}>{r.kva.toLocaleString()}</td>
+                        <td style={{ textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--purple)', fontWeight: 700, padding: '4px 8px' }}>{r.hrs.toFixed(2)}h</td>
+                      </tr>
+                    ))
+                    : [...globalTmcRates].sort((a, b) => a.kva - b.kva).map((r, ri) => (
+                      <tr key={ri}>
+                        <td style={{ textAlign: 'right' }}>
+                          <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
+                            onChange={e => saveGlobalTmcRates(globalTmcRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
+                            className={styles.inputNum} style={{ width: 80, color: 'var(--blue)', fontWeight: 700 }} />
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
+                            onChange={e => saveGlobalTmcRates(globalTmcRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
+                            className={styles.inputNum} style={{ width: 80, color: 'var(--purple)' }} />
+                        </td>
+                        <td>
+                          <button className={styles.delBtn} onClick={() => saveGlobalTmcRates(globalTmcRates.filter((_, i) => i !== ri))}>✕</button>
+                        </td>
+                      </tr>
+                    ))
+                  }
                 </tbody>
               </table>
             </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '8px 14px' }}>
-              <button className={styles.btnGhost} onClick={() => saveGlobalTmcRates([...globalTmcRates, { kva: 0, hrs: 2.4 }])} style={{ color: 'var(--purple)', borderColor: 'rgba(203,166,247,.4)' }}>
-                + เพิ่มขนาด TMC
-              </button>
-              <button className={styles.btnGhost}
-                title="เติม 23 ขนาดมาตรฐาน Cast Resin"
-                onClick={() => {
-                  const existingKvas = new Set(globalTmcRates.map(r => r.kva))
-                  const newRates = [...globalTmcRates, ...CR_STANDARD_SIZES.filter(kva => !existingKvas.has(kva)).map(kva => ({ kva, hrs: 2.4 }))].sort((a, b) => a.kva - b.kva)
-                  saveGlobalTmcRates(newRates)
-                }}
-                style={{ color: 'var(--green)', borderColor: 'rgba(166,227,161,.4)' }}>
-                📋 เติม {CR_STANDARD_SIZES.length} ขนาดมาตรฐาน
-              </button>
-              {globalTmcRates.length > 0 && (
-                <button className={styles.btnGhost} onClick={() => saveGlobalTmcRates([])} style={{ color: 'var(--red)', borderColor: 'rgba(224,90,78,.3)' }}>
-                  ล้างทั้งหมด
+            {!useRoutingCr && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '8px 14px' }}>
+                <button className={styles.btnGhost} onClick={() => saveGlobalTmcRates([...globalTmcRates, { kva: 0, hrs: 2.4 }])} style={{ color: 'var(--purple)', borderColor: 'rgba(203,166,247,.4)' }}>
+                  + เพิ่มขนาด TMC
                 </button>
-              )}
-            </div>
+                <button className={styles.btnGhost}
+                  title="เติม 23 ขนาดมาตรฐาน Cast Resin"
+                  onClick={() => {
+                    const existingKvas = new Set(globalTmcRates.map(r => r.kva))
+                    const newRates = [...globalTmcRates, ...CR_STANDARD_SIZES.filter(kva => !existingKvas.has(kva)).map(kva => ({ kva, hrs: 2.4 }))].sort((a, b) => a.kva - b.kva)
+                    saveGlobalTmcRates(newRates)
+                  }}
+                  style={{ color: 'var(--green)', borderColor: 'rgba(166,227,161,.4)' }}>
+                  📋 เติม {CR_STANDARD_SIZES.length} ขนาดมาตรฐาน
+                </button>
+                {globalTmcRates.length > 0 && (
+                  <button className={styles.btnGhost} onClick={() => saveGlobalTmcRates([])} style={{ color: 'var(--red)', borderColor: 'rgba(224,90,78,.3)' }}>
+                    ล้างทั้งหมด
+                  </button>
+                )}
+              </div>
+            )}
           </>
         )}
         </>}
@@ -2453,7 +2511,7 @@ export default function CuttingMachines() {
                       {[...rates].sort((a, b) => a.kva - b.kva).map(r => {
                         const rowKey = `${isCr ? 'cr' : 'n'}_${r.kva}`
                         const expanded = expandedRoutingRow === rowKey
-                        const ops = getRoutingOps(routingCrData, r.kva, isCr)
+                        const ops = getRoutingOps(routingCrData, r.kva, isCr, routingWcFilter)
                         return (
                           <React.Fragment key={r.kva}>
                             <tr

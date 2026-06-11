@@ -4,10 +4,13 @@ import { decodeItemInfo } from '../../../../utils/itemCodeDecode'
 /** Lookup cutting hours for a kVA.
  * useNearestKva=false (default): exact match only; falls back to m.hrs_per_unit.
  * useNearestKva=true:            if no exact match, use the closest available kVA entry.
+ * routingRates=true:             globalRates came from Routing CR — skip time_mul/tmc_hrs
+ *                                since routing std_hrs is already an absolute standard time.
  */
 export function getHrsForKva(
   m: CuttingMachine, kva: number, globalRates: CuttingRate[],
-  itemCode?: string, globalTmcRates?: CuttingRate[], useNearestKva = false
+  itemCode?: string, globalTmcRates?: CuttingRate[], useNearestKva = false,
+  routingRates = false
 ): number {
   const pick = (rates: CuttingRate[]): CuttingRate | undefined => {
     const exact = rates.find(r => r.kva === kva)
@@ -26,11 +29,12 @@ export function getHrsForKva(
     // No TMC rate entry → fall through to normal rate + tmc_hrs addition
   }
   // Priority: machine-specific rate → global rate → hrs_per_unit
+  // When routingRates=true: skip time_mul/tmc_hrs (routing std_hrs is the final time)
   const machineMatch = pick(m.rates ?? [])
-  if (machineMatch) return machineMatch.hrs * (m.time_mul ?? 1) + (m.tmc_hrs ?? 0)
+  if (machineMatch) return routingRates ? machineMatch.hrs : machineMatch.hrs * (m.time_mul ?? 1) + (m.tmc_hrs ?? 0)
   const globalMatch = pick(globalRates)
   const base = globalMatch ? globalMatch.hrs : m.hrs_per_unit
-  return base * (m.time_mul ?? 1) + (m.tmc_hrs ?? 0)
+  return routingRates ? base : base * (m.time_mul ?? 1) + (m.tmc_hrs ?? 0)
 }
 
 /** Returns true if the machine is scheduled to run on this day of week (1=Mon … 6=Sat) */

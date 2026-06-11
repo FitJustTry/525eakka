@@ -10,14 +10,23 @@ export type { RoutingCrRow }
  * For each (sheet_name, size_kva) pair, all operation std_hrs are summed.
  * When the same kVA appears in multiple normal sheets the values are averaged.
  */
-export function buildRoutingCrRates(rows: RoutingCrRow[]): {
+/** Default WC IDs that represent cutting machine operations (prepare + cut) */
+export const DEFAULT_CUTTING_WCS = ['EE3101', 'EE3102']
+
+export function buildRoutingCrRates(
+  rows: RoutingCrRow[],
+  wcFilter: string[] = DEFAULT_CUTTING_WCS
+): {
   normalRates: CuttingRate[]
   crRates: CuttingRate[]
 } {
+  // Filter to cutting-machine WCs only (empty filter = all rows)
+  const filtered = wcFilter.length > 0 ? rows.filter(r => wcFilter.includes(r.wc_id)) : rows
+
   // Sum std_hrs per (sheet_name, size_kva)
   const groupHrs = new Map<string, number>()
   const groupMeta = new Map<string, { sheet_name: string; size_kva: number }>()
-  for (const r of rows) {
+  for (const r of filtered) {
     const key = `${r.sheet_name}||${r.size_kva}`
     groupHrs.set(key, (groupHrs.get(key) ?? 0) + (Number(r.std_hrs) || 0))
     if (!groupMeta.has(key)) groupMeta.set(key, { sheet_name: r.sheet_name, size_kva: r.size_kva })
@@ -51,9 +60,11 @@ export function buildRoutingCrRates(rows: RoutingCrRow[]): {
 export function getRoutingOps(
   rows: RoutingCrRow[],
   kva: number,
-  isCr: boolean
+  isCr: boolean,
+  wcFilter: string[] = DEFAULT_CUTTING_WCS
 ): RoutingCrRow[] {
-  const matching = rows.filter(r => {
+  const pool = wcFilter.length > 0 ? rows.filter(r => wcFilter.includes(r.wc_id)) : rows
+  const matching = pool.filter(r => {
     if (r.size_kva !== kva) return false
     return r.sheet_name.toLowerCase().includes('cast resin') === isCr
   })
