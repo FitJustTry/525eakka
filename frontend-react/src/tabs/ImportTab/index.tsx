@@ -439,6 +439,90 @@ function parseRoutingCr(wb: { SheetNames: string[]; Sheets: Record<string, unkno
   return result
 }
 
+// ── Routing HV / LV parser ─────────────────────────────────────────────────
+// File structure (same for both HV and LV):
+//   Sheet 1: kVA lookup table — col3=kVA, cols4+ = routing group codes per type
+//   Sheet 2: operations — header row 0, data rows 1+
+//            col0=RoutingGroup, col1=Op, col2=WC, col3=Desc, col4=Qty, col5=Unit, col6=StdHrs
+
+function parseRoutingHvLv(
+  wb: { SheetNames: string[]; Sheets: Record<string, unknown> },
+  sheetToJson: (ws: unknown, opts: object) => unknown[][]
+): ParsedRoutingCrRow[] {
+  if (wb.SheetNames.length < 2) return []
+  const result: ParsedRoutingCrRow[] = []
+
+  // Step 1: Build routing_group → kVA map from Sheet 1
+  const kvMap = new Map<string, number>()
+  const s1rows: unknown[][] = sheetToJson(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })
+  for (let i = 3; i < s1rows.length; i++) {
+    const row = s1rows[i] as unknown[]
+    const kva = parseFloat(String(row[3] ?? ''))
+    if (!kva || isNaN(kva)) continue
+    for (let c = 4; c < row.length; c++) {
+      const grp = String(row[c] ?? '').trim()
+      if (grp && grp !== '-') kvMap.set(grp, kva)
+    }
+  }
+
+  // Step 2: Derive coil-type category from routing group code prefix
+  // THV A/B/C/D/H/T → HV coil types; TLV F/W/H → LV coil types
+  const HV_TYPE: Record<string, string> = { A: 'Layer 1 Section', B: 'Layer 2 Section', C: 'Disc Continuous', D: 'Disc 4 Section', H: 'Class-H', T: 'Tap' }
+  const LV_TYPE: Record<string, string> = { F: 'Foil', W: 'Wound', H: 'Class-H' }
+  function coilType(code: string): string {
+    const up = code.toUpperCase()
+    if (up.startsWith('THV')) return `Coil HV ${HV_TYPE[up[3]] ?? up[3]}`
+    if (up.startsWith('TLV')) return `Coil LV ${LV_TYPE[up[3]] ?? up[3]}`
+    return code
+  }
+
+  // Step 3: Parse Sheet 2 operations using header row
+  const s2rows: unknown[][] = sheetToJson(wb.Sheets[wb.SheetNames[1]], { header: 1, defval: '' })
+  if (s2rows.length < 2) return result
+
+  const headers = (s2rows[0] as unknown[]).map(h =>
+    String(h ?? '').trim().replace(/[\r\n]+/g, ' ').toLowerCase()
+  )
+  const fpos = (keys: string[], fallback: number) => {
+    const i = headers.findIndex(h => keys.some(k => h.includes(k)))
+    return i >= 0 ? i : fallback
+  }
+  const RG   = fpos(['routing group', 'กลุ่ม'], 0)
+  const OP   = fpos(['operation', 'op '], 1)
+  const WC   = fpos(['work center', 'ศูนย์งาน'], 2)
+  const DESC = fpos(['description', 'รายละเอียด'], 3)
+  const QTY  = fpos(['จำนวน', 'qty', 'base qty'], 4)
+  const UNIT = fpos(['หน่วย', 'unit'], 5)
+  const STD  = fpos(['standard', 'std', 'ชม'], 6)
+
+  let currentRg = ''
+  for (let i = 1; i < s2rows.length; i++) {
+    const row = s2rows[i] as unknown[]
+    const rg = String(row[RG] ?? '').trim()
+    if (rg) currentRg = rg
+
+    const op = String(row[OP] ?? '').trim()
+    const wc = String(row[WC] ?? '').trim()
+    if (!currentRg || !op || !wc) continue
+
+    const kva = kvMap.get(currentRg) ?? 0
+    result.push({
+      sheet_name: coilType(currentRg),
+      size_label: kva ? String(kva) : currentRg,
+      size_kva: kva,
+      routing_group: currentRg,
+      operation: op,
+      wc_id: wc,
+      description: String(row[DESC] ?? '').trim(),
+      qty_per_op: parseFloat(String(row[QTY] ?? '').replace(/,/g, '')) || 1,
+      unit: String(row[UNIT] ?? '').trim(),
+      std_hrs: parseFloat(String(row[STD] ?? '').replace(/,/g, '')) || 0,
+    })
+  }
+
+  return result
+}
+
 // ── Main Component ──
 
 export default function ImportTab() {
@@ -538,7 +622,7 @@ export default function ImportTab() {
       const buf = await file.arrayBuffer()
       const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
       if (wb.SheetNames.length === 0) { alert('ไม่พบ Sheet ในไฟล์'); return }
-      const result = parseRoutingCr(wb as unknown as { SheetNames: string[]; Sheets: Record<string, unknown> }, XLSX.utils.sheet_to_json.bind(XLSX.utils) as (ws: unknown, opts: object) => unknown[][])
+      const result = parseRoutingHvLv(wb as unknown as { SheetNames: string[]; Sheets: Record<string, unknown> }, XLSX.utils.sheet_to_json.bind(XLSX.utils) as (ws: unknown, opts: object) => unknown[][])
       if (result.length === 0) { setHvResult('❌ ไม่พบข้อมูล — ตรวจสอบโครงสร้างไฟล์ (ต้องมี Routing Group, Operation, Work Center)'); return }
       setHvParsed(result)
     } catch (e) { alert('อ่านไฟล์ไม่ได้: ' + (e instanceof Error ? e.message : String(e))) }
@@ -567,7 +651,7 @@ export default function ImportTab() {
       const buf = await file.arrayBuffer()
       const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
       if (wb.SheetNames.length === 0) { alert('ไม่พบ Sheet ในไฟล์'); return }
-      const result = parseRoutingCr(wb as unknown as { SheetNames: string[]; Sheets: Record<string, unknown> }, XLSX.utils.sheet_to_json.bind(XLSX.utils) as (ws: unknown, opts: object) => unknown[][])
+      const result = parseRoutingHvLv(wb as unknown as { SheetNames: string[]; Sheets: Record<string, unknown> }, XLSX.utils.sheet_to_json.bind(XLSX.utils) as (ws: unknown, opts: object) => unknown[][])
       if (result.length === 0) { setLvResult('❌ ไม่พบข้อมูล — ตรวจสอบโครงสร้างไฟล์ (ต้องมี Routing Group, Operation, Work Center)'); return }
       setLvParsed(result)
     } catch (e) { alert('อ่านไฟล์ไม่ได้: ' + (e instanceof Error ? e.message : String(e))) }
