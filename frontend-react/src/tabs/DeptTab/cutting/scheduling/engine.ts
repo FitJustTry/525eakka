@@ -3,7 +3,7 @@ import { DRILL_BONUS, INDEX_BONUS } from './constants'
 import type { DayWork, MachineDaySched } from './constants'
 import { getHrsForKva, resolveHours, resolveShift, canMachineCut, drillPrefers, wirePrefers, catRank, fmtISO, isMachineOn } from './utils'
 
-export type ShiftMode = 'none' | 'smart' | 'every' | 'n_days'
+export type ShiftMode = 'none' | 'smart' | 'every' | 'n_days' | 'manual'
 
 export type { DayWork, MachineDaySched }
 
@@ -132,6 +132,7 @@ export function scheduleFastest(
   shiftMode: ShiftMode = 'none',
   shiftNDays = 0,
   shiftHrsDefault = 9,
+  manualShiftDays: Map<number, Set<string>> = new Map(),
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
   if (!machines.length || !weekOrders.length) return result
@@ -329,6 +330,8 @@ export function scheduleFastest(
           }, 0)
           const qHrs = queue.slice(qi).reduce((s, u) => s + uHrs(m, u), 0)
           effectiveShiftCap = (rem + qHrs > weekRegOtLeft) ? shiftCap : 0
+        } else if (shiftMode === 'manual') {
+          effectiveShiftCap = (manualShiftDays.get(m.id)?.has(dStr) ?? false) ? shiftCap : 0
         }
       }
 
@@ -467,6 +470,7 @@ export function scheduleMode(
   shiftMode: ShiftMode = 'none',
   shiftNDays = 0,
   shiftHrsDefault = 9,
+  manualShiftDays: Map<number, Set<string>> = new Map(),
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
 
@@ -574,6 +578,8 @@ export function scheduleMode(
             const curRem2  = cur?.remainingHrs ?? 0
             const queueHrs2 = queue.slice(qi).reduce((s, item) => s + item.remainingHrs, 0)
             effectiveShiftCap = (curRem2 + queueHrs2 > weekRegOtLeft) ? shiftCap : 0
+          } else if (shiftMode === 'manual') {
+            effectiveShiftCap = (manualShiftDays.get(m.id)?.has(dStr) ?? false) ? shiftCap : 0
           }
         }
 
@@ -697,6 +703,8 @@ export function scheduleMode(
               .reduce((ss, o) => ss + o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva), 0)
           , 0)
           effectiveShiftCap = (carryHrs2 + futureHrs2 > weekRegOtLeft) ? shiftCap : 0
+        } else if (shiftMode === 'manual') {
+          effectiveShiftCap = (manualShiftDays.get(m.id)?.has(dStr) ?? false) ? shiftCap : 0
         }
       }
 
