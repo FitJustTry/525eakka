@@ -347,6 +347,16 @@ async function initDatabase() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )
     `);
+    // Ensure all coil_machines columns exist (adds to old schema if needed)
+    await client.query(`ALTER TABLE coil_machines ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE coil_machines ADD COLUMN IF NOT EXISTS min_kva INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE coil_machines ADD COLUMN IF NOT EXISTS max_kva INTEGER NOT NULL DEFAULT 9999`);
+    await client.query(`ALTER TABLE coil_machines ADD COLUMN IF NOT EXISTS hrs_per_unit NUMERIC NOT NULL DEFAULT 2.0`);
+    await client.query(`ALTER TABLE coil_machines ADD COLUMN IF NOT EXISTS wire TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE coil_machines ADD COLUMN IF NOT EXISTS hv_lv TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE coil_machines ADD COLUMN IF NOT EXISTS off_days JSONB NOT NULL DEFAULT '[]'`);
+    await client.query(`ALTER TABLE coil_machines ADD COLUMN IF NOT EXISTS reg_hrs NUMERIC NOT NULL DEFAULT 8`);
+    await client.query(`ALTER TABLE coil_machines ADD COLUMN IF NOT EXISTS ot_hrs NUMERIC NOT NULL DEFAULT 4`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS routing_cr (
         id SERIAL PRIMARY KEY,
@@ -976,61 +986,41 @@ app.delete('/api/cutting-machines/:id', asyncRoute(async (req, res) => {
   res.status(204).send();
 }));
 
-// ── Coil Machines ─────────────────────────────────────────────────────────────
-app.get('/api/coil-machines', asyncRoute(async (req, res) => {
-  const result = await pool.query('SELECT * FROM coil_machines ORDER BY sort_order, id');
-  res.json(result.rows);
-}));
-
-app.post('/api/coil-machines', asyncRoute(async (req, res) => {
-  const { name, station_type, wc_id, count, is_active, notes } = req.body;
-  const result = await pool.query(
-    `INSERT INTO coil_machines (name, station_type, wc_id, count, is_active, notes, sort_order)
-     VALUES ($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(sort_order),0)+1 FROM coil_machines))
-     RETURNING *`,
-    [name||'เครื่องพันคอยล์', station_type||'', wc_id||'', toInt(count,1), is_active !== false, notes||'']
-  );
-  res.status(201).json(result.rows[0]);
-}));
-
-app.put('/api/coil-machines/:id', asyncRoute(async (req, res) => {
-  const { name, station_type, wc_id, count, is_active, notes } = req.body;
-  const result = await pool.query(
-    `UPDATE coil_machines SET name=$2, station_type=$3, wc_id=$4, count=$5, is_active=$6, notes=$7, updated_at=now()
-     WHERE id=$1 RETURNING *`,
-    [req.params.id, name, station_type, wc_id, toInt(count,1), !!is_active, notes]
-  );
-  if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
-  res.json(result.rows[0]);
-}));
-
-app.delete('/api/coil-machines/:id', asyncRoute(async (req, res) => {
-  await pool.query('DELETE FROM coil_machines WHERE id = $1', [req.params.id]);
-  res.status(204).send();
-}));
-
 // ── Coil Machines ─────────────────────────────────────────────────────
 function rowToCoilMachine(row) {
-  return { id: row.id, name: row.name, count: toInt(row.count,1), type: row.type||'', min_kva: toInt(row.min_kva,0), max_kva: toInt(row.max_kva,9999), hrs_per_unit: toNumber(row.hrs_per_unit,2), wire: row.wire||'', hv_lv: row.hv_lv||'', notes: row.notes||'', off_days: Array.isArray(row.off_days) ? row.off_days : [], sort_order: toInt(row.sort_order,0) }
+  return {
+    id: row.id, name: row.name, count: toInt(row.count,1),
+    type: row.type||'', min_kva: toInt(row.min_kva,0), max_kva: toInt(row.max_kva,9999),
+    hrs_per_unit: toNumber(row.hrs_per_unit,2), wire: row.wire||'', hv_lv: row.hv_lv||'',
+    notes: row.notes||'', off_days: Array.isArray(row.off_days) ? row.off_days : [],
+    reg_hrs: toNumber(row.reg_hrs,8), ot_hrs: toNumber(row.ot_hrs,4),
+    sort_order: toInt(row.sort_order,0),
+  }
 }
 app.get('/api/coil-machines', asyncRoute(async (req, res) => {
   const result = await pool.query('SELECT * FROM coil_machines ORDER BY sort_order, id')
   res.json(result.rows.map(rowToCoilMachine))
 }))
 app.post('/api/coil-machines', asyncRoute(async (req, res) => {
-  const { name, count, type, min_kva, max_kva, hrs_per_unit, wire, hv_lv, notes, off_days } = req.body
+  const { name, count, type, min_kva, max_kva, hrs_per_unit, wire, hv_lv, notes, off_days, reg_hrs, ot_hrs } = req.body
   const result = await pool.query(
-    `INSERT INTO coil_machines (name,count,type,min_kva,max_kva,hrs_per_unit,wire,hv_lv,notes,off_days,sort_order)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,(SELECT COALESCE(MAX(sort_order),0)+1 FROM coil_machines)) RETURNING *`,
-    [name||'เครื่องพัน', toInt(count,1), type||'', toInt(min_kva,0), toInt(max_kva,9999), toNumber(hrs_per_unit,2), wire||'', hv_lv||'', notes||'', JSON.stringify(Array.isArray(off_days)?off_days:[])]
+    `INSERT INTO coil_machines (name,count,type,min_kva,max_kva,hrs_per_unit,wire,hv_lv,notes,off_days,reg_hrs,ot_hrs,sort_order)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,(SELECT COALESCE(MAX(sort_order),0)+1 FROM coil_machines)) RETURNING *`,
+    [name||'เครื่องพัน', toInt(count,1), type||'', toInt(min_kva,0), toInt(max_kva,9999),
+     toNumber(hrs_per_unit,2), wire||'', hv_lv||'', notes||'',
+     JSON.stringify(Array.isArray(off_days)?off_days:[]),
+     toNumber(reg_hrs,8), toNumber(ot_hrs,4)]
   )
   res.status(201).json(rowToCoilMachine(result.rows[0]))
 }))
 app.put('/api/coil-machines/:id', asyncRoute(async (req, res) => {
-  const { name, count, type, min_kva, max_kva, hrs_per_unit, wire, hv_lv, notes, off_days } = req.body
+  const { name, count, type, min_kva, max_kva, hrs_per_unit, wire, hv_lv, notes, off_days, reg_hrs, ot_hrs } = req.body
   const result = await pool.query(
-    `UPDATE coil_machines SET name=$2,count=$3,type=$4,min_kva=$5,max_kva=$6,hrs_per_unit=$7,wire=$8,hv_lv=$9,notes=$10,off_days=$11,updated_at=now() WHERE id=$1 RETURNING *`,
-    [req.params.id, name, toInt(count,1), type||'', toInt(min_kva,0), toInt(max_kva,9999), toNumber(hrs_per_unit,2), wire||'', hv_lv||'', notes||'', JSON.stringify(Array.isArray(off_days)?off_days:[])]
+    `UPDATE coil_machines SET name=$2,count=$3,type=$4,min_kva=$5,max_kva=$6,hrs_per_unit=$7,wire=$8,hv_lv=$9,notes=$10,off_days=$11,reg_hrs=$12,ot_hrs=$13,updated_at=now() WHERE id=$1 RETURNING *`,
+    [req.params.id, name, toInt(count,1), type||'', toInt(min_kva,0), toInt(max_kva,9999),
+     toNumber(hrs_per_unit,2), wire||'', hv_lv||'', notes||'',
+     JSON.stringify(Array.isArray(off_days)?off_days:[]),
+     toNumber(reg_hrs,8), toNumber(ot_hrs,4)]
   )
   if (!result.rowCount) return res.status(404).json({ error: 'Not found' })
   res.json(rowToCoilMachine(result.rows[0]))

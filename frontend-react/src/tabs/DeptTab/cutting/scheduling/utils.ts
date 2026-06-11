@@ -143,6 +143,12 @@ export function getWeekRange(offset: number) {
   return { mon, sat }
 }
 
+/** Strip unit suffix added by non-sticky split: "orderId__u0" → "orderId" */
+export const origId = (id: string) => id.replace(/__u\d+$/, '')
+
+/** Format date as "DD/MM" */
+export const fmtD = (d: Date) => String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0')
+
 /** Priority rank: หลัก=1, Fast=2, เสริม=3, other=4 */
 export function catRank(o: { category: string }): number {
   if (o.category === 'หลัก') return 1
