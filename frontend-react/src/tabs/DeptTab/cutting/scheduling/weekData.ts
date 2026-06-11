@@ -1,4 +1,4 @@
-import { REG_PER, OT_PER } from './constants'
+import { REG_PER, OT_PER, SHIFT_PER } from './constants'
 import type { MachineDaySched, DayWork } from './constants'
 import type { CuttingMachine, CuttingRate, Order, WCConfig } from '../../../../types'
 import { fmtISO, resolveHours, canMachineCut, drillPrefers, isMachineOn } from './utils'
@@ -40,6 +40,7 @@ export interface MachTotals {
   qty: number
   regCap: number
   ot: number
+  shift: number
   over: boolean
 }
 
@@ -50,6 +51,7 @@ export interface WeekData {
   totalQtyWeek: number
   totalKvaWeek: number
   totalOT: number
+  totalShift: number
   summaryStatus: 'ok' | 'warn' | 'over'
   weekDoneOrders: Order[]
   weekCarryOrders: Order[]
@@ -90,14 +92,15 @@ export function computeWeekData({
 
   // Per-machine weekly totals
   const mTotals: MachTotals[] = machines.map(m => {
-    let wallHrs = 0, otSum = 0
+    let wallHrs = 0, otSum = 0, shiftSum = 0
     const completedIds = new Set<string>()
     let completedEntries = 0
     days.forEach(d => {
       const sched = weekSchedule.get(m.id)?.get(fmtISO(d))
       if (!sched) return
-      wallHrs += sched.regHrs + sched.otHrs
-      otSum   += sched.otHrs
+      wallHrs  += sched.regHrs + sched.otHrs + sched.shiftHrs
+      otSum    += sched.otHrs
+      shiftSum += sched.shiftHrs
       sched.work.forEach(w => {
         if (w.isComplete) { completedIds.add(w.order.id); completedEntries++ }
       })
@@ -108,7 +111,7 @@ export function computeWeekData({
           const o = weekOrders.find(x => x.id === oid)
           return s + (o?.qty ?? 0)
         }, 0)
-    return { wallHrs, qty, regCap: REG_PER, ot: otSum, over: wallHrs > REG_PER + OT_PER }
+    return { wallHrs, qty, regCap: REG_PER, ot: otSum, shift: shiftSum, over: wallHrs - shiftSum > REG_PER + OT_PER }
   })
 
   // Per-day data for each machine
@@ -125,7 +128,7 @@ export function computeWeekData({
       const machOff = !isMachineOn(m, dow)
       const sched = weekSchedule.get(m.id)?.get(dStr)
       const work = sched?.work ?? []
-      const wall = machOff ? 0 : (sched ? sched.regHrs + sched.otHrs : 0)
+      const wall = machOff ? 0 : (sched ? sched.regHrs + sched.otHrs + sched.shiftHrs : 0)
       const { reg: capH } = resolveHours(m, wcConfig, isSat, dow)
       const grp: Record<number, { drilled: boolean; partial: boolean }> = {}
       work.forEach(w => {
@@ -173,7 +176,8 @@ export function computeWeekData({
     })
   })
   const totalOT = maxDailyOT
-  const summaryStatus: 'ok' | 'warn' | 'over' = bottleneckWall > REG_PER + OT_PER ? 'over' : totalOT >= 0.05 ? 'warn' : 'ok'
+  const totalShift = mTotals.reduce((a, t) => a + t.shift, 0)
+  const summaryStatus: 'ok' | 'warn' | 'over' = bottleneckWall > REG_PER + OT_PER + SHIFT_PER ? 'over' : totalShift >= 0.05 ? 'warn' : totalOT >= 0.05 ? 'warn' : 'ok'
 
   let weekDoneOrders: Order[], weekCarryOrders: Order[], weekUnscheduled: Order[]
 
@@ -215,5 +219,5 @@ export function computeWeekData({
     weekUnscheduled = weekOrders.filter(o => !orderLastState.has(o.id))
   }
 
-  return { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, summaryStatus, weekDoneOrders, weekCarryOrders, weekUnscheduled }
+  return { mTotals, dayRows, bottleneckWall, totalQtyWeek, totalKvaWeek, totalOT, totalShift, summaryStatus, weekDoneOrders, weekCarryOrders, weekUnscheduled }
 }

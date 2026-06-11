@@ -38,6 +38,12 @@ export function isMachineOn(m: CuttingMachine, dayOfWeek: number): boolean {
   return !(m.off_days ?? []).includes(dayOfWeek)
 }
 
+/** Night-shift base hours for this machine (0 if shift_enabled=false, else shift_hrs ?? 9). */
+export function resolveShift(m: CuttingMachine): number {
+  if (!(m.shift_enabled ?? true)) return 0
+  return m.shift_hrs ?? 9
+}
+
 /** Effective hours from WC Config (if wc_id set) or machine's own reg_hrs/ot_hrs */
 export function resolveHours(m: CuttingMachine, wcConfig: Record<string, WCConfig>, isSat: boolean, dayOfWeek?: number) {
   if (dayOfWeek !== undefined && !isMachineOn(m, dayOfWeek)) return { reg: 0, ot: 0 }

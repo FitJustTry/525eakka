@@ -119,6 +119,7 @@ import {
   mLabel, machineTypeLabel, fmtISO, getWeekRange,
 } from './scheduling/utils'
 import { assignOrders, scheduleFastest, scheduleMode } from './scheduling/engine'
+import type { ShiftMode } from './scheduling/engine'
 import { computeWeekData } from './scheduling/weekData'
 import {
   exportPlanCSV as _exportCSV,
@@ -168,6 +169,8 @@ export default function CuttingMachines() {
   const [lazyOT, setLazyOT] = useState(false)            // true = defer OT to end of week; false = eager (fire from day 1)
   const [interweekThreshold, setInterweekThreshold] = useState(0.5)
   const [useNearestKva, setUseNearestKva] = useState(true)
+  const [shiftMode, setShiftMode] = useState<ShiftMode>('none')
+  const [shiftNDays, setShiftNDays] = useState(2)
   const [machineTableOpen, setMachineTableOpen] = useState(false)
   const [globalRatesOpen, setGlobalRatesOpen]   = useState(false)
   const [perMachRatesOpen, setPerMachRatesOpen] = useState(false)
@@ -202,7 +205,7 @@ export default function CuttingMachines() {
   }
 
   // ── Plan snapshot ────────────────────────────────────────────
-  function expCtx() { return { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat, balanceMode, useNearestKva } }
+  function expCtx() { return { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat, balanceMode, useNearestKva, shiftMode, shiftNDays } }
   function exportPlanCSV()      { _exportCSV(expCtx()) }
   function exportTXT()          { _exportTXT(expCtx()) }
   function exportXLSX()         { _exportXLSX(expCtx()) }
@@ -222,6 +225,8 @@ export default function CuttingMachines() {
           plan_data: {
             // ── Calculation parameters (inputs) ──────────────
             balanceMode,
+            shiftMode,
+            shiftNDays,
             cutting_rates: globalRates,       // ⏱ เวลาตัดโลหะตามขนาด
             machines: machines.map(m => ({    // machine config at time of save
               id: m.id, name: m.name, count: m.count,
@@ -240,6 +245,7 @@ export default function CuttingMachines() {
               totalKvaWeek: weekData.totalKvaWeek,
               bottleneckWall: weekData.bottleneckWall,
               totalOT: weekData.totalOT,
+              totalShift: weekData.totalShift,
             },
             dayRows: weekData.dayRows.map(r => ({
               dStr: r.dStr,
@@ -454,9 +460,9 @@ export default function CuttingMachines() {
   const weekSchedule = useMemo(() => {
     // ── ❌ ไม่ OT ─────────────────────────────────────────────────
     const mi = new Map(machIdx)
-    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva)
-    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva)
-    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, useNearestKva)
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, globalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays)
+    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, globalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, globalTmcRates, useNearestKva, shiftMode, shiftNDays)
     const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
       daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
       deadline_no_ot: () => sm('none','deadline'), priority_no_ot: () => sm('none','priority'),
@@ -471,7 +477,7 @@ export default function CuttingMachines() {
     return (modeMap[balanceMode] ?? modeMap['weekly_no_ot'])()
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, interweekThreshold, useNearestKva, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
+  [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, interweekThreshold, useNearestKva, shiftMode, shiftNDays, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), globalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), globalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
   // SINGLE SOURCE OF TRUTH — compute everything once from weekSchedule.
   const weekData = useMemo(
@@ -652,6 +658,37 @@ export default function CuttingMachines() {
                       fontWeight: useNearestKva ? 700 : 400 }}>
                     🎯 KVA {useNearestKva ? 'ใกล้เคียง' : 'ตรงเท่านั้น'}
                   </button>
+                </div>
+                {/* Row 3: Shift mode */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ fontSize: 10, color: 'var(--txt3)', minWidth: 40 }}>กะ:</span>
+                  {([
+                    { id: 'none',   label: '❌ ไม่มีกะ',  col: 'var(--txt3)',   title: 'ไม่ใช้กะกลางคืน' },
+                    { id: 'smart',  label: '⚠ Smart',     col: 'var(--amber)',  title: 'เปิดกะเมื่องานล้น reg+OT ของสัปดาห์ที่เหลือ' },
+                    { id: 'every',  label: '🌙 ทุกวัน',   col: 'var(--blue)',   title: 'เพิ่มกะกลางคืนทุกวัน' },
+                    { id: 'n_days', label: '📅 N วัน',    col: 'var(--purple)', title: 'เลือก N วันที่ต้องการกะมากที่สุด' },
+                  ] as const).map(s => (
+                    <button key={s.id} onClick={() => setShiftMode(s.id)} title={s.title} style={{
+                      fontSize: 10, padding: '3px 10px', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
+                      border: `1px solid ${shiftMode === s.id ? s.col : 'var(--bord2)'}`,
+                      background: shiftMode === s.id ? s.col + '22' : 'var(--bg3)',
+                      color: shiftMode === s.id ? s.col : 'var(--txt2)',
+                      fontWeight: shiftMode === s.id ? 700 : 400,
+                    }}>
+                      {s.label}
+                    </button>
+                  ))}
+                  {shiftMode === 'n_days' && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--txt3)', marginLeft: 4 }}>
+                      จำนวนวัน:
+                      <input
+                        type="number" min={1} max={6} step={1}
+                        value={shiftNDays}
+                        onChange={e => setShiftNDays(Math.max(1, Math.min(6, parseInt(e.target.value) || 2)))}
+                        style={{ width: 44, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--txt1)', textAlign: 'center' }}
+                      />
+                    </label>
+                  )}
                 </div>
               </div>
             )
@@ -942,6 +979,11 @@ export default function CuttingMachines() {
               {totalOT > 0
                 ? <span className={styles.warn}>⚠ OT สูงสุด {totalOT.toFixed(1)}h/วัน</span>
                 : <span className={styles.ok}>✓ เสร็จในเวลาปกติทุกวัน</span>}
+              {weekData.totalShift >= 0.05 && (
+                <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, fontWeight: 700, background: 'rgba(137,180,250,.12)', border: '1px solid rgba(137,180,250,.3)', color: 'var(--blue)' }}>
+                  🌙 กะ {weekData.totalShift.toFixed(1)}h
+                </span>
+              )}
             </div>
 
             {/* ── CARD VIEW ── */}
@@ -998,6 +1040,7 @@ export default function CuttingMachines() {
                               <div style={{ fontSize: 10, fontFamily: 'var(--mono)', color: timeCol, fontWeight: 600 }}>
                                 {totalH.toFixed(1)}h / {capH}h
                                 {sched.otHrs >= 0.05 && <span style={{ color: 'var(--amber)', marginLeft: 4 }}>+OT {sched.otHrs.toFixed(1)}h</span>}
+                                {sched.shiftHrs >= 0.05 && <span style={{ color: 'var(--blue)', marginLeft: 4 }}>🌙 {sched.shiftHrs.toFixed(1)}h</span>}
                                 {sched.carriesForward && <span style={{ color: 'var(--red)', marginLeft: 4 }}>→ พรุ่งนี้</span>}
                               </div>
                             </div>
@@ -1137,7 +1180,7 @@ export default function CuttingMachines() {
                             <div style={{ fontWeight: 700 }}>{mLabel(m)}</div>
                             <div style={{ fontSize: 9, padding: '1px 6px', borderRadius: 8, display: 'inline-block', marginTop: 2, background: `${typeInfo.color}22`, color: typeInfo.color, fontWeight: 600 }}>{typeInfo.label}</div>
                             <div style={{ fontSize: 9, color: 'var(--txt3)', fontWeight: 400, marginTop: 2 }}>{m.min_kva}–{m.max_kva >= 9999 ? '∞' : m.max_kva}kVA · {m.hrs_per_unit}h/ตัว</div>
-                            <div style={{ fontSize: 9, color: col, fontWeight: 600, marginTop: 2 }}>{t.qty} ตัว · {t.wallHrs.toFixed(1)}h{t.ot > 0 ? ` · OT ${t.ot.toFixed(1)}h` : ''}</div>
+                            <div style={{ fontSize: 9, color: col, fontWeight: 600, marginTop: 2 }}>{t.qty} ตัว · {t.wallHrs.toFixed(1)}h{t.ot > 0 ? ` · OT ${t.ot.toFixed(1)}h` : ''}{t.shift >= 0.05 ? ` · 🌙 ${t.shift.toFixed(1)}h` : ''}</div>
                           </th>
                         )
                       })}
@@ -1182,6 +1225,7 @@ export default function CuttingMachines() {
                                         {wall.toFixed(1)}h / {capH}h
                                       </span>
                                       {(sched?.otHrs ?? 0) >= 0.05 ? <span style={{ fontSize: 9, color: 'var(--amber)', fontWeight: 600 }}>+OT {sched!.otHrs.toFixed(1)}h</span> : ''}
+                                      {(sched?.shiftHrs ?? 0) >= 0.05 ? <span style={{ fontSize: 9, color: 'var(--blue)', fontWeight: 600 }}>🌙{sched!.shiftHrs.toFixed(1)}h</span> : ''}
                                       {sched?.carriesForward && <span style={{ fontSize: 9, color: 'var(--red)', fontWeight: 600 }}>→ พรุ่งนี้</span>}
                                     </div>
                                     {/* Order rows — always visible, no click needed */}

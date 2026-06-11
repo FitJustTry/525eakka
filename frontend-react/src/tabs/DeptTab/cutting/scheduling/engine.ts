@@ -1,7 +1,9 @@
 import type { CuttingMachine, CuttingRate, Order, WCConfig } from '../../../../types'
 import { DRILL_BONUS, INDEX_BONUS } from './constants'
 import type { DayWork, MachineDaySched } from './constants'
-import { getHrsForKva, resolveHours, canMachineCut, drillPrefers, wirePrefers, catRank, fmtISO } from './utils'
+import { getHrsForKva, resolveHours, resolveShift, canMachineCut, drillPrefers, wirePrefers, catRank, fmtISO, isMachineOn } from './utils'
+
+export type ShiftMode = 'none' | 'smart' | 'every' | 'n_days'
 
 export type { DayWork, MachineDaySched }
 
@@ -126,7 +128,9 @@ export function scheduleFastest(
   stickyOrders = true,
   lazyOt = true,
   globalTmcRates: CuttingRate[] = [],
-  useNearestKva = false
+  useNearestKva = false,
+  shiftMode: ShiftMode = 'none',
+  shiftNDays = 0,
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
   if (!machines.length || !weekOrders.length) return result
@@ -256,6 +260,29 @@ export function scheduleFastest(
     let isCarry  = false
     let curUnit: Unit | null = null
 
+    // ── Pre-compute active shift days for this machine ──────────
+    const activeShiftDays = new Set<string>()
+    if (shiftMode === 'every') {
+      days.forEach(d => { if (isMachineOn(m, d.getDay())) activeShiftDays.add(fmtISO(d)) })
+    } else if (shiftMode === 'n_days' && shiftNDays > 0) {
+      // Quick pre-pass (copy of queue state) to estimate actual daily load without shift
+      const dayLoads = new Map<string, number>()
+      let pr = 0, pqi = 0
+      for (const d of days) {
+        const dow = d.getDay(); const dStr = fmtISO(d)
+        if (!isMachineOn(m, dow)) continue
+        const { reg, ot } = resolveHours(m, wcConfig, dow === 6, dow)
+        let pa = (reg + ot) * (m.count || 1), pu = 0
+        while (pa > 0.001) {
+          if (pr <= 0.001) { if (pqi >= queue.length) break; pr = uHrs(m, queue[pqi++]) }
+          const ph = Math.min(pr, pa); pa -= ph; pr -= ph; pu += ph
+          if (pr <= 0.001) pr = 0
+        }
+        dayLoads.set(dStr, pu)
+      }
+      ;[...dayLoads.entries()].sort((a, b) => b[1] - a[1]).slice(0, shiftNDays).forEach(([d]) => activeShiftDays.add(d))
+    }
+
     for (let di = 0; di < days.length; di++) {
       const d = days[di]; const dow = d.getDay(); const isSat = dow === 6
       const dStr = fmtISO(d)
@@ -264,7 +291,7 @@ export function scheduleFastest(
       const otCap  = ot  * (m.count || 1)
 
       if (regCap === 0 && otCap === 0) {
-        mMap.set(dStr, { regHrs: 0, otHrs: 0, otNeeded: 0, work: [], hasCarryOver: false,
+        mMap.set(dStr, { regHrs: 0, otHrs: 0, shiftHrs: 0, otNeeded: 0, work: [], hasCarryOver: false,
           carriesForward: rem > 0.001 || qi < queue.length })
         continue
       }
@@ -288,9 +315,25 @@ export function scheduleFastest(
         effectiveOtCap = Math.min(otCap, Math.max(0, rem + queueHrs - regLeft - otLeft))
       }
 
+      // ── NEW: Shift tier — entirely independent from OT logic ──
+      const shiftCap = resolveShift(m) * (m.count || 1)
+      let effectiveShiftCap = 0
+      if (shiftCap > 0 && shiftMode !== 'none') {
+        if (activeShiftDays.has(dStr)) {
+          effectiveShiftCap = shiftCap
+        } else if (shiftMode === 'smart') {
+          const weekRegOtLeft = days.slice(di).reduce((s, dd) => {
+            const { reg: r, ot: o } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
+            return s + (r + o) * (m.count || 1)
+          }, 0)
+          const qHrs = queue.slice(qi).reduce((s, u) => s + uHrs(m, u), 0)
+          effectiveShiftCap = (rem + qHrs > weekRegOtLeft) ? shiftCap : 0
+        }
+      }
+
       const work: DayWork[] = []
-      let avail   = regCap + effectiveOtCap
-      let regUsed = 0; let otUsed = 0
+      let avail     = regCap + effectiveOtCap + effectiveShiftCap
+      let regUsed   = 0; let otUsed = 0; let shiftUsed = 0
 
       while (avail > 0.001) {
         if (rem <= 0.001) {
@@ -300,9 +343,12 @@ export function scheduleFastest(
           rem     = uHrs(m, curUnit)
           isCarry = false
         }
-        const h    = Math.min(rem, avail)
-        const ot2  = Math.max(0, h - (regCap - regUsed))
-        regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h; rem -= h
+        const h         = Math.min(rem, avail)
+        const regPart   = Math.min(h, regCap - regUsed)
+        const otPart    = Math.min(h - regPart, effectiveOtCap - otUsed)
+        const shiftPart = h - regPart - otPart
+        regUsed   += regPart; otUsed += otPart; shiftUsed += shiftPart
+        avail -= h; rem -= h
         const done = rem <= 0.001
         if (done) rem = 0
         const lastW = work[work.length - 1]
@@ -315,7 +361,7 @@ export function scheduleFastest(
       }
 
       mMap.set(dStr, {
-        regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed,
+        regHrs: regUsed, otHrs: otUsed, shiftHrs: shiftUsed, otNeeded: otUsed,
         work, hasCarryOver: work.some(w => w.isCarryOver),
         carriesForward: rem > 0.001 || qi < queue.length,
       })
@@ -416,7 +462,9 @@ export function scheduleMode(
   lazyOt = true,
   globalTmcRates: CuttingRate[] = [],
   interweekThreshold = 0.5,
-  useNearestKva = false
+  useNearestKva = false,
+  shiftMode: ShiftMode = 'none',
+  shiftNDays = 0,
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
 
@@ -453,6 +501,31 @@ export function scheduleMode(
       let qi  = 0
       let cur: QItem | null = null   // in-progress order (carry-over between days)
 
+      // ── Pre-compute active shift days ──────────────────────────
+      const activeShiftDaysW = new Set<string>()
+      if (shiftMode === 'every') {
+        days.forEach(d => { if (isMachineOn(m, d.getDay())) activeShiftDaysW.add(fmtISO(d)) })
+      } else if (shiftMode === 'n_days' && shiftNDays > 0) {
+        const dayLoads = new Map<string, number>()
+        let prem = 0, pqi = 0, pcur: QItem | null = null
+        for (const d of days) {
+          const dow = d.getDay(); const dStr = fmtISO(d)
+          if (!isMachineOn(m, dow)) continue
+          const { reg, ot } = resolveHours(m, wcConfig, dow === 6, dow)
+          let pa = (reg + ot) * (m.count || 1), pu = 0
+          while (pa > 0.001) {
+            if (!pcur || pcur.remainingHrs <= 0.001) {
+              if (pqi >= queue.length) break
+              pcur = { ...queue[pqi++] }
+            }
+            const ph = Math.min(pcur.remainingHrs, pa); pa -= ph; pu += ph; pcur.remainingHrs -= ph
+            if (pcur.remainingHrs <= 0.001) pcur = null
+          }
+          dayLoads.set(dStr, pu)
+        }
+        ;[...dayLoads.entries()].sort((a, b) => b[1] - a[1]).slice(0, shiftNDays).forEach(([d]) => activeShiftDaysW.add(d))
+      }
+
       for (let di = 0; di < days.length; di++) {
         const d = days[di]; const dow = d.getDay(); const isSat = dow === 6
         const dStr = fmtISO(d)
@@ -460,7 +533,7 @@ export function scheduleMode(
         const regCap = reg * (m.count || 1); const otCap = ot * (m.count || 1)
 
         if (regCap === 0 && otCap === 0) {
-          mMap.set(dStr, { regHrs: 0, otHrs: 0, otNeeded: 0, work: [], hasCarryOver: false,
+          mMap.set(dStr, { regHrs: 0, otHrs: 0, shiftHrs: 0, otNeeded: 0, work: [], hasCarryOver: false,
             carriesForward: (cur?.remainingHrs ?? 0) > 0.001 || qi < queue.length })
           continue
         }
@@ -485,17 +558,38 @@ export function scheduleMode(
           effectiveOtCap = Math.min(otCap, Math.max(0, curRem + queueHrs - regLeft - otLeft))
         }
 
+        // ── NEW: Shift tier ──────────────────────────────────────
+        const shiftCap = resolveShift(m) * (m.count || 1)
+        let effectiveShiftCap = 0
+        if (shiftCap > 0 && shiftMode !== 'none') {
+          if (activeShiftDaysW.has(dStr)) {
+            effectiveShiftCap = shiftCap
+          } else if (shiftMode === 'smart') {
+            const weekRegOtLeft = days.slice(di).reduce((s, dd) => {
+              const { reg: r, ot: o } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
+              return s + (r + o) * (m.count || 1)
+            }, 0)
+            const curRem2  = cur?.remainingHrs ?? 0
+            const queueHrs2 = queue.slice(qi).reduce((s, item) => s + item.remainingHrs, 0)
+            effectiveShiftCap = (curRem2 + queueHrs2 > weekRegOtLeft) ? shiftCap : 0
+          }
+        }
+
         const work: DayWork[] = []
-        let avail = regCap + effectiveOtCap; let regUsed = 0; let otUsed = 0
+        let avail = regCap + effectiveOtCap + effectiveShiftCap
+        let regUsed = 0; let otUsed = 0; let shiftUsed = 0
 
         while (avail > 0.001) {
           if (!cur || cur.remainingHrs <= 0.001) {
             if (qi >= queue.length) break
             cur = { ...queue[qi++], isCarryOver: false }
           }
-          const h = Math.min(cur.remainingHrs, avail)
-          const ot2 = Math.max(0, h - (regCap - regUsed))
-          regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h; cur.remainingHrs -= h
+          const h         = Math.min(cur.remainingHrs, avail)
+          const regPart   = Math.min(h, regCap - regUsed)
+          const otPart    = Math.min(h - regPart, effectiveOtCap - otUsed)
+          const shiftPart = h - regPart - otPart
+          regUsed += regPart; otUsed += otPart; shiftUsed += shiftPart
+          avail -= h; cur.remainingHrs -= h
           const done = cur.remainingHrs <= 0.001
           if (done) cur.remainingHrs = 0
           const lastW = work[work.length - 1]
@@ -508,7 +602,7 @@ export function scheduleMode(
         }
 
         mMap.set(dStr, {
-          regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed,
+          regHrs: regUsed, otHrs: otUsed, shiftHrs: shiftUsed, otNeeded: otUsed,
           work, hasCarryOver: work.some(w => w.isCarryOver),
           carriesForward: (cur?.remainingHrs ?? 0) > 0.001 || qi < queue.length,
         })
@@ -525,6 +619,33 @@ export function scheduleMode(
     const mMap = new Map<string, MachineDaySched>()
     result.set(m.id, mMap)
     let carryItems: QItem[] = []  // carry-over for daily approach
+
+    // ── Pre-compute active shift days (daily) ──────────────────
+    const activeShiftDaysD = new Set<string>()
+    if (shiftMode === 'every') {
+      days.forEach(d => { if (isMachineOn(m, d.getDay())) activeShiftDaysD.add(fmtISO(d)) })
+    } else if (shiftMode === 'n_days' && shiftNDays > 0) {
+      const dayLoads = new Map<string, number>()
+      let pCarry: { remainingHrs: number }[] = []
+      for (let di = 0; di < days.length; di++) {
+        const d = days[di]; const dow = d.getDay(); const dStr = fmtISO(d)
+        if (!isMachineOn(m, dow)) continue
+        const { reg, ot } = resolveHours(m, wcConfig, dow === 6, dow)
+        let pa = (reg + ot) * (m.count || 1), pu = 0
+        const todayEst = (dailyAssignments[di]?.asgn.get(m.id) ?? []).map(o => ({
+          remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva)
+        }))
+        const all = [...pCarry, ...todayEst]; pCarry = []
+        for (const item of all) {
+          if (pa <= 0.001) { pCarry.push(item); continue }
+          const ph = Math.min(item.remainingHrs, pa); pa -= ph; pu += ph
+          const r2 = item.remainingHrs - ph
+          if (r2 > 0.001) pCarry.push({ remainingHrs: r2 })
+        }
+        dayLoads.set(dStr, pu)
+      }
+      ;[...dayLoads.entries()].sort((a, b) => b[1] - a[1]).slice(0, shiftNDays).forEach(([d]) => activeShiftDaysD.add(d))
+    }
 
     for (let di = 0; di < days.length; di++) {
       const d = days[di]
@@ -557,9 +678,29 @@ export function scheduleMode(
         effectiveOtCap = Math.min(otCap, Math.max(0, carryHrs + futureHrs - regLeft - otLeft))
       }
 
+      // ── NEW: Shift tier ──────────────────────────────────────
+      const shiftCap = resolveShift(m) * (m.count || 1)
+      let effectiveShiftCap = 0
+      if (shiftCap > 0 && shiftMode !== 'none') {
+        if (activeShiftDaysD.has(dStr)) {
+          effectiveShiftCap = shiftCap
+        } else if (shiftMode === 'smart') {
+          const weekRegOtLeft = days.slice(di).reduce((s, dd) => {
+            const { reg: r, ot: o } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
+            return s + (r + o) * (m.count || 1)
+          }, 0)
+          const carryHrs2 = carryItems.reduce((s, c) => s + c.remainingHrs, 0)
+          const futureHrs2 = days.slice(di).reduce((s, _dd, i) =>
+            s + (dailyAssignments[di + i]?.asgn.get(m.id) ?? [])
+              .reduce((ss, o) => ss + o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva), 0)
+          , 0)
+          effectiveShiftCap = (carryHrs2 + futureHrs2 > weekRegOtLeft) ? shiftCap : 0
+        }
+      }
+
       const work: DayWork[] = []
-      let regUsed = 0; let otUsed = 0
-      let avail = regCap + effectiveOtCap
+      let regUsed = 0; let otUsed = 0; let shiftUsed = 0
+      let avail = regCap + effectiveOtCap + effectiveShiftCap
 
       {
         // ── Daily: carry queue + today's new orders ───────────
@@ -571,9 +712,11 @@ export function scheduleMode(
         carryItems = []
         for (const item of fullQueue) {
           if (avail <= 0.001) { carryItems.push({ ...item, isCarryOver: true }); continue }
-          const h = Math.min(item.remainingHrs, avail)
-          const ot2 = Math.max(0, h - (regCap - regUsed))
-          regUsed = Math.min(regCap, regUsed + h); otUsed += ot2; avail -= h
+          const h         = Math.min(item.remainingHrs, avail)
+          const regPart   = Math.min(h, regCap - regUsed)
+          const otPart    = Math.min(h - regPart, effectiveOtCap - otUsed)
+          const shiftPart = h - regPart - otPart
+          regUsed += regPart; otUsed += otPart; shiftUsed += shiftPart; avail -= h
           const rem = item.remainingHrs - h
           const done = rem <= 0.001
           work.push({ order: item.order, hrsWorked: h, isComplete: done, isCarryOver: item.isCarryOver, carriesOver: !done })
@@ -582,7 +725,7 @@ export function scheduleMode(
       }
 
       mMap.set(dStr, {
-        regHrs: regUsed, otHrs: otUsed, otNeeded: otUsed,
+        regHrs: regUsed, otHrs: otUsed, shiftHrs: shiftUsed, otNeeded: otUsed,
         work, hasCarryOver: work.some(w => w.isCarryOver),
         carriesForward: carryItems.length > 0,
       })

@@ -18,7 +18,7 @@ export interface ExportContext {
 
 export interface PlanRow {
   day: string; date: string; machine: string; machOff: boolean
-  wallHrs: number; ot: number; carryFwd: boolean
+  wallHrs: number; ot: number; shift: number; carryFwd: boolean
   sapSo: string; kva: number; qty: number; customer: string; rawMat: string
   hrsWorked: number; totalHrs: number; done: boolean; carryOver: boolean; isCarryIn: boolean
 }
@@ -33,14 +33,14 @@ export function buildPlanRows({ weekData, products, globalRates, globalTmcRates,
     const day = DAY_TH_FULL[d.getDay()]
     machineCells.forEach(({ m, machOff, sched, work, wall }) => {
       if (machOff) {
-        planRows.push({ day, date, machine: mLabel(m), machOff: true, wallHrs: 0, ot: 0, carryFwd: false, sapSo: '', kva: 0, qty: 0, customer: '', rawMat: '', hrsWorked: 0, totalHrs: 0, done: false, carryOver: false, isCarryIn: false })
+        planRows.push({ day, date, machine: mLabel(m), machOff: true, wallHrs: 0, ot: 0, shift: 0, carryFwd: false, sapSo: '', kva: 0, qty: 0, customer: '', rawMat: '', hrsWorked: 0, totalHrs: 0, done: false, carryOver: false, isCarryIn: false })
         return
       }
       if (work.length === 0) return
       work.filter(w => w.hrsWorked >= 0.01 || !w.isComplete).forEach(w => {
         const kva = w.order.kva ?? products[w.order.product]?.kva ?? 0
         const totalHrs = w.order.qty * getHrsForKva(m, kva, globalRates, w.order.item_code, globalTmcRates, useNearestKva)
-        planRows.push({ day, date, machine: mLabel(m), machOff: false, wallHrs: wall, ot: sched?.otHrs ?? 0, carryFwd: sched?.carriesForward ?? false, sapSo: w.order.sap_so ?? w.order.id, kva, qty: w.order.qty, customer: w.order.customer ?? '', rawMat: w.order.raw_mat ?? '', hrsWorked: w.hrsWorked, totalHrs, done: w.isComplete, carryOver: w.carriesOver, isCarryIn: w.isCarryOver })
+        planRows.push({ day, date, machine: mLabel(m), machOff: false, wallHrs: wall, ot: sched?.otHrs ?? 0, shift: sched?.shiftHrs ?? 0, carryFwd: sched?.carriesForward ?? false, sapSo: w.order.sap_so ?? w.order.id, kva, qty: w.order.qty, customer: w.order.customer ?? '', rawMat: w.order.raw_mat ?? '', hrsWorked: w.hrsWorked, totalHrs, done: w.isComplete, carryOver: w.carriesOver, isCarryIn: w.isCarryOver })
       })
     })
   })
