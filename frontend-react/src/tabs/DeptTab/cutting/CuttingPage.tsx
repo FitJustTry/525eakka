@@ -1447,19 +1447,51 @@ export default function CuttingMachines() {
                   <thead>
                     <tr>
                       <th style={{ textAlign: 'left', minWidth: 110 }}>วัน</th>
-                      {machines.map((m, i) => {
-                        const t = mTotals[i]
-                        const col = t.over ? 'var(--red)' : t.ot > 0 ? 'var(--amber)' : 'var(--green)'
-                        const typeInfo = machineTypeLabel(m)
-                        return (
-                          <th key={m.id} style={{ textAlign: 'center', minWidth: 150, borderLeft: '1px solid var(--bord)' }}>
-                            <div style={{ fontWeight: 700 }}>{mLabel(m)}</div>
-                            <div style={{ fontSize: 9, padding: '1px 6px', borderRadius: 8, display: 'inline-block', marginTop: 2, background: `${typeInfo.color}22`, color: typeInfo.color, fontWeight: 600 }}>{typeInfo.label}</div>
-                            <div style={{ fontSize: 9, color: 'var(--txt3)', fontWeight: 400, marginTop: 2 }}>{m.min_kva}–{m.max_kva >= 9999 ? '∞' : m.max_kva}kVA · {m.hrs_per_unit}h/ตัว</div>
-                            <div style={{ fontSize: 9, color: col, fontWeight: 600, marginTop: 2 }}>{t.qty} ตัว · {t.wallHrs.toFixed(1)}h{t.ot > 0 ? ` · OT ${t.ot.toFixed(1)}h` : ''}{t.shift >= 0.05 ? ` · 🌙 ${t.shift.toFixed(1)}h` : ''}</div>
-                          </th>
-                        )
-                      })}
+                      {(() => {
+                        const utils = mTotals.map(t => t.capHrs > 0 ? (t.wallHrs - t.shift) / t.capHrs : 0)
+                        const bottleneckIdx = utils.reduce((bi, u, i) => u > utils[bi] ? i : bi, 0)
+                        return machines.map((m, i) => {
+                          const t = mTotals[i]
+                          const col = t.over ? 'var(--red)' : t.ot > 0 ? 'var(--amber)' : 'var(--green)'
+                          const typeInfo = machineTypeLabel(m)
+                          const util = Math.round(utils[i] * 100)
+                          const utilCol = util > 100 ? 'var(--red)' : util > 80 ? 'var(--amber)' : 'var(--green)'
+                          const isBottleneck = i === bottleneckIdx && utils[i] > 0
+                          const shiftOn = m.shift_enabled ?? true
+                          return (
+                            <th key={m.id} style={{ textAlign: 'center', minWidth: 150, borderLeft: '1px solid var(--bord)' }}>
+                              <div style={{ fontWeight: 700 }}>{mLabel(m)}</div>
+                              <div style={{ fontSize: 9, padding: '1px 6px', borderRadius: 8, display: 'inline-block', marginTop: 2, background: `${typeInfo.color}22`, color: typeInfo.color, fontWeight: 600 }}>{typeInfo.label}</div>
+                              <div style={{ fontSize: 9, color: 'var(--txt3)', fontWeight: 400, marginTop: 2 }}>{m.min_kva}–{m.max_kva >= 9999 ? '∞' : m.max_kva}kVA · {m.hrs_per_unit}h/ตัว</div>
+                              <div style={{ fontSize: 9, color: col, fontWeight: 600, marginTop: 2 }}>{t.qty} ตัว · {t.wallHrs.toFixed(1)}h{t.ot > 0 ? ` · OT ${t.ot.toFixed(1)}h` : ''}{t.shift >= 0.05 ? ` · 🌙 ${t.shift.toFixed(1)}h` : ''}</div>
+                              {/* Utilization bar + bottleneck */}
+                              {t.capHrs > 0 && (
+                                <div style={{ marginTop: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, flexWrap: 'wrap' }}>
+                                  <div style={{ width: 60, height: 4, background: 'var(--bord)', borderRadius: 2, overflow: 'hidden' }}>
+                                    <div style={{ width: `${Math.min(util, 100)}%`, height: '100%', background: utilCol, borderRadius: 2 }} />
+                                  </div>
+                                  <span style={{ fontSize: 9, fontFamily: 'var(--mono)', color: utilCol, fontWeight: 700 }}>{util}%</span>
+                                  {isBottleneck && <span title="เครื่องคอขวด (โหลดสูงสุด)" style={{ fontSize: 9 }}>🚨</span>}
+                                </div>
+                              )}
+                              {/* Shift toggle + recommendation */}
+                              <div style={{ marginTop: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                                <button onClick={() => handleToggle(m.id, 'shift_enabled')}
+                                  title={shiftOn ? 'กะเปิด — คลิกเพื่อปิด' : 'กะปิด — คลิกเพื่อเปิด'}
+                                  style={{ fontSize: 11, background: 'none', border: 'none', cursor: 'pointer', opacity: shiftOn ? 1 : 0.35, padding: '1px 3px', lineHeight: 1 }}>
+                                  {shiftOn ? '🌙' : '🌑'}
+                                </button>
+                                {t.over && !shiftOn && (
+                                  <span title="โหลดเกิน — เปิดกะเพื่อลด" style={{ fontSize: 9, color: 'var(--amber)', cursor: 'pointer' }}
+                                    onClick={() => handleToggle(m.id, 'shift_enabled')}>
+                                    💡 เปิดกะ
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                          )
+                        })
+                      })()}
                       <th style={{ textAlign: 'center', borderLeft: '2px solid var(--bord2)', whiteSpace: 'nowrap' }}>รวม/วัน</th>
                     </tr>
                   </thead>

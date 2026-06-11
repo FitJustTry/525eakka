@@ -42,6 +42,7 @@ export interface MachTotals {
   ot: number
   shift: number
   over: boolean
+  capHrs: number   // total reg+OT capacity this week (excludes shift, excludes off days)
 }
 
 export interface WeekData {
@@ -111,7 +112,12 @@ export function computeWeekData({
           const o = weekOrders.find(x => x.id === oid)
           return s + (o?.qty ?? 0)
         }, 0)
-    return { wallHrs, qty, regCap: REG_PER, ot: otSum, shift: shiftSum, over: wallHrs - shiftSum > REG_PER + OT_PER }
+    let capHrs = 0
+    days.forEach(d => {
+      const { reg, ot } = resolveHours(m, wcConfig, d.getDay() === 6, d.getDay())
+      capHrs += reg + ot
+    })
+    return { wallHrs, qty, regCap: REG_PER, ot: otSum, shift: shiftSum, over: wallHrs - shiftSum > REG_PER + OT_PER, capHrs }
   })
 
   // Per-day data for each machine

@@ -382,7 +382,7 @@ export function sortPool(
   products: Record<string, { kva?: number }>, globalRates: CuttingRate[], machines: CuttingMachine[],
   nextWeekOrders: Order[] = [], globalTmcRates: CuttingRate[] = [],
   interweekThreshold = 0.5, thisMachine?: CuttingMachine,
-  useNearestKva = false
+  useNearestKva = false, routingRates = false
 ): Order[] {
   const m0 = thisMachine ?? machines[0]
   const hrs = (o: Order) => m0 ? o.qty * getHrsForKva(m0, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates) : 0
@@ -500,7 +500,7 @@ export function scheduleMode(
       const mMap = new Map<string, MachineDaySched>()
       result.set(m.id, mMap)
 
-      const assignedOrders = sortPool(asgn.get(m.id) ?? [], sortStrategy, products, globalRates, machines, nextWeekOrders, globalTmcRates, interweekThreshold, m, useNearestKva)
+      const assignedOrders = sortPool(asgn.get(m.id) ?? [], sortStrategy, products, globalRates, machines, nextWeekOrders, globalTmcRates, interweekThreshold, m, useNearestKva, routingRates)
       const queue: QItem[] = assignedOrders.map(o => ({
         order: o,
         remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product ?? '']?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates),
