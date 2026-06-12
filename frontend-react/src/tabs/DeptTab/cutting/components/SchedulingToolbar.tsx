@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React from 'react'
 import { DAY_SHORT } from '../scheduling/constants'
 import { fmtISO } from '../scheduling/utils'
 import type { ShiftMode } from '../scheduling/engine'
@@ -45,7 +45,6 @@ export default function SchedulingToolbar({
   shiftMode, setShiftMode, shiftNDays, setShiftNDays, shiftHrsDefault, setShiftHrsDefault,
   shiftDays, totalShift, lateOrdersSize, baselineLateCount, days, manualOtMode, setManualOtMode,
 }: Props) {
-  const [collapsed, setCollapsed] = useState(false)
   const otPol = balanceMode.endsWith('_no_ot') ? 'no_ot' : balanceMode.endsWith('_smart') ? 'smart' : 'full'
   const schedKey = balanceMode.replace(/_(?:no_ot|smart|full)$/, '')
 
@@ -65,28 +64,8 @@ export default function SchedulingToolbar({
     { id: 'batch',     label: '🔗 Batch kVA' },
   ] as const
 
-  const schedLabel: Record<string, string> = { daily: '📅 รายวัน', weekly: '🗓 รายสัปดาห์', fastest: '🏎 เร็วสุด', deadline: '📅 วันส่ง', priority: '⭐ ความสำคัญ', interweek: '🔮 สัปดาห์หน้า', batch: '🔗 Batch' }
-  const otLabel: Record<string, string> = { no_ot: '❌ ไม่ OT', smart: '⚠️ OT จำเป็น', full: '🔥 OT เสมอ' }
-  const shiftLabel: Record<string, string> = { none: '', smart: '⚠ กะ Smart', every: '🌙 ทุกวัน', n_days: `📅 กะ ${shiftNDays}วัน`, manual: '🗓 กะกำหนดเอง', custom: '✏ Custom' }
-
-  if (collapsed) {
-    return (
-      <div
-        onDoubleClick={() => setCollapsed(false)}
-        title="ดับเบิลคลิกเพื่อขยาย"
-        style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 12, cursor: 'pointer', userSelect: 'none', padding: '2px 0' }}>
-        <span style={{ fontSize: 9, color: 'var(--txt3)', opacity: 0.6 }}>▶</span>
-        {[schedLabel[schedKey], otLabel[otPol], shiftLabel[shiftMode]].filter(Boolean).map((lbl, i) => (
-          <span key={i} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 8, background: 'var(--bg3)', border: '1px solid var(--bord2)', color: 'var(--txt2)' }}>{lbl}</span>
-        ))}
-        {manualOtMode && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 8, background: 'rgba(249,226,175,.15)', border: '1px solid var(--amber)', color: 'var(--amber)' }}>⚡ OT</span>}
-        {viewMode !== 'table' && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 8, background: 'var(--bg3)', border: '1px solid var(--bord2)', color: 'var(--txt2)' }}>{viewMode === 'cards' ? '📋' : '🔄'}</span>}
-      </div>
-    )
-  }
-
   return (
-    <div onDoubleClick={() => setCollapsed(true)} style={{ display: 'flex', flexDirection: 'column', gap: 5, marginLeft: 12, userSelect: 'none' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginLeft: 12 }}>
       {/* Row 1: View mode + OT policy */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 10, color: 'var(--txt3)' }}>มุมมอง:</span>
