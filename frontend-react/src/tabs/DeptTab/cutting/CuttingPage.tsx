@@ -250,6 +250,13 @@ export default function CuttingMachines() {
   const monStr = fmtISO(mon)
   const satStr = fmtISO(sat)
   const fmtD = fmtDUtil
+
+  // Conflict: warn if approved/in_production plan exists for this week
+  const conflictSnap = snapshots.find(s =>
+    (s.status === 'approved' || s.status === 'in_production') &&
+    s.week_start === monStr && s.week_end === satStr
+  )
+
   const weekLabel = `${fmtD(mon)} – ${fmtD(sat)}/${String(sat.getFullYear() % 100).padStart(2, '0')}`
   const currentWeekOrders = orders.filter(o => o.plan_date && o.plan_date >= monStr && o.plan_date <= satStr)
   const days = Array.from({ length: 6 }, (_, i) => {
@@ -562,6 +569,13 @@ export default function CuttingMachines() {
           onExportJSON={exportJSON} onLoadSnapshots={loadSnapshots}
         />
 
+        {/* Conflict warning banner */}
+        {conflictSnap && (
+          <div style={{ padding: '6px 16px', background: 'rgba(249,226,175,.1)', borderBottom: '1px solid rgba(249,226,175,.3)', fontSize: 11, color: 'var(--amber)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            ⚠️ มีแผน &quot;{conflictSnap.label}&quot; ในสถานะ {conflictSnap.status === 'in_production' ? '▶ In Production' : '✅ Approved'} สำหรับสัปดาห์นี้อยู่แล้ว — บันทึกซ้อนจะสร้างแผนใหม่แยกต่างหาก
+          </div>
+        )}
+
         {/* Saved plans panel */}
         {showSnapshots && (
           <SnapshotPanel
@@ -721,6 +735,9 @@ export default function CuttingMachines() {
           snap={closeWizardSnap} orders={orders} origId={origId}
           onClose={() => setCloseWizardSnap(null)}
           onConfirm={async summary => { await closeWeek(closeWizardSnap.id, summary); setCloseWizardSnap(null) }}
+          onCarryForward={(ids, date) => {
+            dispatch({ type: 'SET_ORDERS', orders: orders.map(o => ids.includes(o.id) ? { ...o, plan_date: date } : o) })
+          }}
         />
       )}
     </div>

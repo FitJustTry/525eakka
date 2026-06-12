@@ -16,6 +16,10 @@ export type ResultSummary = {
   carry_orders: { key: string; sap_so: string; reason: string; remaining_qty: number }[]
   best_machine: string
   bottleneck_machine: string
+  avg_delay_days: number
+  on_time_count: number
+  late_count: number
+  early_count: number
 }
 
 export type SnapMeta = {
@@ -62,6 +66,19 @@ export function usePlanSnapshots() {
             balanceMode, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays,
             useRoutingCr, weekSchedule } = ctx
     setPlanSaving(true); setPlanSaveMsg(null)
+
+    // Conflict detection: warn if approved/in_production plan already exists for this week
+    const conflicting = snapshots.find(s =>
+      (s.status === 'approved' || s.status === 'in_production') &&
+      s.week_start === fmtISO(mon) && s.week_end === fmtISO(sat)
+    )
+    if (conflicting) {
+      const statusLabel = conflicting.status === 'in_production' ? '▶ In Production' : '✅ Approved'
+      const ok = window.confirm(
+        `สัปดาห์ ${fmtISO(mon)} – ${fmtISO(sat)}\nมีแผน "${conflicting.label}" ในสถานะ ${statusLabel} อยู่แล้ว\n\nบันทึกแผนใหม่ซ้อนด้วยหรือไม่?`
+      )
+      if (!ok) { setPlanSaving(false); return }
+    }
 
     // Compute planned_finish_dates and planned_hours from weekSchedule
     const plannedFinishDates: Record<string, string> = {}
