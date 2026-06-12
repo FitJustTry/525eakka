@@ -19,6 +19,17 @@ export interface Order {
   due_box_ctrl?: string; raw_mat?: string; lv?: string; hv?: string
   done_qty?: number   // units actually completed (manual/SAP); remaining = qty − done_qty
   done_at?: string | null   // ISO timestamp when done_qty first reached qty
+  priority?: 'rush' | 'high' | 'normal'
+}
+
+export interface MachineDowntime {
+  id: number
+  machine_id: number
+  start_date: string
+  end_date: string
+  reason: string
+  notes: string
+  created_at: string
 }
 
 export interface CuttingRate { kva: number; hrs: number }

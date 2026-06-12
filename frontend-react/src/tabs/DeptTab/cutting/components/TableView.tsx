@@ -198,6 +198,8 @@ export default function TableView({
                                   {typeLabel && <span style={{ fontSize: 9, padding: '0 3px', borderRadius: 3, background: tc === '4' ? 'rgba(250,179,135,.2)' : 'rgba(137,180,250,.12)', color: tc === '4' ? 'var(--amber)' : 'var(--blue)' }}>{typeLabel}</span>}
                                   {drillPrefers(m, w.order) && <span style={{ fontSize: 10 }}>🔩</span>}
                                   {lateOrders.has(origId(w.order.id)) && w.isComplete && <span title={`ส่งช้า — due: ${w.order.due_so}`} style={{ fontSize: 10 }}>🔴</span>}
+                                  {w.order.priority === 'rush' && <span title="Rush" style={{ fontSize: 9, padding: '0 3px', borderRadius: 3, background: 'rgba(224,90,78,.2)', color: 'var(--red)', fontWeight: 700 }}>🔴 RUSH</span>}
+                                  {w.order.priority === 'high' && <span title="High priority" style={{ fontSize: 9, padding: '0 3px', borderRadius: 3, background: 'rgba(249,226,175,.2)', color: 'var(--amber)', fontWeight: 700 }}>🟡 HIGH</span>}
                                   {useRoutingCr && (
                                     routingMiss
                                       ? <span title={debugTitle} style={{ fontSize: 9, cursor: 'help', color: 'var(--red)' }}>⚠</span>

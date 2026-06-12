@@ -138,6 +138,8 @@ export default function CardView({
                               {drillPrefers(m, w.order) && <span style={{ fontSize: 10 }}>🔩</span>}
                               {w.order.customer && <span style={{ fontSize: 10, color: 'var(--txt2)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 90 }}>{w.order.customer}</span>}
                               {lateOrders.has(origId(w.order.id)) && w.isComplete && <span title={`ส่งช้า — due: ${w.order.due_so}`} style={{ fontSize: 10 }}>🔴</span>}
+                              {w.order.priority === 'rush' && <span title="Rush" style={{ fontSize: 9, padding: '0 3px', borderRadius: 3, background: 'rgba(224,90,78,.2)', color: 'var(--red)', fontWeight: 700 }}>🔴 RUSH</span>}
+                              {w.order.priority === 'high' && <span title="High priority" style={{ fontSize: 9, padding: '0 3px', borderRadius: 3, background: 'rgba(249,226,175,.2)', color: 'var(--amber)', fontWeight: 700 }}>🟡 HIGH</span>}
                               <span style={{ color: 'var(--txt3)', marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 10 }}>{w.hrsWorked.toFixed(1)}h{w.isComplete ? ' ✓' : w.carriesOver ? ' →' : ''}</span>
                             </div>
                             {showWireData && (w.order.raw_mat || w.order.lv || w.order.hv) && (

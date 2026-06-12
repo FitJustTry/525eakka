@@ -1,4 +1,4 @@
-import type { CuttingMachine, Employee, ItemCode, Order, Snapshot, WCConfig } from './types'
+import type { CuttingMachine, Employee, ItemCode, MachineDowntime, Order, Snapshot, WCConfig } from './types'
 
 export type EmpDir = Record<string, { dept: string; employees: Employee[] }>
 
@@ -89,5 +89,16 @@ export const api = {
     batch: (rows: object[]) =>
       request<{ inserted: number }>('/cap-rates/batch', { method: 'POST', body: JSON.stringify(rows) }),
     list: () => request<object[]>('/cap-rates'),
+  },
+
+  downtime: {
+    list: (machineId?: number) =>
+      request<MachineDowntime[]>('/machine-downtime' + (machineId ? `?machine_id=${machineId}` : '')),
+    create: (d: Omit<MachineDowntime, 'id' | 'created_at'>) =>
+      request<MachineDowntime>('/machine-downtime', { method: 'POST', body: JSON.stringify(d) }),
+    update: (id: number, d: Partial<Omit<MachineDowntime, 'id' | 'created_at' | 'machine_id'>>) =>
+      request<MachineDowntime>(`/machine-downtime/${id}`, { method: 'PUT', body: JSON.stringify(d) }),
+    delete: (id: number) =>
+      request<void>(`/machine-downtime/${id}`, { method: 'DELETE' }),
   },
 }

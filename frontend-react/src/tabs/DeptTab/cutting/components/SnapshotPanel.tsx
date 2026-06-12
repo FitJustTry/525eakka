@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import type { Order } from '../../../../types'
+import type { Order, CuttingMachine, MachineDowntime } from '../../../../types'
 import type { SnapMeta, PlanStatus } from '../hooks/usePlanSnapshots'
 import SnapshotProgress from './SnapshotProgress'
 import PerformanceDashboard from './PerformanceDashboard'
@@ -13,6 +13,8 @@ interface Props {
   onCloseWeek: (snap: SnapMeta) => void
   orders: Order[]
   updateDoneQty: (id: string, n: number) => void
+  downtimes?: MachineDowntime[]
+  machines?: CuttingMachine[]
 }
 
 const STATUS_LABEL: Record<PlanStatus, string> = {
@@ -53,7 +55,7 @@ const TRANSITIONS: Partial<Record<PlanStatus, { status: PlanStatus; label: strin
 
 const CANCEL_ALLOWED: PlanStatus[] = ['draft', 'approved', 'in_production']
 
-export default function SnapshotPanel({ snapshots, setShowSnapshots, viewSnapshot, deleteSnapshot, updateStatus, onCloseWeek, orders, updateDoneQty }: Props) {
+export default function SnapshotPanel({ snapshots, setShowSnapshots, viewSnapshot, deleteSnapshot, updateStatus, onCloseWeek, orders, updateDoneQty, downtimes = [], machines = [] }: Props) {
   const [transitioning, setTransitioning] = useState<number | null>(null)
   const [expandedProgress, setExpandedProgress] = useState<Set<number>>(new Set())
   const [showDashboard, setShowDashboard] = useState(false)
@@ -176,7 +178,7 @@ export default function SnapshotPanel({ snapshots, setShowSnapshots, viewSnapsho
 
       {/* A+C: Performance Dashboard modal */}
       {showDashboard && (
-        <PerformanceDashboard snapshots={snapshots} onClose={() => setShowDashboard(false)} />
+        <PerformanceDashboard snapshots={snapshots} downtimes={downtimes} machines={machines} onClose={() => setShowDashboard(false)} />
       )}
     </div>
   )

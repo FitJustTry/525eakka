@@ -87,6 +87,7 @@ async function initDatabase() {
     await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS lv TEXT NOT NULL DEFAULT ''`);
     await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS hv TEXT NOT NULL DEFAULT ''`);
     await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS done_qty INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal'`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS employees (
         id SERIAL PRIMARY KEY,
@@ -143,6 +144,21 @@ async function initDatabase() {
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS class_h_hrs NUMERIC NOT NULL DEFAULT 0`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS class_h_rates JSONB NOT NULL DEFAULT '[]'`);
     await client.query(`UPDATE cutting_machines SET laser = laser_m4 WHERE laser = false AND laser_m4 = true`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS shift_hrs NUMERIC NOT NULL DEFAULT 9`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS shift_enabled BOOLEAN NOT NULL DEFAULT true`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS machine_downtime (
+        id SERIAL PRIMARY KEY,
+        machine_id INTEGER NOT NULL REFERENCES cutting_machines(id) ON DELETE CASCADE,
+        start_date DATE NOT NULL,
+        end_date DATE NOT NULL,
+        reason TEXT NOT NULL DEFAULT 'Breakdown',
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_machine_downtime_machine ON machine_downtime(machine_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_machine_downtime_dates ON machine_downtime(start_date, end_date)');
     await client.query(`
       CREATE TABLE IF NOT EXISTS coil_machines (
         id SERIAL PRIMARY KEY,

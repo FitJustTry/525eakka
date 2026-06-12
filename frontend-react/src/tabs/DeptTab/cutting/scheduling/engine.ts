@@ -76,7 +76,10 @@ export function assignOrders(
   // Sort: exclusive-first, then pressure-tiebreak within same tier, then LPT.
   // Pressure = max exclusive load on any eligible machine. High-pressure groups go first
   // so their shared machines fill up before flexible groups compete for them.
+  const prRankA = (o: Order) => o.priority === 'rush' ? 0 : o.priority === 'high' ? 1 : 2
   const sorted = [...dayOrders].sort((a, b) => {
+    const pa = prRankA(a), pb = prRankA(b)
+    if (pa !== pb) return pa - pb
     const ae = el(a), be = el(b)
     if (ae.length !== be.length) return ae.length - be.length
     const ap = ae.length ? Math.max(...ae.map(m => machExcl.get(m.id) ?? 0)) : 0
@@ -154,6 +157,7 @@ export function scheduleFastest(
   manualOtDays: Map<number, Set<string>> = new Map(),
   customShiftHrs: Map<number, Map<string, number>> = new Map(),
   customOtHrs: Map<number, Map<string, number>> = new Map(),
+  downtimeDays: Map<number, Set<string>> = new Map(),
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
   if (!machines.length || !weekOrders.length) return result
@@ -318,6 +322,11 @@ export function scheduleFastest(
           carriesForward: rem > 0.001 || qi < queue.length })
         continue
       }
+      if (downtimeDays.get(m.id)?.has(dStr)) {
+        mMap.set(dStr, { regHrs: 0, otHrs: 0, shiftHrs: 0, otNeeded: 0, work: [], hasCarryOver: false,
+          carriesForward: rem > 0.001 || qi < queue.length, isDowntime: true })
+        continue
+      }
 
       // Smart OT:
       //   lazyOt=true  (new) — subtract future OT capacity; defers OT to end of week
@@ -445,10 +454,13 @@ export function sortPool(
     })
   }
   // Default: plan_date then LPT
-  return pool.sort((a, b) => {
+  pool.sort((a, b) => {
     const pd = (a.plan_date ?? '').localeCompare(b.plan_date ?? '')
     return pd !== 0 ? pd : hrs(b) - hrs(a)
   })
+  // Stable post-sort: rush → high → normal, preserving relative strategy order within each tier
+  const prRank = (o: Order) => o.priority === 'rush' ? 0 : o.priority === 'high' ? 1 : 2
+  return pool.sort((a, b) => prRank(a) - prRank(b))
 }
 
 /**
@@ -495,6 +507,7 @@ export function scheduleMode(
   manualOtDays: Map<number, Set<string>> = new Map(),
   customShiftHrs: Map<number, Map<string, number>> = new Map(),
   customOtHrs: Map<number, Map<string, number>> = new Map(),
+  downtimeDays: Map<number, Set<string>> = new Map(),
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
 
@@ -565,6 +578,11 @@ export function scheduleMode(
         if (regCap === 0 && otCap === 0) {
           mMap.set(dStr, { regHrs: 0, otHrs: 0, shiftHrs: 0, otNeeded: 0, work: [], hasCarryOver: false,
             carriesForward: (cur?.remainingHrs ?? 0) > 0.001 || qi < queue.length })
+          continue
+        }
+        if (downtimeDays.get(m.id)?.has(dStr)) {
+          mMap.set(dStr, { regHrs: 0, otHrs: 0, shiftHrs: 0, otNeeded: 0, work: [], hasCarryOver: false,
+            carriesForward: (cur?.remainingHrs ?? 0) > 0.001 || qi < queue.length, isDowntime: true })
           continue
         }
 
@@ -685,6 +703,22 @@ export function scheduleMode(
       const { reg, ot } = resolveHours(m, wcConfig, isSat, dow)
       const regCap = reg * (m.count || 1)
       const otCap  = ot  * (m.count || 1)
+
+      {
+        const isOffDay = regCap === 0 && otCap === 0
+        const isDtDay  = downtimeDays.get(m.id)?.has(dStr) ?? false
+        if (isOffDay || isDtDay) {
+          const todayOrders = dailyAssignments[di]?.asgn.get(m.id) ?? []
+          carryItems.push(...todayOrders.map(o => ({
+            order: o,
+            remainingHrs: o.qty * getHrsForKva(m, o.kva ?? products[o.product]?.kva ?? 0, globalRates, o.item_code, globalTmcRates, useNearestKva, routingRates),
+            isCarryOver: true,
+          })))
+          mMap.set(dStr, { regHrs: 0, otHrs: 0, shiftHrs: 0, otNeeded: 0, work: [], hasCarryOver: false,
+            carriesForward: carryItems.length > 0, ...(isDtDay ? { isDowntime: true } : {}) })
+          continue
+        }
+      }
 
       // ── Compute effective OT cap ───────────────────────────
       let effectiveOtCap = 0

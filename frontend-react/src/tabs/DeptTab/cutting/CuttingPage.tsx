@@ -40,6 +40,10 @@ import {
 } from './scheduling/export'
 import { useCuttingActions } from './hooks/useCuttingActions'
 import { usePlanSnapshots } from './hooks/usePlanSnapshots'
+import { useDowntime } from './hooks/useDowntime'
+import DowntimePanel from './components/DowntimePanel'
+import HorizonView from './components/HorizonView'
+import PrintReport from './components/PrintReport'
 
 type BalanceMode =
   | 'daily_no_ot' | 'weekly_no_ot' | 'fastest_no_ot'
@@ -152,6 +156,10 @@ export default function CuttingMachines() {
   const { planSaving, planSaveMsg, snapshots, showSnapshots, setShowSnapshots, viewSnap, setViewSnap, savePlan, loadSnapshots, viewSnapshot, deleteSnapshot, updateStatus, closeWeek } =
     usePlanSnapshots()
   const [closeWizardSnap, setCloseWizardSnap] = useState<import('./hooks/usePlanSnapshots').SnapMeta | null>(null)
+  const { downtimes, addDowntime, updateDowntime, deleteDowntime, downtimeDays: getDowntimeDays } = useDowntime()
+  const [showDowntime, setShowDowntime] = useState(false)
+  const [showHorizon, setShowHorizon] = useState(false)
+  const [showPrint, setShowPrint] = useState(false)
 
   // ── Data loading ─────────────────────────────────────────────
   useEffect(() => {
@@ -362,9 +370,10 @@ export default function CuttingMachines() {
   // Week schedule
   const weekSchedule = useMemo(() => {
     const mi = new Map(machIdx)
-    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays, customShiftHrs, customOtHrs)
-    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays, customShiftHrs, customOtHrs)
-    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, effectiveGlobalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays, customShiftHrs, customOtHrs)
+    const dtDays = getDowntimeDays()
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays, customShiftHrs, customOtHrs, dtDays)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays, customShiftHrs, customOtHrs, dtDays)
+    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, effectiveGlobalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays, customShiftHrs, customOtHrs, dtDays)
     const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
       daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
       deadline_no_ot: () => sm('none','deadline'), priority_no_ot: () => sm('none','priority'),
@@ -378,7 +387,7 @@ export default function CuttingMachines() {
     }
     return (modeMap[balanceMode] ?? modeMap['weekly_no_ot'])()
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftKey, manualOtKey, customShiftKey, customOtKey, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), effectiveGlobalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), effectiveGlobalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
+  }, [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftKey, manualOtKey, customShiftKey, customOtKey, dailyAssignments, downtimes, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), effectiveGlobalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), effectiveGlobalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
   const weekData = useMemo(
     () => computeWeekData({ weekSchedule, weekOrders, machines, days, balanceMode, strictWire, requireDrill, stickyOrders, products, wcConfig, globalRates: effectiveGlobalRates, globalTmcRates: effectiveGlobalTmcRates }),
@@ -516,6 +525,9 @@ export default function CuttingMachines() {
             {weekOffset !== 0 && (
               <button className={styles.btnGhost} onClick={() => setWeekOffset(0)}>สัปดาห์นี้</button>
             )}
+            <button className={styles.btnGhost} style={{ color: showDowntime ? 'var(--red)' : undefined }} onClick={() => setShowDowntime(v => !v)} title="Downtime">🔧</button>
+            <button className={styles.btnGhost} onClick={() => setShowHorizon(true)} title="4-week horizon">🔭</button>
+            <button className={styles.btnGhost} onClick={() => setShowPrint(true)} title="Print / PDF">🖨️</button>
           </div>
         </div>
 
@@ -583,7 +595,12 @@ export default function CuttingMachines() {
             viewSnapshot={viewSnapshot} deleteSnapshot={deleteSnapshot}
             updateStatus={updateStatus} onCloseWeek={setCloseWizardSnap}
             orders={orders} updateDoneQty={updateDoneQty}
+            downtimes={downtimes} machines={machines}
           />
+        )}
+
+        {showDowntime && (
+          <DowntimePanel machines={machines} downtimes={downtimes} onAdd={addDowntime} onUpdate={updateDowntime} onDelete={deleteDowntime} />
         )}
 
         {/* Saved plan viewer */}
@@ -739,6 +756,12 @@ export default function CuttingMachines() {
             dispatch({ type: 'SET_ORDERS', orders: orders.map(o => ids.includes(o.id) ? { ...o, plan_date: date } : o) })
           }}
         />
+      )}
+      {showHorizon && (
+        <HorizonView machines={machines} orders={orders} wcConfig={wcConfig} currentWeekOffset={weekOffset} onClose={() => setShowHorizon(false)} />
+      )}
+      {showPrint && (
+        <PrintReport weekLabel={weekLabel} dayRows={dayRows} machines={machines} weekOrders={weekOrders} weekCarryOrders={weekCarryOrders} weekUnscheduled={weekUnscheduled} onClose={() => setShowPrint(false)} />
       )}
     </div>
   )

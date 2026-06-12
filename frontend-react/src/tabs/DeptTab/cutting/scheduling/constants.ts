@@ -25,4 +25,5 @@ export interface DayWork {
 export interface MachineDaySched {
   regHrs: number; otHrs: number; shiftHrs: number; otNeeded: number
   work: DayWork[]; hasCarryOver: boolean; carriesForward: boolean
+  isDowntime?: boolean
 }

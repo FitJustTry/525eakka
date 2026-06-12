@@ -1,12 +1,15 @@
 import React, { useState, useMemo } from 'react'
+import type { MachineDowntime, CuttingMachine } from '../../../../types'
 import type { SnapMeta, ResultSummary } from '../hooks/usePlanSnapshots'
 
 interface Props {
   snapshots: SnapMeta[]
+  downtimes?: MachineDowntime[]
+  machines?: CuttingMachine[]
   onClose: () => void
 }
 
-type Tab = 'trend' | 'reasons' | 'machines' | 'chains'
+type Tab = 'trend' | 'reasons' | 'machines' | 'chains' | 'downtime'
 
 interface ChainEntry {
   sap_so: string; key: string
@@ -25,7 +28,7 @@ function maxConsecutiveWeeks(weeks: string[]): number {
   return best
 }
 
-export default function PerformanceDashboard({ snapshots, onClose }: Props) {
+export default function PerformanceDashboard({ snapshots, downtimes = [], machines = [], onClose }: Props) {
   const [tab, setTab] = useState<Tab>('trend')
 
   const completed = useMemo(() =>
@@ -88,6 +91,7 @@ export default function PerformanceDashboard({ snapshots, onClose }: Props) {
     { id: 'reasons',  label: '⚠️ Carry Reasons' },
     { id: 'machines', label: '🏆 Machines' },
     { id: 'chains',   label: `🔄 Chains ${carryChains.length > 0 ? `(${carryChains.length})` : ''}` },
+    { id: 'downtime', label: `🔧 Downtime ${downtimes.length > 0 ? `(${downtimes.length})` : ''}` },
   ]
   const avgRate = completed.length > 0
     ? Math.round(completed.reduce((s, x) => s + x.result_summary.completion_rate, 0) / completed.length)
@@ -247,6 +251,44 @@ export default function PerformanceDashboard({ snapshots, onClose }: Props) {
                   </div>
                 )
               })}
+            </div>
+          )}
+        </div>
+
+          {/* Tab: Downtime */}
+          {tab === 'downtime' && (
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--txt3)', marginBottom: 10 }}>{downtimes.length} รายการ downtime</div>
+              {downtimes.length === 0 && (
+                <div style={{ color: 'var(--green)', fontSize: 12, padding: 24, textAlign: 'center' as const }}>🟢 ไม่มี downtime ที่บันทึกไว้</div>
+              )}
+              {downtimes.length > 0 && (
+                <table style={{ borderCollapse: 'collapse', fontSize: 10, width: '100%' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--bord)' }}>
+                      {['เครื่อง', 'เริ่ม', 'สิ้นสุด', 'วัน', 'สาเหตุ', 'หมายเหตุ'].map(h => (
+                        <th key={h} style={{ padding: '4px 10px', textAlign: 'left', color: 'var(--txt3)', fontWeight: 600 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...downtimes].sort((a, b) => b.start_date.localeCompare(a.start_date)).map((d, i) => {
+                      const mName = machines.find(m => m.id === d.machine_id)?.name ?? `#${d.machine_id}`
+                      const days = Math.round((new Date(d.end_date).getTime() - new Date(d.start_date).getTime()) / 86400000) + 1
+                      return (
+                        <tr key={d.id} style={{ borderBottom: '0.5px solid var(--bord)', background: i % 2 ? 'transparent' : 'rgba(127,127,127,.03)' }}>
+                          <td style={{ padding: '4px 10px', fontWeight: 600 }}>{mName}</td>
+                          <td style={{ padding: '4px 10px', fontFamily: 'var(--mono)' }}>{d.start_date}</td>
+                          <td style={{ padding: '4px 10px', fontFamily: 'var(--mono)' }}>{d.end_date}</td>
+                          <td style={{ padding: '4px 10px', color: 'var(--red)', fontWeight: 700 }}>{days}d</td>
+                          <td style={{ padding: '4px 10px' }}>{d.reason}</td>
+                          <td style={{ padding: '4px 10px', color: 'var(--txt3)' }}>{d.notes || '—'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              )}
             </div>
           )}
         </div>
