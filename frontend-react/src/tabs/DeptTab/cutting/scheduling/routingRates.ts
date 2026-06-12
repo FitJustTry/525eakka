@@ -52,6 +52,48 @@ export function buildRoutingCrRates(
   return { normalRates, crRates }
 }
 
+/** Build CuttingRate[] for Core Dry Type Class H sheets only (B=6/T orders). */
+export function buildClassHRates(
+  rows: RoutingCrRow[],
+  wcFilter: string[] = DEFAULT_CUTTING_WCS
+): CuttingRate[] {
+  const pool = wcFilter.length > 0 ? rows.filter(r => wcFilter.includes(r.wc_id)) : rows
+  const classHRows = pool.filter(r => r.sheet_name.toLowerCase().includes('class h'))
+  const groupHrs = new Map<string, number>()
+  const groupMeta = new Map<string, { size_kva: number }>()
+  for (const r of classHRows) {
+    const key = `${r.routing_group}||${r.size_kva}`
+    groupHrs.set(key, (groupHrs.get(key) ?? 0) + (Number(r.std_hrs) || 0))
+    if (!groupMeta.has(key)) groupMeta.set(key, { size_kva: r.size_kva })
+  }
+  const kvaMap = new Map<number, number[]>()
+  for (const [key, hrs] of groupHrs) {
+    const { size_kva } = groupMeta.get(key)!
+    if (!kvaMap.has(size_kva)) kvaMap.set(size_kva, [])
+    kvaMap.get(size_kva)!.push(hrs)
+  }
+  const avg = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / arr.length
+  return [...kvaMap.entries()].map(([kva, a]) => ({ kva, hrs: avg(a) }))
+}
+
+/** Return operations for a given Class H kVA. */
+export function getClassHOps(
+  rows: RoutingCrRow[],
+  kva: number,
+  wcFilter: string[] = DEFAULT_CUTTING_WCS
+): RoutingCrRow[] {
+  const pool = wcFilter.length > 0 ? rows.filter(r => wcFilter.includes(r.wc_id)) : rows
+  const matching = pool.filter(r => r.size_kva === kva && r.sheet_name.toLowerCase().includes('class h'))
+  if (!matching.length) return []
+  const groups = new Map<string, RoutingCrRow[]>()
+  for (const r of matching) {
+    if (!groups.has(r.routing_group)) groups.set(r.routing_group, [])
+    groups.get(r.routing_group)!.push(r)
+  }
+  const best = [...groups.values()].reduce((a, b) => a.length >= b.length ? a : b)
+  return best.sort((a, b) => a.operation.localeCompare(b.operation))
+}
+
 /** Build CuttingRate[] for Core Tr Power sheets only. Sums std_hrs per (size_kva, routing_group), then averages across groups. */
 export function buildTrPowerRates(
   rows: RoutingCrRow[],
@@ -91,7 +133,7 @@ export function getRoutingOps(
   const matching = pool.filter(r => {
     if (r.size_kva !== kva) return false
     const lower = r.sheet_name.toLowerCase()
-    if (lower.includes('tr power')) return false
+    if (lower.includes('tr power') || lower.includes('class h')) return false
     return lower.includes('cast resin') === isCr
   })
   if (!matching.length) return []

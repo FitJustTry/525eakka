@@ -2,7 +2,7 @@ import React from 'react'
 import type { CuttingRate, RoutingCrRow } from '../../../../types'
 import styles from '../CuttingPage.module.css'
 import { CR_STANDARD_SIZES } from '../scheduling/constants'
-import { getRoutingOps, getTrPowerOps } from '../scheduling/routingRates'
+import { getRoutingOps, getTrPowerOps, getClassHOps } from '../scheduling/routingRates'
 
 export interface GlobalRatesPanelProps {
   open: boolean
@@ -29,8 +29,12 @@ export interface GlobalRatesPanelProps {
   saveGlobalTrPowerRates: (rates: CuttingRate[]) => void
   effectiveGlobalTrPowerRates: CuttingRate[]
   routingTrPowerRates: CuttingRate[]
-  globalRateSubTab: 'cut' | 'tmc' | 'tr'
-  setGlobalRateSubTab: (v: 'cut' | 'tmc' | 'tr') => void
+  globalClassHRates: CuttingRate[]
+  saveGlobalClassHRates: (rates: CuttingRate[]) => void
+  effectiveGlobalClassHRates: CuttingRate[]
+  routingClassHRates: CuttingRate[]
+  globalRateSubTab: 'cut' | 'tmc' | 'tr' | 'ch'
+  setGlobalRateSubTab: (v: 'cut' | 'tmc' | 'tr' | 'ch') => void
 }
 
 export default function GlobalRatesPanel({
@@ -58,6 +62,10 @@ export default function GlobalRatesPanel({
   saveGlobalTrPowerRates,
   effectiveGlobalTrPowerRates,
   routingTrPowerRates,
+  globalClassHRates,
+  saveGlobalClassHRates,
+  effectiveGlobalClassHRates,
+  routingClassHRates,
   globalRateSubTab,
   setGlobalRateSubTab,
 }: GlobalRatesPanelProps) {
@@ -68,7 +76,7 @@ export default function GlobalRatesPanel({
           {open ? '▾' : '▸'} ⏱ เวลาตัดโลหะ — มาตรฐาน
           {!open && (
             <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--txt3)', marginLeft: 10 }}>
-              ตารางเวลาตัด kVA → ชั่วโมง สำหรับทุกเครื่อง · {globalRates.length} ขนาด · TMC {globalTmcRates.length} ขนาด · TR {effectiveGlobalTrPowerRates.length} ขนาด
+              ตารางเวลาตัด kVA → ชั่วโมง สำหรับทุกเครื่อง · {globalRates.length} ขนาด · TMC {globalTmcRates.length} ขนาด · TR {effectiveGlobalTrPowerRates.length} ขนาด · H {effectiveGlobalClassHRates.length} ขนาด
             </span>
           )}
         </span>
@@ -132,7 +140,7 @@ export default function GlobalRatesPanel({
             border: `1px solid ${globalRateSubTab === 'cut' ? 'var(--blue)' : 'var(--bord2)'}`,
             background: globalRateSubTab === 'cut' ? 'rgba(137,180,250,.15)' : 'transparent',
             color: globalRateSubTab === 'cut' ? 'var(--blue)' : 'var(--txt3)' }}>
-          ✂ เวลาตัด{effectiveGlobalRates.length > 0 ? ` (${effectiveGlobalRates.length})` : ''}
+          ✂ Oil Type{effectiveGlobalRates.length > 0 ? ` (${effectiveGlobalRates.length})` : ''}
           {useRoutingCr && routingNormalRates.length > 0 && <span style={{ marginLeft: 4, fontSize: 9, color: 'var(--green)' }}>🏭</span>}
         </button>
         <button onClick={() => setGlobalRateSubTab('tmc')}
@@ -151,9 +159,115 @@ export default function GlobalRatesPanel({
           ⚡ TR Power{effectiveGlobalTrPowerRates.length > 0 ? ` (${effectiveGlobalTrPowerRates.length})` : ''}
           {useRoutingCr && routingTrPowerRates.length > 0 && <span style={{ marginLeft: 4, fontSize: 9, color: 'var(--green)' }}>🏭</span>}
         </button>
+        <button onClick={() => setGlobalRateSubTab('ch')}
+          style={{ fontSize: 11, padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: globalRateSubTab === 'ch' ? 700 : 400,
+            border: `1px solid ${globalRateSubTab === 'ch' ? 'var(--green)' : 'var(--bord2)'}`,
+            background: globalRateSubTab === 'ch' ? 'rgba(166,227,161,.15)' : 'transparent',
+            color: globalRateSubTab === 'ch' ? 'var(--green)' : 'var(--txt3)' }}>
+          🧱 Class H{effectiveGlobalClassHRates.length > 0 ? ` (${effectiveGlobalClassHRates.length})` : ''}
+          {useRoutingCr && routingClassHRates.length > 0 && <span style={{ marginLeft: 4, fontSize: 9, color: 'var(--green)' }}>🏭</span>}
+        </button>
       </div>
 
-      {globalRateSubTab === 'tr' ? (
+      {globalRateSubTab === 'ch' ? (
+        <>
+          {useRoutingCr && routingClassHRates.length > 0 && (
+            <div style={{ padding: '5px 14px', background: 'rgba(166,227,161,.08)', borderBottom: '1px solid rgba(166,227,161,.2)', fontSize: 10, color: 'var(--green)' }}>
+              🏭 แสดงเวลาจาก Routing CR (Core Dry Type Class H) — อ่านอย่างเดียว (สลับเป็น 📊 Manual เพื่อแก้ไข)
+            </div>
+          )}
+          <div className={styles.tableWrap}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'right', width: 110 }}>ขนาด (kVA)</th>
+                  <th style={{ textAlign: 'right', width: 110, color: 'var(--green)' }}>Class H (h)</th>
+                  {!useRoutingCr && <th style={{ width: 80 }} />}
+                </tr>
+              </thead>
+              <tbody>
+                {effectiveGlobalClassHRates.length === 0 && (
+                  <tr><td colSpan={3} className={styles.empty}>ยังไม่มีข้อมูล — ใช้ค่า Class H (h) ของแต่ละเครื่องแทน</td></tr>
+                )}
+                {useRoutingCr
+                  ? [...effectiveGlobalClassHRates].sort((a, b) => a.kva - b.kva).map((r, ri) => {
+                      const rowKey = `ch_${r.kva}`
+                      const expanded = expandedRoutingRow === rowKey
+                      const ops = getClassHOps(routingCrData, r.kva, routingWcFilter)
+                      return (
+                        <React.Fragment key={ri}>
+                          <tr onClick={() => setExpandedRoutingRow(expanded ? null : rowKey)} style={{ cursor: 'pointer', background: expanded ? 'rgba(166,227,161,.06)' : undefined }}>
+                            <td style={{ textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--blue)', padding: '4px 8px' }}>
+                              {expanded ? '▾ ' : '▸ '}{r.kva.toLocaleString()}
+                            </td>
+                            <td style={{ textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--green)', fontWeight: 700, padding: '4px 8px' }}>{r.hrs.toFixed(2)}h</td>
+                          </tr>
+                          {expanded && (
+                            <tr>
+                              <td colSpan={2} style={{ padding: '0 8px 8px 28px', background: 'var(--bg3)' }}>
+                                <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 10, fontFamily: 'var(--mono)' }}>
+                                  <tbody>
+                                    {ops.map((op, oi) => (
+                                      <tr key={oi}>
+                                        <td style={{ padding: '1px 6px 1px 0', color: 'var(--green)', fontWeight: 600, whiteSpace: 'nowrap' }}>{op.operation}</td>
+                                        <td style={{ padding: '1px 6px', color: 'var(--txt2)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{op.description}</td>
+                                        <td style={{ padding: '1px 0', textAlign: 'right', color: 'var(--amber)', fontWeight: 700, whiteSpace: 'nowrap' }}>{Number(op.std_hrs).toFixed(2)}h</td>
+                                      </tr>
+                                    ))}
+                                    <tr style={{ borderTop: '1px solid var(--bord)' }}>
+                                      <td colSpan={2} style={{ padding: '2px 6px 2px 0', fontWeight: 700, color: 'var(--txt2)' }}>Total</td>
+                                      <td style={{ padding: '2px 0', textAlign: 'right', color: 'var(--green)', fontWeight: 700 }}>{r.hrs.toFixed(2)}h</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      )
+                    })
+                  : [...globalClassHRates].sort((a, b) => a.kva - b.kva).map((r, ri) => (
+                    <tr key={ri}>
+                      <td style={{ textAlign: 'right' }}>
+                        <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
+                          onChange={e => saveGlobalClassHRates(globalClassHRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
+                          className={styles.inputNum} style={{ width: 80, color: 'var(--blue)', fontWeight: 700 }} />
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
+                            onChange={e => saveGlobalClassHRates(globalClassHRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
+                            className={styles.inputNum} style={{ width: 64, color: 'var(--green)' }} />
+                          <button className={styles.btnGhost} onClick={() => saveGlobalClassHRates(globalClassHRates.map((x, i) => i === ri ? { ...x, hrs: +(x.hrs + 10).toFixed(2) } : x))}
+                            style={{ fontSize: 10, padding: '1px 5px', color: 'var(--green)', borderColor: 'rgba(166,227,161,.4)' }}>+10</button>
+                          <button className={styles.btnGhost} onClick={() => saveGlobalClassHRates(globalClassHRates.map((x, i) => i === ri ? { ...x, hrs: +(x.hrs + 20).toFixed(2) } : x))}
+                            style={{ fontSize: 10, padding: '1px 5px', color: 'var(--green)', borderColor: 'rgba(166,227,161,.4)' }}>+20</button>
+                        </div>
+                      </td>
+                      <td>
+                        <button className={styles.delBtn} onClick={() => saveGlobalClassHRates(globalClassHRates.filter((_, i) => i !== ri))}>✕</button>
+                      </td>
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </div>
+          {!useRoutingCr && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '8px 14px' }}>
+              <button className={styles.btnGhost} onClick={() => saveGlobalClassHRates([...globalClassHRates, { kva: 0, hrs: 0 }])}
+                style={{ color: 'var(--green)', borderColor: 'rgba(166,227,161,.4)' }}>
+                + เพิ่มขนาด Class H
+              </button>
+              {globalClassHRates.length > 0 && (
+                <button className={styles.btnGhost} onClick={() => saveGlobalClassHRates([])} style={{ color: 'var(--red)', borderColor: 'rgba(224,90,78,.3)' }}>
+                  ล้างทั้งหมด
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      ) : globalRateSubTab === 'tr' ? (
         <>
           {useRoutingCr && routingTrPowerRates.length > 0 && (
             <div style={{ padding: '5px 14px', background: 'rgba(166,227,161,.08)', borderBottom: '1px solid rgba(166,227,161,.2)', fontSize: 10, color: 'var(--green)' }}>
@@ -263,7 +377,7 @@ export default function GlobalRatesPanel({
               <thead>
                 <tr>
                   <th style={{ textAlign: 'right', width: 110 }}>ขนาด (kVA)</th>
-                  <th style={{ textAlign: 'right', width: 110 }}>เวลาตัด (h)</th>
+                  <th style={{ textAlign: 'right', width: 110 }}>Oil Type (h)</th>
                   {!useRoutingCr && <th style={{ width: 40 }} />}
                 </tr>
               </thead>

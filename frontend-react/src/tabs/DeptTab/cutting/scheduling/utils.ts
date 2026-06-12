@@ -10,7 +10,7 @@ import { decodeItemInfo } from '../../../../utils/itemCodeDecode'
 export function getHrsForKva(
   m: CuttingMachine, kva: number, globalRates: CuttingRate[],
   itemCode?: string, globalTmcRates?: CuttingRate[], useNearestKva = false,
-  routingRates = false
+  routingRates = false, globalClassHRates?: CuttingRate[]
 ): number {
   const pick = (rates: CuttingRate[]): CuttingRate | undefined => {
     const exact = rates.find(r => r.kva === kva)
@@ -27,6 +27,15 @@ export function getHrsForKva(
     const globalTmcMatch = pick(globalTmcRates ?? [])
     if (globalTmcMatch) return globalTmcMatch.hrs
     // No TMC rate entry → fall through to normal rate + tmc_hrs addition
+  }
+
+  // Class H (item code position 1 = '6' or 'T') — use class_h rate table first, then class_h_hrs fallback
+  if (itemCode && (itemCode[1] === '6' || itemCode[1] === 'T')) {
+    const classHMatch = pick(m.class_h_rates ?? [])
+    if (classHMatch) return classHMatch.hrs
+    const globalClassHMatch = pick(globalClassHRates ?? [])
+    if (globalClassHMatch) return globalClassHMatch.hrs
+    if ((m.class_h_hrs ?? 0) > 0) return m.class_h_hrs!
   }
   // Priority: machine-specific rate → global rate → hrs_per_unit
   // When routingRates=true: skip time_mul/tmc_hrs (routing std_hrs is the final time)

@@ -68,6 +68,7 @@ export default function MachineConfigPanel({
                 <th style={{ textAlign: 'center', color: 'var(--amber)' }} title="Speed multiplier: final_hrs = base × ×Rate + TMC">×Rate</th>
                 <th style={{ textAlign: 'center', color: 'var(--purple)' }} title="TMC: fixed setup/overhead hours added per order">TMC (h)</th>
                 <th style={{ textAlign: 'center', color: 'var(--red)' }} title="TR Power: fixed hours for power transformer orders">⚡ TR (h)</th>
+                <th style={{ textAlign: 'center', color: 'var(--green)' }} title="Class H (B=6/T): fixed hours for dry type Class H orders">🧱 H (h)</th>
                 <th style={{ textAlign: 'center', color: 'var(--blue)' }} title="กะกลางคืน: เปิด/ปิด + ชั่วโมง/คืน (blank = ใช้ค่า default ของแผน)">🌙 กะ</th>
                 <th style={{ textAlign: 'center', minWidth: 160 }}>วันทำงาน (คลิกปิด)</th>
                 <th style={{ textAlign: 'left', minWidth: 180 }}>หมายเหตุ / ข้อจำกัด</th>
@@ -194,6 +195,14 @@ export default function MachineConfigPanel({
                         onBlur={e => handleChange(m.id, 'tr_power_hrs', e.target.value || '0')}
                         title="TR Power — fixed hours for power transformer orders"
                         style={{ width: 52, color: 'var(--red)', fontWeight: 700 }} />
+                      <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 2 }}>h</span>
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <input className={styles.inputNum} type="number" min={0} max={99} step={0.1}
+                        defaultValue={m.class_h_hrs ?? 0}
+                        onBlur={e => handleChange(m.id, 'class_h_hrs', e.target.value || '0')}
+                        title="Class H — fixed hours for dry type Class H orders (B=6/T)"
+                        style={{ width: 52, color: 'var(--green)', fontWeight: 700 }} />
                       <span style={{ fontSize: 9, color: 'var(--txt3)', marginLeft: 2 }}>h</span>
                     </td>
                     {/* Shift: enabled toggle + per-machine hrs */}

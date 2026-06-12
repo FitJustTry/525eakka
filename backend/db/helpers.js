@@ -90,6 +90,8 @@ function rowToCuttingMachine(row) {
     tmc_rates: Array.isArray(row.tmc_rates) ? row.tmc_rates : [],
     tr_power_hrs: toNumber(row.tr_power_hrs, 0),
     tr_power_rates: Array.isArray(row.tr_power_rates) ? row.tr_power_rates : [],
+    class_h_hrs: toNumber(row.class_h_hrs, 0),
+    class_h_rates: Array.isArray(row.class_h_rates) ? row.class_h_rates : [],
   };
 }
 

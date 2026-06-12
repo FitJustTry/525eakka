@@ -37,6 +37,8 @@ export interface CuttingMachine {
   tmc_rates?: CuttingRate[]  // per-kVA TMC hours for Cast Resin — overrides tmc_hrs when matched
   tr_power_hrs?: number      // fixed TR Power fallback hours                            (default 0)
   tr_power_rates?: CuttingRate[]  // per-kVA TR Power hours — overrides tr_power_hrs when matched
+  class_h_hrs?: number       // fixed Class H fallback hours (B=6/T)                     (default 0)
+  class_h_rates?: CuttingRate[]   // per-kVA Class H hours — overrides class_h_hrs when matched
   shift_hrs?: number       // night-shift hours/day available on this machine          (default 9)
   shift_enabled?: boolean  // false = this machine has no night shift                  (default true)
 }

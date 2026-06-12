@@ -139,6 +139,8 @@ async function initDatabase() {
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS tmc_rates JSONB NOT NULL DEFAULT '[]'`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS tr_power_hrs NUMERIC NOT NULL DEFAULT 0`);
     await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS tr_power_rates JSONB NOT NULL DEFAULT '[]'`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS class_h_hrs NUMERIC NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE cutting_machines ADD COLUMN IF NOT EXISTS class_h_rates JSONB NOT NULL DEFAULT '[]'`);
     await client.query(`UPDATE cutting_machines SET laser = laser_m4 WHERE laser = false AND laser_m4 = true`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS coil_machines (
@@ -233,6 +235,13 @@ async function initDatabase() {
       )
     `);
     await client.query(`INSERT INTO cutting_tr_power_rates (id, rates) VALUES (1, '[]') ON CONFLICT DO NOTHING`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cutting_class_h_rates (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        rates JSONB NOT NULL DEFAULT '[]'
+      )
+    `);
+    await client.query(`INSERT INTO cutting_class_h_rates (id, rates) VALUES (1, '[]') ON CONFLICT DO NOTHING`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS cutting_plan_snapshots (
         id SERIAL PRIMARY KEY,
