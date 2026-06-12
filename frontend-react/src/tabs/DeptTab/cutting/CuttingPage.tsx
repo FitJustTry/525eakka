@@ -568,6 +568,7 @@ export default function CuttingMachines() {
             snapshots={snapshots} setShowSnapshots={setShowSnapshots}
             viewSnapshot={viewSnapshot} deleteSnapshot={deleteSnapshot}
             updateStatus={updateStatus} onCloseWeek={setCloseWizardSnap}
+            orders={orders} updateDoneQty={updateDoneQty}
           />
         )}
 
