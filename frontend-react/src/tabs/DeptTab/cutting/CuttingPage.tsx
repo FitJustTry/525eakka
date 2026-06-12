@@ -536,7 +536,7 @@ export default function CuttingMachines() {
             machines={machines} days={days}
             manualShiftDays={manualShiftDays} toggleManualShift={toggleManualShift}
             setManualShiftDays={setManualShiftDays} shiftHrsDefault={shiftHrsDefault}
-            weekSchedule={weekSchedule} wcConfig={wcConfig} mTotals={mTotals}
+            weekSchedule={weekSchedule} mTotals={mTotals}
             totalShift={weekData.totalShift} lateOrdersSize={lateOrders.size}
             baselineLateCount={baselineLateCount}
           />

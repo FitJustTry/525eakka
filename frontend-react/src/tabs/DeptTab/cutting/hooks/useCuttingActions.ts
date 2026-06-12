@@ -2,6 +2,8 @@ import { api } from '../../../../api'
 import { useApp } from '../../../../context/AppContext'
 import type { CuttingMachine, CuttingRate } from '../../../../types'
 
+type RateField = 'rates' | 'tmc_rates' | 'tr_power_rates' | 'class_h_rates'
+
 export function useCuttingActions(saving: number | null, setSaving: (id: number | null) => void) {
   const { state, dispatch } = useApp()
   const machines = state.cuttingMachines
@@ -65,33 +67,17 @@ export function useCuttingActions(saving: number | null, setSaving: (id: number 
     setSaving(null)
   }
 
-  async function saveMachineRates(machineId: number, rates: CuttingRate[]) {
-    const updated = machines.map(m => m.id === machineId ? { ...m, rates } : m)
+  async function saveMachineRateField(machineId: number, field: RateField, values: CuttingRate[]) {
+    const updated = machines.map(m => m.id === machineId ? { ...m, [field]: values } : m)
     dispatch({ type: 'SET_CUTTING_MACHINES', machines: updated })
     const machine = updated.find(m => m.id === machineId)!
     await api.cuttingMachines.update(machineId, machine)
   }
 
-  async function saveMachineTmcRates(machineId: number, tmc_rates: CuttingRate[]) {
-    const updated = machines.map(m => m.id === machineId ? { ...m, tmc_rates } : m)
-    dispatch({ type: 'SET_CUTTING_MACHINES', machines: updated })
-    const machine = updated.find(m => m.id === machineId)!
-    await api.cuttingMachines.update(machineId, machine)
-  }
-
-  async function saveMachineTrPowerRates(machineId: number, tr_power_rates: CuttingRate[]) {
-    const updated = machines.map(m => m.id === machineId ? { ...m, tr_power_rates } : m)
-    dispatch({ type: 'SET_CUTTING_MACHINES', machines: updated })
-    const machine = updated.find(m => m.id === machineId)!
-    await api.cuttingMachines.update(machineId, machine)
-  }
-
-  async function saveMachineClassHRates(machineId: number, class_h_rates: CuttingRate[]) {
-    const updated = machines.map(m => m.id === machineId ? { ...m, class_h_rates } : m)
-    dispatch({ type: 'SET_CUTTING_MACHINES', machines: updated })
-    const machine = updated.find(m => m.id === machineId)!
-    await api.cuttingMachines.update(machineId, machine)
-  }
+  const saveMachineRates        = (id: number, v: CuttingRate[]) => saveMachineRateField(id, 'rates',           v)
+  const saveMachineTmcRates     = (id: number, v: CuttingRate[]) => saveMachineRateField(id, 'tmc_rates',       v)
+  const saveMachineTrPowerRates = (id: number, v: CuttingRate[]) => saveMachineRateField(id, 'tr_power_rates',  v)
+  const saveMachineClassHRates  = (id: number, v: CuttingRate[]) => saveMachineRateField(id, 'class_h_rates',   v)
 
   return { handleAdd, handleDelete, handleChange, toggleOffDay, handleToggle, saveMachineRates, saveMachineTmcRates, saveMachineTrPowerRates, saveMachineClassHRates }
 }

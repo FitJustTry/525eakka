@@ -7,6 +7,22 @@ export type ShiftMode = 'none' | 'smart' | 'every' | 'n_days' | 'manual' | 'cust
 
 export type { DayWork, MachineDaySched }
 
+function weekAheadCapacity(
+  m: CuttingMachine, wcConfig: Record<string, WCConfig>,
+  days: Date[], fromIdx: number, lazyOt: boolean
+): { regLeft: number; otLeft: number } {
+  const cnt = m.count || 1
+  const regLeft = days.slice(fromIdx).reduce((s, dd) => {
+    const { reg } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
+    return s + reg * cnt
+  }, 0)
+  const otLeft = lazyOt ? days.slice(fromIdx + 1).reduce((s, dd) => {
+    const { ot } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
+    return s + ot * cnt
+  }, 0) : 0
+  return { regLeft, otLeft }
+}
+
 /**
  * Greedy LPT assignment — load-balance first, drill preference as tiebreaker.
  *
@@ -310,14 +326,7 @@ export function scheduleFastest(
       if (otPolicy === 'full') {
         effectiveOtCap = otCap
       } else if (otPolicy === 'smart') {
-        const regLeft = days.slice(di).reduce((s, dd) => {
-          const { reg: r } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
-          return s + r * (m.count || 1)
-        }, 0)
-        const otLeft = lazyOt ? days.slice(di + 1).reduce((s, dd) => {
-          const { ot: o } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
-          return s + o * (m.count || 1)
-        }, 0) : 0
+        const { regLeft, otLeft } = weekAheadCapacity(m, wcConfig, days, di, lazyOt)
         const queueHrs = queue.slice(qi).reduce((s, u) => s + uHrs(m, u), 0)
         effectiveOtCap = Math.min(otCap, Math.max(0, rem + queueHrs - regLeft - otLeft))
       }
@@ -566,14 +575,7 @@ export function scheduleMode(
         if (otPolicy === 'full') {
           effectiveOtCap = otCap
         } else if (otPolicy === 'smart') {
-          const regLeft = days.slice(di).reduce((s, dd) => {
-            const { reg: r } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
-            return s + r * (m.count || 1)
-          }, 0)
-          const otLeft = lazyOt ? days.slice(di + 1).reduce((s, dd) => {
-            const { ot: o } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
-            return s + o * (m.count || 1)
-          }, 0) : 0
+          const { regLeft, otLeft } = weekAheadCapacity(m, wcConfig, days, di, lazyOt)
           const curRem   = cur?.remainingHrs ?? 0
           const queueHrs = queue.slice(qi).reduce((s, item) => s + item.remainingHrs, 0)
           effectiveOtCap = Math.min(otCap, Math.max(0, curRem + queueHrs - regLeft - otLeft))
@@ -691,14 +693,7 @@ export function scheduleMode(
       } else if (otPolicy === 'smart') {
         // Week-ahead look: OT fires only when total remaining work (carry + all future assigned orders)
         // exceeds total remaining reg capacity + future OT capacity — defers OT to end of week.
-        const regLeft = days.slice(di).reduce((s, dd) => {
-          const { reg: r } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
-          return s + r * (m.count || 1)
-        }, 0)
-        const otLeft = lazyOt ? days.slice(di + 1).reduce((s, dd) => {
-          const { ot: ov } = resolveHours(m, wcConfig, dd.getDay() === 6, dd.getDay())
-          return s + ov * (m.count || 1)
-        }, 0) : 0
+        const { regLeft, otLeft } = weekAheadCapacity(m, wcConfig, days, di, lazyOt)
         const carryHrs  = carryItems.reduce((s, c) => s + c.remainingHrs, 0)
         const futureHrs = days.slice(di).reduce((s, _dd, i) =>
           s + (dailyAssignments[di + i]?.asgn.get(m.id) ?? [])
