@@ -23,6 +23,7 @@ import SchedulingToolbar from './components/SchedulingToolbar'
 import SnapshotPanel from './components/SnapshotPanel'
 import SnapshotViewer from './components/SnapshotViewer'
 import WeekCompletionSummary from './components/WeekCompletionSummary'
+import CapacityGapPanel from './components/CapacityGapPanel'
 import { assignOrders, scheduleFastest, scheduleMode } from './scheduling/engine'
 import type { ShiftMode } from './scheduling/engine'
 import { computeWeekData } from './scheduling/weekData'
@@ -54,6 +55,7 @@ export default function CuttingMachines() {
   // ── UI state ─────────────────────────────────────────────────
   const [weekOffset, setWeekOffset] = useState(0)
   const [includePrevCarry, setIncludePrevCarry] = useState(false)
+  const [carryOverOrders, setCarryOverOrders] = useState<Set<string>>(new Set())
   const [showWireData, setShowWireData] = useState(true)
   const [workDisplay, setWorkDisplay] = useState<'order' | 'carry' | 'segment' | 'unit'>('order')
   const [saving, setSaving] = useState<number | null>(null)
@@ -625,6 +627,16 @@ export default function CuttingMachines() {
               useNearestKva={useNearestKva} fmtD={fmtD} origId={origId}
             />}
 
+            {/* Capacity gap analysis */}
+            {viewMode !== 'pipeline' && machines.length > 0 && (
+              <CapacityGapPanel
+                mTotals={mTotals} machines={machines} days={days}
+                wcConfig={wcConfig} shiftHrsDefault={shiftHrsDefault}
+                weekCarryOrders={weekCarryOrders} weekUnscheduled={weekUnscheduled}
+                weekDoneOrders={weekDoneOrders}
+              />
+            )}
+
             {/* Week completion summary */}
             {viewMode !== 'pipeline' && (weekDoneOrders.length > 0 || weekCarryOrders.length > 0 || weekUnscheduled.length > 0) && (
               <WeekCompletionSummary
@@ -632,6 +644,8 @@ export default function CuttingMachines() {
                 weekUnscheduled={weekUnscheduled} lateOrders={lateOrders}
                 products={products} days={days}
                 setWeekOffset={setWeekOffset} setIncludePrevCarry={setIncludePrevCarry}
+                carryOverOrders={carryOverOrders}
+                toggleCarryOver={(id) => setCarryOverOrders(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })}
               />
             )}
 
