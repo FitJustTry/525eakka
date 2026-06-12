@@ -76,7 +76,7 @@ export default function SchedulingToolbar({
           <button key={v} onClick={() => setViewMode(v)} style={{
             fontSize: 10, padding: '3px 10px', borderRadius: 8, border: '1px solid var(--bord2)', cursor: 'pointer',
             background: viewMode === v ? 'var(--blue)' : 'var(--bg3)',
-            color: viewMode === v ? '#000' : 'var(--txt2)', fontWeight: viewMode === v ? 700 : 400,
+            color: viewMode === v ? '#000' : 'var(--txt2)', fontWeight: 600,
           }}>
             {v === 'cards' ? '📋 รายวัน' : v === 'table' ? '📊 ตาราง' : '🔄 Pipeline'}
           </button>
@@ -93,7 +93,7 @@ export default function SchedulingToolbar({
               border: `1px solid ${workDisplay === w.id ? w.col : 'var(--bord2)'}`,
               background: workDisplay === w.id ? w.col + '22' : 'var(--bg3)',
               color: workDisplay === w.id ? w.col : 'var(--txt2)',
-              fontWeight: workDisplay === w.id ? 700 : 400,
+              fontWeight: 600,
             }}>
             {w.label}
           </button>
@@ -109,7 +109,7 @@ export default function SchedulingToolbar({
             border: `1px solid ${otPol === ot.id ? ot.col : 'var(--bord2)'}`,
             background: otPol === ot.id ? ot.col + '22' : 'var(--bg3)',
             color: otPol === ot.id ? ot.col : 'var(--txt2)',
-            fontWeight: otPol === ot.id ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap',
+            fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
           }}>
             {ot.label}
           </button>
@@ -124,7 +124,7 @@ export default function SchedulingToolbar({
             border: `1px solid ${lazyOT === v ? 'var(--amber)' : 'var(--bord2)'}`,
             background: lazyOT === v ? 'rgba(249,226,175,.25)' : 'var(--bg3)',
             color: lazyOT === v ? 'var(--amber)' : 'var(--txt2)',
-            fontWeight: lazyOT === v ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap',
+            fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
           }}>
             {label}
           </button>
@@ -140,7 +140,7 @@ export default function SchedulingToolbar({
             border: `1px solid ${schedKey === s.id ? 'var(--blue)' : 'var(--bord2)'}`,
             background: schedKey === s.id ? 'rgba(137,180,250,.18)' : 'var(--bg3)',
             color: schedKey === s.id ? 'var(--blue)' : 'var(--txt2)',
-            fontWeight: schedKey === s.id ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap',
+            fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
           }}>
             {s.label}
           </button>
@@ -161,7 +161,7 @@ export default function SchedulingToolbar({
             border: `1px solid ${useNearestKva ? 'var(--purple)' : 'var(--bord2)'}`,
             background: useNearestKva ? 'rgba(203,166,247,.2)' : 'var(--bg3)',
             color: useNearestKva ? 'var(--purple)' : 'var(--txt2)',
-            fontWeight: useNearestKva ? 700 : 400 }}>
+            fontWeight: 600 }}>
           🎯 KVA {useNearestKva ? 'ใกล้เคียง' : 'ตรงเท่านั้น'}
         </button>
       </div>
@@ -182,19 +182,17 @@ export default function SchedulingToolbar({
             border: `1px solid ${shiftMode === s.id ? s.col : 'var(--bord2)'}`,
             background: shiftMode === s.id ? s.col + '22' : 'var(--bg3)',
             color: shiftMode === s.id ? s.col : 'var(--txt2)',
-            fontWeight: shiftMode === s.id ? 700 : 400,
+            fontWeight: 600,
           }}>
             {s.label}
           </button>
         ))}
-        {shiftMode === 'n_days' && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--txt3)', marginLeft: 4 }}>
-            จำนวนวัน:
-            <input type="number" min={1} max={6} step={1} value={shiftNDays}
-              onChange={e => setShiftNDays(Math.max(1, Math.min(6, parseInt(e.target.value) || 2)))}
-              style={{ width: 44, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--txt1)', textAlign: 'center' }} />
-          </label>
-        )}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--txt3)', marginLeft: 4, visibility: shiftMode === 'n_days' ? 'visible' : 'hidden' }}>
+          จำนวนวัน:
+          <input type="number" min={1} max={6} step={1} value={shiftNDays}
+            onChange={e => setShiftNDays(Math.max(1, Math.min(6, parseInt(e.target.value) || 2)))}
+            style={{ width: 44, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--txt1)', textAlign: 'center' }} />
+        </label>
         {sep}
         <button
           onClick={() => setManualOtMode(!manualOtMode)}
@@ -203,28 +201,25 @@ export default function SchedulingToolbar({
             border: `1px solid ${manualOtMode ? 'var(--amber)' : 'var(--bord2)'}`,
             background: manualOtMode ? 'rgba(249,226,175,.2)' : 'var(--bg3)',
             color: manualOtMode ? 'var(--amber)' : 'var(--txt2)',
-            fontWeight: manualOtMode ? 700 : 400,
+            fontWeight: 600,
           }}>
           ⚡ OT กำหนดเอง
         </button>
-        {shiftMode !== 'none' && (
-          <>
-            {sep}
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--txt3)' }}
-              title="ชั่วโมงกะ/คืน (default ถ้าไม่ได้ตั้งค่า per-machine)">
-              🌙 ชม:
-              <input type="number" min={1} max={24} step={0.5} value={shiftHrsDefault}
-                onChange={e => setShiftHrsDefault(Math.max(1, parseFloat(e.target.value) || 9))}
-                style={{ width: 48, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--blue)', fontWeight: 700, textAlign: 'center' }} />
-              h
-            </label>
-          </>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, visibility: shiftMode !== 'none' ? 'visible' : 'hidden' }}>
+          {sep}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--txt3)' }}
+            title="ชั่วโมงกะ/คืน (default ถ้าไม่ได้ตั้งค่า per-machine)">
+            🌙 ชม:
+            <input type="number" min={1} max={24} step={0.5} value={shiftHrsDefault}
+              onChange={e => setShiftHrsDefault(Math.max(1, parseFloat(e.target.value) || 9))}
+              style={{ width: 48, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--blue)', fontWeight: 700, textAlign: 'center' }} />
+            h
+          </label>
+        </div>
       </div>
 
       {/* Shift info panel */}
-      {shiftMode !== 'none' && shiftMode !== 'manual' && shiftMode !== 'custom' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px', background: 'rgba(137,180,250,.07)', border: '1px solid rgba(137,180,250,.2)', borderRadius: 8, flexWrap: 'wrap', fontSize: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px', background: 'rgba(137,180,250,.07)', border: '1px solid rgba(137,180,250,.2)', borderRadius: 8, flexWrap: 'wrap', fontSize: 10, visibility: (shiftMode !== 'none' && shiftMode !== 'manual' && shiftMode !== 'custom') ? 'visible' : 'hidden' }}>
           <span style={{ color: 'var(--blue)', fontWeight: 700, fontSize: 9, textTransform: 'uppercase', letterSpacing: '.04em' }}>🌙 กะที่ใช้:</span>
           {days.map(d => {
             const dStr = fmtISO(d)
@@ -267,7 +262,6 @@ export default function SchedulingToolbar({
             </>
           )}
         </div>
-      )}
     </div>
   )
 }
