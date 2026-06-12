@@ -1331,7 +1331,7 @@ function PlanSnapshots() {
                     <td style={{ ...S.td, fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--green)', whiteSpace: 'nowrap' as const }}>{r.confirmed_at ? new Date(r.confirmed_at).toLocaleDateString('th-TH') : '—'}</td>
                     <td style={{ ...S.td, fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--amber)', whiteSpace: 'nowrap' as const }}>{r.started_at ? new Date(r.started_at).toLocaleDateString('th-TH') : '—'}</td>
                     <td style={{ ...S.td, fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--green)', whiteSpace: 'nowrap' as const }}>{r.completed_at ? new Date(r.completed_at).toLocaleDateString('th-TH') : '—'}</td>
-                    <td style={S.td}>{!isLocked && <button style={S.del} onClick={() => del(r.id)}>🗑</button>}</td>
+                    <td style={S.td}><button style={S.del} onClick={() => del(r.id)}>🗑</button></td>
                   </tr>
                 )
               })}
