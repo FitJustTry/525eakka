@@ -107,7 +107,8 @@ function cuttingRoutes(app) {
 
   app.get('/api/cutting-plan-snapshots', asyncRoute(async (req, res) => {
     const result = await pool.query(
-      'SELECT id, week_start, week_end, label, saved_at FROM cutting_plan_snapshots ORDER BY saved_at DESC LIMIT 50'
+      `SELECT id, week_start, week_end, label, status, saved_at, confirmed_at, started_at, completed_at
+       FROM cutting_plan_snapshots ORDER BY saved_at DESC LIMIT 50`
     );
     res.json(result.rows);
   }));
@@ -119,14 +120,42 @@ function cuttingRoutes(app) {
   }));
 
   app.post('/api/cutting-plan-snapshots', asyncRoute(async (req, res) => {
-    const { week_start, week_end, label, plan_data } = req.body;
+    const { week_start, week_end, label, plan_data, planned_finish_dates, planned_hours } = req.body;
     if (!week_start || !week_end) return res.status(400).json({ error: 'week_start and week_end required' });
     const result = await pool.query(
-      `INSERT INTO cutting_plan_snapshots (week_start, week_end, label, plan_data)
-       VALUES ($1,$2,$3,$4) RETURNING id, week_start, week_end, label, saved_at`,
-      [week_start, week_end, label || '', JSON.stringify(plan_data || {})]
+      `INSERT INTO cutting_plan_snapshots (week_start, week_end, label, plan_data, planned_finish_dates, planned_hours)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING id, week_start, week_end, label, status, saved_at`,
+      [week_start, week_end, label || '', JSON.stringify(plan_data || {}),
+       JSON.stringify(planned_finish_dates || {}), JSON.stringify(planned_hours || {})]
     );
     res.status(201).json(result.rows[0]);
+  }));
+
+  // Status transitions: draft→approved→in_production→completed→archived; any live→cancelled
+  const VALID_TRANSITIONS = {
+    draft:         ['approved', 'cancelled'],
+    approved:      ['in_production', 'draft', 'cancelled'],
+    in_production: ['completed', 'approved', 'cancelled'],
+    completed:     ['archived'],
+    cancelled:     [],
+    archived:      [],
+  };
+  app.patch('/api/cutting-plan-snapshots/:id/status', asyncRoute(async (req, res) => {
+    const { status } = req.body;
+    const cur = await pool.query('SELECT status FROM cutting_plan_snapshots WHERE id=$1', [req.params.id]);
+    if (!cur.rows.length) return res.status(404).json({ error: 'Not found' });
+    const current = cur.rows[0].status || 'draft';
+    const allowed = VALID_TRANSITIONS[current] ?? [];
+    if (!allowed.includes(status)) return res.status(400).json({ error: `Cannot transition ${current} → ${status}` });
+    const tsField = status === 'approved' ? 'confirmed_at' : status === 'in_production' ? 'started_at' : status === 'completed' ? 'completed_at' : null;
+    const tsClause = tsField ? `, ${tsField} = now()` : '';
+    const result = await pool.query(
+      `UPDATE cutting_plan_snapshots SET status=$1${tsClause} WHERE id=$2
+       RETURNING id, week_start, week_end, label, status, saved_at, confirmed_at, started_at, completed_at`,
+      [status, req.params.id]
+    );
+    res.json(result.rows[0]);
   }));
 
   app.delete('/api/cutting-plan-snapshots/:id', asyncRoute(async (req, res) => {

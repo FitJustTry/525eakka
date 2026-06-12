@@ -148,7 +148,7 @@ export default function CuttingMachines() {
   const { handleAdd, handleDelete, handleChange, toggleOffDay, handleToggle, saveMachineRates, saveMachineTmcRates, saveMachineTrPowerRates, saveMachineClassHRates } =
     useCuttingActions(saving, setSaving)
 
-  const { planSaving, planSaveMsg, snapshots, showSnapshots, setShowSnapshots, viewSnap, setViewSnap, savePlan, loadSnapshots, viewSnapshot, deleteSnapshot } =
+  const { planSaving, planSaveMsg, snapshots, showSnapshots, setShowSnapshots, viewSnap, setViewSnap, savePlan, loadSnapshots, viewSnapshot, deleteSnapshot, updateStatus } =
     usePlanSnapshots()
 
   // ── Data loading ─────────────────────────────────────────────
@@ -553,7 +553,7 @@ export default function CuttingMachines() {
           includePrevCarry={includePrevCarry} setIncludePrevCarry={setIncludePrevCarry}
           prevCarryQty={prevCarryQty} planSaving={planSaving} planSaveMsg={planSaveMsg}
           weekOrdersLength={weekOrders.length}
-          onSavePlan={() => savePlan('', { weekData, machines, products, globalRates: effectiveGlobalRates, globalTmcRates: effectiveGlobalTmcRates, weekLabel, mon, sat, balanceMode, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr })}
+          onSavePlan={() => savePlan('', { weekData, machines, products, globalRates: effectiveGlobalRates, globalTmcRates: effectiveGlobalTmcRates, weekLabel, mon, sat, balanceMode, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, weekSchedule })}
           onExportCSV={exportPlanCSV} onExportXLSX={exportXLSX}
           onExportMachineXLSX={exportMachineXLSX} onExportTXT={exportTXT}
           onExportPrint={exportPrint} onExportMachinePrint={exportMachinePrint}
@@ -565,6 +565,7 @@ export default function CuttingMachines() {
           <SnapshotPanel
             snapshots={snapshots} setShowSnapshots={setShowSnapshots}
             viewSnapshot={viewSnapshot} deleteSnapshot={deleteSnapshot}
+            updateStatus={updateStatus}
           />
         )}
 

@@ -254,6 +254,13 @@ async function initDatabase() {
       )
     `);
     await client.query('CREATE INDEX IF NOT EXISTS idx_cutting_plan_week ON cutting_plan_snapshots(week_start)');
+    // Phase 1: plan lifecycle columns
+    await client.query(`ALTER TABLE cutting_plan_snapshots ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft'`);
+    await client.query(`ALTER TABLE cutting_plan_snapshots ADD COLUMN IF NOT EXISTS planned_finish_dates JSONB NOT NULL DEFAULT '{}'`);
+    await client.query(`ALTER TABLE cutting_plan_snapshots ADD COLUMN IF NOT EXISTS planned_hours JSONB NOT NULL DEFAULT '{}'`);
+    await client.query(`ALTER TABLE cutting_plan_snapshots ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE cutting_plan_snapshots ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE cutting_plan_snapshots ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS coil_machines (
         id SERIAL PRIMARY KEY,

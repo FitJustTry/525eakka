@@ -1,9 +1,22 @@
 import { useState } from 'react'
 import type { CuttingMachine, CuttingRate } from '../../../types'
-import { fmtISO } from '../scheduling/utils'
+import { fmtISO, origId as stripOrigId } from '../scheduling/utils'
 import type { WeekData } from '../scheduling/weekData'
+import type { MachineDaySched } from '../scheduling/constants'
 
-export type SnapMeta = { id: number; week_start: string; week_end: string; label: string; saved_at: string }
+export type PlanStatus = 'draft' | 'approved' | 'in_production' | 'completed' | 'cancelled' | 'archived'
+
+export type SnapMeta = {
+  id: number
+  week_start: string
+  week_end: string
+  label: string
+  status: PlanStatus
+  saved_at: string
+  confirmed_at: string | null
+  started_at: string | null
+  completed_at: string | null
+}
 
 interface SavePlanCtx {
   weekData: WeekData
@@ -21,6 +34,7 @@ interface SavePlanCtx {
   shiftHrsDefault: number
   manualShiftDays: Map<number, Set<string>>
   useRoutingCr: boolean
+  weekSchedule: Map<number, Map<string, MachineDaySched>>
 }
 
 export function usePlanSnapshots() {
@@ -31,14 +45,35 @@ export function usePlanSnapshots() {
   const [viewSnap, setViewSnap] = useState<Record<string, unknown> | null>(null)
 
   async function savePlan(label: string, ctx: SavePlanCtx) {
-    const { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat, balanceMode, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr } = ctx
+    const { weekData, machines, products, globalRates, globalTmcRates, weekLabel, mon, sat,
+            balanceMode, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays,
+            useRoutingCr, weekSchedule } = ctx
     setPlanSaving(true); setPlanSaveMsg(null)
+
+    // Compute planned_finish_dates and planned_hours from weekSchedule
+    const plannedFinishDates: Record<string, string> = {}
+    const plannedHoursMap: Record<string, number> = {}
+    for (const [, machMap] of weekSchedule) {
+      for (const [dStr, sched] of machMap) {
+        for (const w of sched.work) {
+          const oid = stripOrigId(w.order.id)
+          if (w.isComplete) {
+            if (!plannedFinishDates[oid] || dStr > plannedFinishDates[oid])
+              plannedFinishDates[oid] = dStr
+          }
+          plannedHoursMap[oid] = (plannedHoursMap[oid] ?? 0) + w.hrsWorked
+        }
+      }
+    }
+
     try {
       const res = await fetch('/api/cutting-plan-snapshots', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           week_start: fmtISO(mon), week_end: fmtISO(sat),
           label: label || weekLabel,
+          planned_finish_dates: plannedFinishDates,
+          planned_hours: plannedHoursMap,
           plan_data: {
             balanceMode, shiftMode, shiftNDays, shiftHrsDefault,
             manualShiftDays: [...manualShiftDays.entries()].map(([machineId, days]) => ({ machineId, days: [...days] })),
@@ -61,7 +96,7 @@ export function usePlanSnapshots() {
                 machineId: mc.m.id, machineName: mc.m.name, machOff: mc.machOff, wall: mc.wall, capH: mc.capH,
                 otHrs: mc.sched?.otHrs ?? 0, carriesForward: mc.sched?.carriesForward ?? false,
                 work: mc.work.map(w => ({
-                  sap_so: w.order.sap_so, customer: w.order.customer,
+                  order_id: w.order.id, sap_so: w.order.sap_so, customer: w.order.customer,
                   kva: w.order.kva ?? products[w.order.product]?.kva,
                   qty: w.order.qty, hrsWorked: w.hrsWorked,
                   isComplete: w.isComplete, carriesOver: w.carriesOver, isCarryOver: w.isCarryOver,
@@ -89,7 +124,7 @@ export function usePlanSnapshots() {
   async function viewSnapshot(id: number) {
     const res = await fetch(`/api/cutting-plan-snapshots/${id}`)
     const snap = await res.json()
-    setViewSnap({ ...snap.plan_data, _label: snap.label, _saved_at: snap.saved_at, _week: `${snap.week_start} – ${snap.week_end}` })
+    setViewSnap({ ...snap.plan_data, _label: snap.label, _saved_at: snap.saved_at, _week: `${snap.week_start} – ${snap.week_end}`, _status: snap.status })
     setShowSnapshots(false)
   }
 
@@ -98,5 +133,16 @@ export function usePlanSnapshots() {
     setSnapshots(prev => prev.filter(s => s.id !== id))
   }
 
-  return { planSaving, planSaveMsg, snapshots, showSnapshots, setShowSnapshots, viewSnap, setViewSnap, savePlan, loadSnapshots, viewSnapshot, deleteSnapshot }
+  async function updateStatus(id: number, status: PlanStatus) {
+    const res = await fetch(`/api/cutting-plan-snapshots/${id}/status`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status })
+    })
+    if (!res.ok) throw new Error(await res.text())
+    const updated = await res.json()
+    setSnapshots(prev => prev.map(s => s.id === id ? { ...s, ...updated } : s))
+    return updated as SnapMeta
+  }
+
+  return { planSaving, planSaveMsg, snapshots, showSnapshots, setShowSnapshots, viewSnap, setViewSnap, savePlan, loadSnapshots, viewSnapshot, deleteSnapshot, updateStatus }
 }
