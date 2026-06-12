@@ -17,6 +17,7 @@ export interface Order {
   total_kva?: number; enter_test?: string; cable_box?: string; control?: string
   due_store?: string; due_so?: string; adjust_plan?: string; due_clamp?: string
   due_box_ctrl?: string; raw_mat?: string; lv?: string; hv?: string
+  done_qty?: number   // units actually completed (manual/SAP); remaining = qty − done_qty
 }
 
 export interface CuttingRate { kva: number; hrs: number }

@@ -68,6 +68,7 @@ function rowToOrder(row) {
     raw_mat: row.raw_mat || '',
     lv: row.lv || '',
     hv: row.hv || '',
+    done_qty: toInt(row.done_qty, 0),
     created_at: row.created_at,
   };
 }

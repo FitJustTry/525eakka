@@ -86,6 +86,7 @@ async function initDatabase() {
     await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS raw_mat TEXT NOT NULL DEFAULT ''`);
     await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS lv TEXT NOT NULL DEFAULT ''`);
     await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS hv TEXT NOT NULL DEFAULT ''`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS done_qty INTEGER NOT NULL DEFAULT 0`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS employees (
         id SERIAL PRIMARY KEY,
@@ -488,6 +489,7 @@ async function upsertOrder(client, value = {}) {
     raw_mat: value.raw_mat || '',
     lv: value.lv || '',
     hv: value.hv || '',
+    done_qty: toInt(value.done_qty, 0),
   };
   if (!order.product) throw new Error('product is required');
   if (!order.deadline) throw new Error('deadline is required');
@@ -496,8 +498,8 @@ async function upsertOrder(client, value = {}) {
     `INSERT INTO accepted_orders
        (id,product,qty,deadline,customer,kva,category,sap_so,plan_date,comment,item_code,
         week_start,seq,plant,electrical,total_kva,enter_test,cable_box,control,
-        due_store,due_so,adjust_plan,due_clamp,due_box_ctrl,raw_mat,lv,hv)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+        due_store,due_so,adjust_plan,due_clamp,due_box_ctrl,raw_mat,lv,hv,done_qty)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
      ON CONFLICT (id) DO UPDATE SET
        product=EXCLUDED.product, qty=EXCLUDED.qty, deadline=EXCLUDED.deadline,
        customer=EXCLUDED.customer, kva=EXCLUDED.kva, category=EXCLUDED.category,
@@ -507,7 +509,7 @@ async function upsertOrder(client, value = {}) {
        enter_test=EXCLUDED.enter_test, cable_box=EXCLUDED.cable_box, control=EXCLUDED.control,
        due_store=EXCLUDED.due_store, due_so=EXCLUDED.due_so, adjust_plan=EXCLUDED.adjust_plan,
        due_clamp=EXCLUDED.due_clamp, due_box_ctrl=EXCLUDED.due_box_ctrl,
-       raw_mat=EXCLUDED.raw_mat, lv=EXCLUDED.lv, hv=EXCLUDED.hv,
+       raw_mat=EXCLUDED.raw_mat, lv=EXCLUDED.lv, hv=EXCLUDED.hv, done_qty=EXCLUDED.done_qty,
        updated_at=now()`,
     [
       order.id, order.product, order.qty, order.deadline, order.customer,
@@ -515,6 +517,7 @@ async function upsertOrder(client, value = {}) {
       order.week_start, order.seq, order.plant, order.electrical, order.total_kva,
       order.enter_test, order.cable_box, order.control, order.due_store, order.due_so,
       order.adjust_plan, order.due_clamp, order.due_box_ctrl, order.raw_mat, order.lv, order.hv,
+      order.done_qty,
     ]
   );
   return order;

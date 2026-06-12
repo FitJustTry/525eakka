@@ -41,7 +41,7 @@ function orderRoutes(app) {
   app.put('/api/orders/:id', asyncRoute(async (req, res) => {
     const allowed = ['product','qty','deadline','customer','kva','category','sap_so','plan_date','comment','item_code',
       'week_start','seq','plant','electrical','total_kva','enter_test','cable_box','control',
-      'due_store','due_so','adjust_plan','due_clamp','due_box_ctrl','raw_mat','lv','hv'];
+      'due_store','due_so','adjust_plan','due_clamp','due_box_ctrl','raw_mat','lv','hv','done_qty'];
     const entries = Object.entries(req.body).filter(([key]) => allowed.includes(key));
     if (!entries.length) return res.status(400).json({ error: 'No valid fields to update' });
 

@@ -22,6 +22,8 @@ export const api = {
       request<void>(`/orders/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     upsert: (order: Order) =>
       request<Order>('/orders', { method: 'POST', body: JSON.stringify(order) }),
+    update: (id: string, patch: Partial<Order>) =>
+      request<Order>(`/orders/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) }),
   },
 
   cuttingMachines: {

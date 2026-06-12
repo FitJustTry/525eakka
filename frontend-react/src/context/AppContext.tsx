@@ -35,6 +35,7 @@ function normalizeOrder(o: Order): Order {
   return {
     ...o,
     qty: parseInt(String(o.qty)) || 1,
+    done_qty: parseInt(String(o.done_qty)) || 0,
     kva: o.kva == null ? 0 : parseInt(String(o.kva)) || 0,
     deadline: o.deadline ? String(o.deadline).slice(0, 10) : new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
     plan_date: o.plan_date ? String(o.plan_date).slice(0, 10) : null,

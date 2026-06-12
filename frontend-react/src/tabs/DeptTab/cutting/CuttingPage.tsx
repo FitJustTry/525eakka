@@ -49,13 +49,12 @@ type BalanceMode =
   | 'deadline_full' | 'priority_full' | 'interweek_full' | 'batch_full'
 
 export default function CuttingMachines() {
-  const { state } = useApp()
+  const { state, dispatch } = useApp()
   const { cuttingMachines: machines, orders, products, wcConfig } = state
 
   // ── UI state ─────────────────────────────────────────────────
   const [weekOffset, setWeekOffset] = useState(0)
   const [includePrevCarry, setIncludePrevCarry] = useState(false)
-  const [carryOverOrders, setCarryOverOrders] = useState<Set<string>>(new Set())
   const [showWireData, setShowWireData] = useState(true)
   const [workDisplay, setWorkDisplay] = useState<'order' | 'carry' | 'segment' | 'unit'>('order')
   const [saving, setSaving] = useState<number | null>(null)
@@ -291,7 +290,24 @@ export default function CuttingMachines() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [includePrevCarry, weekOffset, balanceMode, orders.map(o=>o.id+o.qty).join(','), machines.map(m=>m.id).join(',')])
 
+  // Manual completion: remaining = qty − done_qty. Scheduler only cuts remaining; fully-done excluded.
+  const effRemaining = (o: typeof orders[number]) => Math.max(0, o.qty - (o.done_qty ?? 0))
   const weekOrders = [...prevCarryOrders, ...currentWeekOrders]
+    .filter(o => effRemaining(o) > 0)
+    .map(o => (o.done_qty ?? 0) > 0 ? { ...o, qty: effRemaining(o) } : o)
+  const weekCompletedManual = currentWeekOrders.filter(o => (o.done_qty ?? 0) >= o.qty && o.qty > 0)
+  const ordersById = useMemo(() => {
+    const m = new Map<string, typeof orders[number]>()
+    orders.forEach(o => m.set(o.id, o))
+    return m
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders.map(o => o.id + ':' + o.qty + ':' + (o.done_qty ?? 0)).join(',')])
+  const updateDoneQty = (id: string, n: number) => {
+    const o = ordersById.get(id); if (!o) return
+    const clamped = Math.max(0, Math.min(o.qty, Math.floor(n) || 0))
+    dispatch({ type: 'SET_ORDERS', orders: orders.map(x => x.id === id ? { ...x, done_qty: clamped } : x) })
+    import('../../../api').then(({ api }) => api.orders.update(id, { done_qty: clamped }).catch(() => {}))
+  }
   const prevCarryQty = prevCarryOrders.reduce((s, o) => s + o.qty, 0)
   const { mon: nextMon, sat: nextSat } = getWeekRange(weekOffset + 1)
   const nextWeekOrders = orders.filter(o => o.plan_date && o.plan_date >= fmtISO(nextMon) && o.plan_date <= fmtISO(nextSat))
@@ -638,14 +654,14 @@ export default function CuttingMachines() {
             )}
 
             {/* Week completion summary */}
-            {viewMode !== 'pipeline' && (weekDoneOrders.length > 0 || weekCarryOrders.length > 0 || weekUnscheduled.length > 0) && (
+            {viewMode !== 'pipeline' && (weekDoneOrders.length > 0 || weekCarryOrders.length > 0 || weekUnscheduled.length > 0 || weekCompletedManual.length > 0) && (
               <WeekCompletionSummary
                 weekDoneOrders={weekDoneOrders} weekCarryOrders={weekCarryOrders}
-                weekUnscheduled={weekUnscheduled} lateOrders={lateOrders}
+                weekUnscheduled={weekUnscheduled} weekCompletedManual={weekCompletedManual}
+                lateOrders={lateOrders}
                 products={products} days={days}
                 setWeekOffset={setWeekOffset} setIncludePrevCarry={setIncludePrevCarry}
-                carryOverOrders={carryOverOrders}
-                toggleCarryOver={(id) => setCarryOverOrders(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })}
+                ordersById={ordersById} updateDoneQty={updateDoneQty} origId={origId}
               />
             )}
 
