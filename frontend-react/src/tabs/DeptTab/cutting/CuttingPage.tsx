@@ -17,6 +17,7 @@ import GlobalRatesPanel from './components/GlobalRatesPanel'
 import PerMachineRatesPanel from './components/PerMachineRatesPanel'
 import ControlBar from './components/ControlBar'
 import ManualShiftGrid from './components/ManualShiftGrid'
+import CustomShiftOtGrid from './components/CustomShiftOtGrid'
 import SchedulingToolbar from './components/SchedulingToolbar'
 import SnapshotPanel from './components/SnapshotPanel'
 import SnapshotViewer from './components/SnapshotViewer'
@@ -77,6 +78,8 @@ export default function CuttingMachines() {
   const [shiftHrsDefault, setShiftHrsDefault] = useState(9)
   const [manualShiftDays, setManualShiftDays] = useState<Map<number, Set<string>>>(new Map())
   const [manualOtDays, setManualOtDays] = useState<Map<number, Set<string>>>(new Map())
+  const [customShiftHrs, setCustomShiftHrs] = useState<Map<number, Map<string, number>>>(new Map())
+  const [customOtHrs, setCustomOtHrs] = useState<Map<number, Map<string, number>>>(new Map())
   const [machineTableOpen, setMachineTableOpen] = useState(false)
   const [globalRatesOpen, setGlobalRatesOpen] = useState(false)
   const [perMachRatesOpen, setPerMachRatesOpen] = useState(false)
@@ -97,6 +100,18 @@ export default function CuttingMachines() {
       .map(([mid, s]) => `${mid}:${[...s].sort().join(',')}`)
       .join('|')
   , [manualOtDays])
+
+  const customShiftKey = useMemo(() =>
+    [...customShiftHrs.entries()].sort((a, b) => a[0] - b[0])
+      .map(([mid, m]) => `${mid}:${[...m.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([d,v])=>`${d}=${v}`).join(',')}`)
+      .join('|')
+  , [customShiftHrs])
+
+  const customOtKey = useMemo(() =>
+    [...customOtHrs.entries()].sort((a, b) => a[0] - b[0])
+      .map(([mid, m]) => `${mid}:${[...m.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([d,v])=>`${d}=${v}`).join(',')}`)
+      .join('|')
+  , [customOtHrs])
 
   const availableRoutingWcs = useMemo(
     () => [...new Set(routingCrData.map(r => r.wc_id))].sort(),
@@ -318,9 +333,9 @@ export default function CuttingMachines() {
   // Week schedule
   const weekSchedule = useMemo(() => {
     const mi = new Map(machIdx)
-    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays)
-    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays)
-    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, effectiveGlobalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays)
+    const sm = (ot: 'none'|'smart'|'full', sort='plan_date') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'weekly', ot, sort, nextWeekOrders, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays, customShiftHrs, customOtHrs)
+    const sd = (ot: 'none'|'smart'|'full') => scheduleMode(weekOrders, dailyAssignments, machines, products, effectiveGlobalRates, wcConfig, days, mi, 'daily', ot, 'plan_date', [], strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays, customShiftHrs, customOtHrs)
+    const sf = (ot: 'none'|'smart'|'full') => scheduleFastest(weekOrders, machines, products, effectiveGlobalRates, wcConfig, days, ot, strictWire, requireDrill, stickyOrders, ot === 'smart' ? lazyOT : true, effectiveGlobalTmcRates, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftDays, useRoutingCr, manualOtDays, customShiftHrs, customOtHrs)
     const modeMap: Record<string, ()=>Map<number,Map<string,MachineDaySched>>> = {
       daily_no_ot: () => sd('none'),    weekly_no_ot: () => sm('none'),    fastest_no_ot: () => sf('none'),
       deadline_no_ot: () => sm('none','deadline'), priority_no_ot: () => sm('none','priority'),
@@ -334,7 +349,7 @@ export default function CuttingMachines() {
     }
     return (modeMap[balanceMode] ?? modeMap['weekly_no_ot'])()
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftKey, manualOtKey, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), effectiveGlobalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), effectiveGlobalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
+  }, [balanceMode, strictWire, requireDrill, stickyOrders, lazyOT, interweekThreshold, useNearestKva, shiftMode, shiftNDays, shiftHrsDefault, manualShiftKey, manualOtKey, customShiftKey, customOtKey, dailyAssignments, machines.map(m => `${m.id}${m.reg_hrs}${m.ot_hrs}${+m.laser}${+m.m4}${+m.drill_8mm}${+m.drill_22mm}${m.time_mul??1}${m.tmc_hrs??0}${(m.off_days??[]).join('-')}`).join(','), effectiveGlobalRates.map(r=>`${r.kva}:${r.hrs}`).join(','), effectiveGlobalTmcRates.map(r=>`${r.kva}:${r.hrs}`).join(',')])
 
   const weekData = useMemo(
     () => computeWeekData({ weekSchedule, weekOrders, machines, days, balanceMode, strictWire, requireDrill, stickyOrders, products, wcConfig, globalRates: effectiveGlobalRates, globalTmcRates: effectiveGlobalTmcRates }),
@@ -473,6 +488,17 @@ export default function CuttingMachines() {
             )}
           </div>
         </div>
+
+        {/* Custom shift+OT grid */}
+        {shiftMode === 'custom' && (
+          <CustomShiftOtGrid
+            machines={machines} days={days}
+            customShiftHrs={customShiftHrs} setCustomShiftHrs={setCustomShiftHrs}
+            customOtHrs={customOtHrs} setCustomOtHrs={setCustomOtHrs}
+            weekSchedule={weekSchedule} wcConfig={wcConfig} mTotals={mTotals}
+            lateOrdersSize={lateOrders.size} baselineLateCount={baselineLateCount}
+          />
+        )}
 
         {/* Manual shift selection grid */}
         {shiftMode === 'manual' && (

@@ -3,7 +3,7 @@ import { DRILL_BONUS, INDEX_BONUS } from './constants'
 import type { DayWork, MachineDaySched } from './constants'
 import { getHrsForKva, resolveHours, resolveShift, canMachineCut, drillPrefers, wirePrefers, catRank, fmtISO, isMachineOn } from './utils'
 
-export type ShiftMode = 'none' | 'smart' | 'every' | 'n_days' | 'manual'
+export type ShiftMode = 'none' | 'smart' | 'every' | 'n_days' | 'manual' | 'custom'
 
 export type { DayWork, MachineDaySched }
 
@@ -136,6 +136,8 @@ export function scheduleFastest(
   manualShiftDays: Map<number, Set<string>> = new Map(),
   routingRates = false,
   manualOtDays: Map<number, Set<string>> = new Map(),
+  customShiftHrs: Map<number, Map<string, number>> = new Map(),
+  customOtHrs: Map<number, Map<string, number>> = new Map(),
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
   if (!machines.length || !weekOrders.length) return result
@@ -321,11 +323,15 @@ export function scheduleFastest(
       }
 
       if (manualOtDays.size > 0 && !(manualOtDays.get(m.id)?.has(dStr) ?? false)) effectiveOtCap = 0
+      const customOtVal = customOtHrs.get(m.id)?.get(dStr)
+      if (customOtVal !== undefined) effectiveOtCap = Math.min(otCap, customOtVal * (m.count || 1))
 
       // ── NEW: Shift tier — entirely independent from OT logic ──
       const shiftCap = resolveShift(m, shiftHrsDefault) * (m.count || 1)
       let effectiveShiftCap = 0
-      if (shiftCap > 0 && shiftMode !== 'none') {
+      if (shiftMode === 'custom') {
+        effectiveShiftCap = (customShiftHrs.get(m.id)?.get(dStr) ?? 0) * (m.count || 1)
+      } else if (shiftCap > 0 && shiftMode !== 'none') {
         if (activeShiftDays.has(dStr)) {
           effectiveShiftCap = shiftCap
         } else if (shiftMode === 'smart') {
@@ -478,6 +484,8 @@ export function scheduleMode(
   manualShiftDays: Map<number, Set<string>> = new Map(),
   routingRates = false,
   manualOtDays: Map<number, Set<string>> = new Map(),
+  customShiftHrs: Map<number, Map<string, number>> = new Map(),
+  customOtHrs: Map<number, Map<string, number>> = new Map(),
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
 
@@ -572,11 +580,15 @@ export function scheduleMode(
         }
 
         if (manualOtDays.size > 0 && !(manualOtDays.get(m.id)?.has(dStr) ?? false)) effectiveOtCap = 0
+        const customOtValW = customOtHrs.get(m.id)?.get(dStr)
+        if (customOtValW !== undefined) effectiveOtCap = Math.min(otCap, customOtValW * (m.count || 1))
 
         // ── NEW: Shift tier ──────────────────────────────────────
         const shiftCap = resolveShift(m, shiftHrsDefault) * (m.count || 1)
         let effectiveShiftCap = 0
-        if (shiftCap > 0 && shiftMode !== 'none') {
+        if (shiftMode === 'custom') {
+          effectiveShiftCap = (customShiftHrs.get(m.id)?.get(dStr) ?? 0) * (m.count || 1)
+        } else if (shiftCap > 0 && shiftMode !== 'none') {
           if (activeShiftDaysW.has(dStr)) {
             effectiveShiftCap = shiftCap
           } else if (shiftMode === 'smart') {

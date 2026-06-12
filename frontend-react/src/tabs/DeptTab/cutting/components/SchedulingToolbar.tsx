@@ -169,6 +169,7 @@ export default function SchedulingToolbar({
           { id: 'every',  label: '🌙 ทุกวัน',    col: 'var(--blue)',   title: 'เพิ่มกะกลางคืนทุกวัน' },
           { id: 'n_days', label: '📅 N วัน',     col: 'var(--purple)', title: 'เลือก N วันที่ต้องการกะมากที่สุด' },
           { id: 'manual', label: '🗓 กำหนดเอง',  col: 'var(--green)',  title: 'เลือกเครื่อง+วันที่ต้องการกะด้วยตัวเอง' },
+          { id: 'custom', label: '✏ Custom',     col: 'var(--purple)', title: 'กำหนดชั่วโมงกะ+OT ต่อเครื่องต่อวันแบบกำหนดเอง' },
         ] as const).map(s => (
           <button key={s.id} onClick={() => setShiftMode(s.id)} title={s.title} style={{
             fontSize: 10, padding: '3px 10px', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
@@ -204,7 +205,7 @@ export default function SchedulingToolbar({
       </div>
 
       {/* Shift info panel */}
-      {shiftMode !== 'none' && shiftMode !== 'manual' && (
+      {shiftMode !== 'none' && shiftMode !== 'manual' && shiftMode !== 'custom' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px', background: 'rgba(137,180,250,.07)', border: '1px solid rgba(137,180,250,.2)', borderRadius: 8, flexWrap: 'wrap', fontSize: 10 }}>
           <span style={{ color: 'var(--blue)', fontWeight: 700, fontSize: 9, textTransform: 'uppercase', letterSpacing: '.04em' }}>🌙 กะที่ใช้:</span>
           {days.map(d => {
