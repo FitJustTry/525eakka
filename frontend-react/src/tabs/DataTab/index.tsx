@@ -23,7 +23,7 @@ const S: Record<string, React.CSSProperties> = {
   count:  { fontSize: 10, padding: '2px 8px', borderRadius: 10, background: 'rgba(137,180,250,.15)', color: 'var(--blue)', fontWeight: 600 },
 }
 
-type SubTab = 'overview' | 'orders' | 'planorders' | 'coil' | 'machines' | 'coil_machines' | 'employees' | 'holidays' | 'sap' | 'routing_cr' | 'routing_hv' | 'routing_lv' | 'cap' | 'wc' | 'itemcodes' | 'snapshots' | 'openload'
+type SubTab = 'overview' | 'orders' | 'planorders' | 'coil' | 'machines' | 'coil_machines' | 'employees' | 'holidays' | 'sap' | 'routing_cr' | 'routing_hv' | 'routing_lv' | 'cap' | 'wc' | 'itemcodes' | 'snapshots' | 'openload' | 'downtime'
 const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: 'overview',      label: '📊 Overview' },
   { id: 'orders',        label: '📋 Master Plan' },
@@ -33,6 +33,7 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: 'coil_machines', label: '🧲 เครื่องพันคอยล์' },
   { id: 'employees',     label: '👷 พนักงาน' },
   { id: 'holidays',      label: '📆 วันหยุด' },
+  { id: 'downtime',      label: '🔧 Downtime' },
   { id: 'snapshots',     label: '📅 Plan Snapshots' },
   { id: 'openload',      label: '⚖️ Open Load' },
   { id: 'sap',           label: '🔧 SAP Routing' },
@@ -160,7 +161,7 @@ function MasterPlan() {
       <div style={S.wrap}>
         <table style={S.tbl}>
           <thead><tr>
-            {(['วันที่','ลำดับ','ความสำคัญ','SAP SO','Itemcode','Comment','Plant','kVA','ระบบไฟฟ้า','ลูกค้า','Total kVA','จำนวน','เข้าเทส','CableBox','Control','กำหนดส่งสโตร์','DUE SO','แจ้งปรับแผน','Due Clamp','Due BOX/CTRL','Raw Mat','LV','HV','สัปดาห์','']).map((h, i) => (
+            {(['วันที่','ลำดับ','Priority','ความสำคัญ','SAP SO','Itemcode','Comment','Plant','kVA','ระบบไฟฟ้า','ลูกค้า','Total kVA','จำนวน','เข้าเทส','CableBox','Control','กำหนดส่งสโตร์','DUE SO','แจ้งปรับแผน','Due Clamp','Due BOX/CTRL','Raw Mat','LV','HV','สัปดาห์','']).map((h, i) => (
               <th key={i} style={S.th}>{h}</th>
             ))}
           </tr></thead>
@@ -172,6 +173,16 @@ function MasterPlan() {
                 <tr key={o.id} style={{ opacity: busy === o.id ? 0.5 : 1, borderLeft: `3px solid ${catColor}` }}>
                   <td style={m}><EC mono v={o.plan_date ?? ''} w={95} onSave={v => save(o.id, 'plan_date', v)} /></td>
                   <td style={{ ...m, textAlign: 'center', color: 'var(--txt3)' }}><EC mono v={String(o.seq ?? '')} w={36} onSave={v => save(o.id, 'seq', v)} /></td>
+                  <td style={{ ...S.td, textAlign: 'center' }}>
+                    <select style={{ ...S.inp, width: 72, fontWeight: 700, fontSize: 10,
+                      color: o.priority === 'rush' ? 'var(--red)' : o.priority === 'high' ? 'var(--amber)' : 'var(--txt3)' }}
+                      value={o.priority ?? 'normal'}
+                      onChange={e => save(o.id, 'priority', e.target.value)}>
+                      <option value="normal">normal</option>
+                      <option value="high">high</option>
+                      <option value="rush">rush</option>
+                    </select>
+                  </td>
                   <td style={{ ...S.td, textAlign: 'center' }}>
                     <span style={{ fontSize: 9, padding: '2px 7px', borderRadius: 4, fontWeight: 700,
                       background: `${catColor}22`, color: catColor }}>
@@ -1399,6 +1410,77 @@ function OpenLoad() {
   )
 }
 
+// ── DOWNTIME ─────────────────────────────────────────────────────────────────
+interface DowntimeRow { id: number; machine_id: number; start_date: string; end_date: string; reason: string; notes: string; created_at: string }
+
+function Downtime() {
+  const { state } = useApp()
+  const machines = state.cuttingMachines ?? []
+  const [rows, setRows] = useState<DowntimeRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [mf, setMf] = useState(0)
+
+  useEffect(() => {
+    apiFetch('/machine-downtime').then((d: DowntimeRow[]) => { setRows(d); setLoading(false) }).catch(() => setLoading(false))
+  }, [])
+
+  const sorted = useMemo(() => [...rows].sort((a, b) => b.start_date.localeCompare(a.start_date)), [rows])
+  const filtered = useMemo(() => mf ? sorted.filter(r => r.machine_id === mf) : sorted, [sorted, mf])
+  const mName = (id: number) => machines.find(m => m.id === id)?.name ?? `#${id}`
+
+  const del = async (id: number) => {
+    if (!confirm('ลบรายการนี้?')) return
+    await apiFetch(`/machine-downtime/${id}`, 'DELETE')
+    setRows(prev => prev.filter(r => r.id !== id))
+  }
+
+  const totalDays = useMemo(() => filtered.reduce((s, r) => {
+    return s + Math.round((new Date(r.end_date).getTime() - new Date(r.start_date).getTime()) / 86400000) + 1
+  }, 0), [filtered])
+
+  return (
+    <div style={S.card}>
+      <div style={{ ...S.bar, padding: '10px 14px', borderBottom: '1px solid var(--bord)' }}>
+        <span style={S.count}>{filtered.length} records</span>
+        {filtered.length > 0 && <span style={{ fontSize: 10, color: 'var(--red)', fontWeight: 700 }}>{totalDays} วันรวม</span>}
+        <select style={S.search} value={mf} onChange={e => setMf(Number(e.target.value))}>
+          <option value={0}>ทุกเครื่อง</option>
+          {machines.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+        {mf > 0 && <button style={S.btn} onClick={() => setMf(0)}>✕ Clear</button>}
+      </div>
+      <div style={S.wrap}>
+        {loading ? <div style={{ padding: 28, textAlign: 'center', color: 'var(--txt3)' }}>กำลังโหลด…</div> : (
+          <table style={S.tbl}>
+            <thead><tr>
+              {['#','เครื่องจักร','วันเริ่ม','วันสิ้นสุด','ระยะเวลา','สาเหตุ','หมายเหตุ','บันทึกเมื่อ',''].map((h, i) => <th key={i} style={S.th}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {filtered.map((r, i) => {
+                const days = Math.round((new Date(r.end_date).getTime() - new Date(r.start_date).getTime()) / 86400000) + 1
+                return (
+                  <tr key={r.id}>
+                    <td style={{ ...S.td, color: 'var(--txt3)', fontSize: 10, textAlign: 'center' as const }}>{i + 1}</td>
+                    <td style={{ ...S.td, fontWeight: 700, color: 'var(--amber)' }}>{mName(r.machine_id)}</td>
+                    <td style={{ ...S.td, fontFamily: 'var(--mono)', color: 'var(--blue)' }}>{r.start_date}</td>
+                    <td style={{ ...S.td, fontFamily: 'var(--mono)', color: 'var(--blue)' }}>{r.end_date}</td>
+                    <td style={{ ...S.td, fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--red)', textAlign: 'center' as const }}>{days}d</td>
+                    <td style={S.td}>{r.reason}</td>
+                    <td style={{ ...S.td, color: 'var(--txt3)' }}>{r.notes || '—'}</td>
+                    <td style={{ ...S.td, fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--txt3)', whiteSpace: 'nowrap' as const }}>{new Date(r.created_at).toLocaleDateString('th-TH')}</td>
+                    <td style={S.td}><button style={S.del} onClick={() => del(r.id)}>🗑</button></td>
+                  </tr>
+                )
+              })}
+              {!filtered.length && <tr><td colSpan={9} style={{ ...S.td, textAlign: 'center' as const, color: 'var(--txt3)', padding: 28 }}>ไม่มีข้อมูล downtime</td></tr>}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── 8. OVERVIEW ──────────────────────────────────────────────────────────────
 interface DBCounts {
   planOrders: number | null
@@ -1414,11 +1496,12 @@ interface DBCounts {
   coilMachines: number | null
   planSnapshots: number | null
   openLoad: number | null
+  downtime: number | null
 }
 
 function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
   const { state } = useApp()
-  const [counts, setCounts] = useState<DBCounts>({ planOrders: null, coil: null, sapOps: null, sapMaterials: null, sapWCs: null, routingCrOps: null, routingCrGroups: null, routingHvOps: null, routingLvOps: null, capRates: null, coilMachines: null, planSnapshots: null, openLoad: null })
+  const [counts, setCounts] = useState<DBCounts>({ planOrders: null, coil: null, sapOps: null, sapMaterials: null, sapWCs: null, routingCrOps: null, routingCrGroups: null, routingHvOps: null, routingLvOps: null, capRates: null, coilMachines: null, planSnapshots: null, openLoad: null, downtime: null })
 
   useEffect(() => {
     apiFetch('/plan-orders').then((d: unknown[]) => setCounts(p => ({ ...p, planOrders: d.length }))).catch(() => setCounts(p => ({ ...p, planOrders: 0 })))
@@ -1437,6 +1520,7 @@ function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
     apiFetch('/coil-machines').then((d: unknown[]) => setCounts(p => ({ ...p, coilMachines: d.length }))).catch(() => setCounts(p => ({ ...p, coilMachines: 0 })))
     apiFetch('/cutting-plan-snapshots').then((d: unknown[]) => setCounts(p => ({ ...p, planSnapshots: d.length }))).catch(() => setCounts(p => ({ ...p, planSnapshots: 0 })))
     apiFetch('/config/openload').then((d: Record<string, number>) => setCounts(p => ({ ...p, openLoad: Object.keys(d).length }))).catch(() => setCounts(p => ({ ...p, openLoad: 0 })))
+    apiFetch('/machine-downtime').then((d: unknown[]) => setCounts(p => ({ ...p, downtime: d.length }))).catch(() => setCounts(p => ({ ...p, downtime: 0 })))
   }, [])
 
   const orders = state.orders ?? []
@@ -1466,6 +1550,7 @@ function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
     { id: 'orders',     icon: '📦', label: 'Products',      count: products,             sub: 'product types',                          color: 'var(--txt2)'   },
     { id: 'snapshots',  icon: '📅', label: 'Plan Snapshots', count: counts.planSnapshots, sub: 'cutting week plans',                    color: 'var(--green)'  },
     { id: 'openload',   icon: '⚖️', label: 'Open Load',     count: counts.openLoad,      sub: 'WCs with backlog',                       color: 'var(--amber)'  },
+    { id: 'downtime',   icon: '🔧', label: 'Downtime',       count: counts.downtime,      sub: 'machine downtime records',               color: 'var(--red)'    },
   ]
 
   return (
@@ -1621,6 +1706,7 @@ export default function DataTab() {
         {sub === 'itemcodes'  && <ItemCodes />}
         {sub === 'snapshots'  && <PlanSnapshots />}
         {sub === 'openload'   && <OpenLoad />}
+        {sub === 'downtime'   && <Downtime />}
       </div>
     </div>
   )
