@@ -23,7 +23,7 @@ const S: Record<string, React.CSSProperties> = {
   count:  { fontSize: 10, padding: '2px 8px', borderRadius: 10, background: 'rgba(137,180,250,.15)', color: 'var(--blue)', fontWeight: 600 },
 }
 
-type SubTab = 'overview' | 'orders' | 'planorders' | 'coil' | 'machines' | 'coil_machines' | 'employees' | 'holidays' | 'sap' | 'routing_cr' | 'routing_hv' | 'routing_lv' | 'cap' | 'wc' | 'itemcodes'
+type SubTab = 'overview' | 'orders' | 'planorders' | 'coil' | 'machines' | 'coil_machines' | 'employees' | 'holidays' | 'sap' | 'routing_cr' | 'routing_hv' | 'routing_lv' | 'cap' | 'wc' | 'itemcodes' | 'snapshots' | 'openload'
 const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: 'overview',      label: '📊 Overview' },
   { id: 'orders',        label: '📋 Master Plan' },
@@ -33,6 +33,8 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: 'coil_machines', label: '🧲 เครื่องพันคอยล์' },
   { id: 'employees',     label: '👷 พนักงาน' },
   { id: 'holidays',      label: '📆 วันหยุด' },
+  { id: 'snapshots',     label: '📅 Plan Snapshots' },
+  { id: 'openload',      label: '⚖️ Open Load' },
   { id: 'sap',           label: '🔧 SAP Routing' },
   { id: 'routing_cr',    label: '🪛 Routing CR' },
   { id: 'routing_hv',    label: '🔴 Routing HV' },
@@ -1254,6 +1256,149 @@ function CapRates() {
   )
 }
 
+// ── PLAN SNAPSHOTS ───────────────────────────────────────────────────────────
+type PlanStatus = 'draft' | 'approved' | 'in_production' | 'completed' | 'cancelled' | 'archived'
+interface SnapRow { id: number; week_start: string; week_end: string; label: string; status: PlanStatus; saved_at: string; confirmed_at: string | null; started_at: string | null; completed_at: string | null }
+
+const SNAP_STATUS_LABEL: Record<PlanStatus, string> = { draft: '📝 Draft', approved: '✅ Approved', in_production: '▶ In Production', completed: '🏁 Completed', cancelled: '❌ Cancelled', archived: '📁 Archived' }
+const SNAP_STATUS_COLOR: Record<PlanStatus, string> = { draft: 'var(--txt3)', approved: 'var(--blue)', in_production: 'var(--amber)', completed: 'var(--green)', cancelled: 'var(--red)', archived: 'var(--txt3)' }
+
+function PlanSnapshots() {
+  const [rows, setRows] = useState<SnapRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [sf, setSf] = useState<PlanStatus | ''>('')
+
+  useEffect(() => {
+    apiFetch('/cutting-plan-snapshots').then((d: SnapRow[]) => { setRows(d); setLoading(false) }).catch(() => setLoading(false))
+  }, [])
+
+  const filtered = useMemo(() => sf ? rows.filter(r => (r.status || 'draft') === sf) : rows, [rows, sf])
+  const statusCounts = useMemo(() => {
+    const m: Record<string, number> = {}
+    rows.forEach(r => { const s = r.status || 'draft'; m[s] = (m[s] ?? 0) + 1 })
+    return m
+  }, [rows])
+
+  const del = async (id: number) => {
+    if (!confirm('ลบ snapshot นี้?')) return
+    await apiFetch(`/cutting-plan-snapshots/${id}`, 'DELETE')
+    setRows(prev => prev.filter(r => r.id !== id))
+  }
+
+  return (
+    <div style={S.card}>
+      <div style={{ ...S.bar, padding: '10px 14px', borderBottom: '1px solid var(--bord)' }}>
+        <span style={S.count}>{filtered.length} / {rows.length} snapshots</span>
+        <select style={S.search} value={sf} onChange={e => setSf(e.target.value as PlanStatus | '')}>
+          <option value="">ทุกสถานะ</option>
+          {(Object.keys(SNAP_STATUS_LABEL) as PlanStatus[]).map(s => (
+            <option key={s} value={s}>{SNAP_STATUS_LABEL[s]} ({statusCounts[s] ?? 0})</option>
+          ))}
+        </select>
+        {sf && <button style={S.btn} onClick={() => setSf('')}>✕ Clear</button>}
+        <div style={{ display: 'flex', gap: 8, marginLeft: 8 }}>
+          {(Object.keys(statusCounts) as PlanStatus[]).map(s => (
+            <span key={s} onClick={() => setSf(sf === s ? '' : s)} style={{ cursor: 'pointer', fontSize: 10, padding: '2px 8px', borderRadius: 10, fontWeight: 700,
+              background: `${SNAP_STATUS_COLOR[s]}18`, color: SNAP_STATUS_COLOR[s], border: `1px solid ${SNAP_STATUS_COLOR[s]}33`,
+              opacity: sf && sf !== s ? 0.4 : 1 }}>
+              {SNAP_STATUS_LABEL[s]} {statusCounts[s]}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div style={S.wrap}>
+        {loading ? <div style={{ padding: 28, textAlign: 'center', color: 'var(--txt3)' }}>กำลังโหลด…</div> : (
+          <table style={S.tbl}>
+            <thead><tr>
+              {['#','สัปดาห์','Label','Status','บันทึก','อนุมัติ','เริ่มผลิต','ปิด',''].map((h, i) => <th key={i} style={S.th}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {filtered.map((r, i) => {
+                const st = (r.status || 'draft') as PlanStatus
+                const col = SNAP_STATUS_COLOR[st]
+                const isLocked = st === 'completed' || st === 'archived'
+                return (
+                  <tr key={r.id}>
+                    <td style={{ ...S.td, color: 'var(--txt3)', fontSize: 10, textAlign: 'center' }}>{i + 1}</td>
+                    <td style={{ ...S.td, fontFamily: 'var(--mono)', color: 'var(--blue)', fontWeight: 700, whiteSpace: 'nowrap' as const }}>{r.week_start} – {r.week_end}</td>
+                    <td style={{ ...S.td, color: 'var(--txt2)' }}>{r.label || '—'}</td>
+                    <td style={S.td}>
+                      <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, fontWeight: 700, background: `${col}18`, color: col, border: `1px solid ${col}33`, whiteSpace: 'nowrap' as const }}>
+                        {SNAP_STATUS_LABEL[st]}
+                      </span>
+                    </td>
+                    <td style={{ ...S.td, fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--txt3)', whiteSpace: 'nowrap' as const }}>{new Date(r.saved_at).toLocaleString('th-TH')}</td>
+                    <td style={{ ...S.td, fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--green)', whiteSpace: 'nowrap' as const }}>{r.confirmed_at ? new Date(r.confirmed_at).toLocaleDateString('th-TH') : '—'}</td>
+                    <td style={{ ...S.td, fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--amber)', whiteSpace: 'nowrap' as const }}>{r.started_at ? new Date(r.started_at).toLocaleDateString('th-TH') : '—'}</td>
+                    <td style={{ ...S.td, fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--green)', whiteSpace: 'nowrap' as const }}>{r.completed_at ? new Date(r.completed_at).toLocaleDateString('th-TH') : '—'}</td>
+                    <td style={S.td}>{!isLocked && <button style={S.del} onClick={() => del(r.id)}>🗑</button>}</td>
+                  </tr>
+                )
+              })}
+              {!filtered.length && <tr><td colSpan={9} style={{ ...S.td, textAlign: 'center', color: 'var(--txt3)', padding: 28 }}>ไม่มีข้อมูล</td></tr>}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── OPEN LOAD ────────────────────────────────────────────────────────────────
+interface OpenLoadRow { wc_id: string; hours: number }
+
+function OpenLoad() {
+  const [rows, setRows] = useState<OpenLoadRow[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    apiFetch('/config/openload').then((d: Record<string, number>) => {
+      setRows(Object.entries(d).map(([wc_id, hours]) => ({ wc_id, hours })))
+      setLoading(false)
+    }).catch(() => setLoading(false))
+  }, [])
+
+  const total = useMemo(() => rows.reduce((s, r) => s + Number(r.hours), 0), [rows])
+  const sorted = useMemo(() => [...rows].sort((a, b) => Number(b.hours) - Number(a.hours)), [rows])
+  const max = sorted[0] ? Number(sorted[0].hours) : 1
+
+  return (
+    <div style={S.card}>
+      <div style={{ ...S.bar, padding: '10px 14px', borderBottom: '1px solid var(--bord)' }}>
+        <span style={S.count}>{rows.length} Work Centers</span>
+        <span style={{ fontSize: 10, color: 'var(--txt3)', marginLeft: 8 }}>รวม {total.toLocaleString(undefined, { maximumFractionDigits: 1 })} ชั่วโมง</span>
+      </div>
+      <div style={S.wrap}>
+        {loading ? <div style={{ padding: 28, textAlign: 'center', color: 'var(--txt3)' }}>กำลังโหลด…</div> : (
+          <table style={S.tbl}>
+            <thead><tr>
+              {['WC ID', 'Open Load (hrs)', ''].map((h, i) => <th key={i} style={{ ...S.th, textAlign: i === 1 ? 'right' as const : 'left' as const }}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {sorted.map(r => {
+                const pct = (Number(r.hours) / max) * 100
+                const col = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--amber)' : 'var(--green)'
+                return (
+                  <tr key={r.wc_id}>
+                    <td style={{ ...S.td, fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--amber)' }}>{r.wc_id}</td>
+                    <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700, color: col }}>{Number(r.hours).toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                    <td style={{ ...S.td, width: 200 }}>
+                      <div style={{ height: 8, borderRadius: 4, background: 'var(--bg3)', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${pct}%`, background: col, borderRadius: 4, transition: 'width .3s' }} />
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+              {!rows.length && <tr><td colSpan={3} style={{ ...S.td, textAlign: 'center', color: 'var(--txt3)', padding: 28 }}>ไม่มีข้อมูล Open Load</td></tr>}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── 8. OVERVIEW ──────────────────────────────────────────────────────────────
 interface DBCounts {
   planOrders: number | null
@@ -1267,11 +1412,13 @@ interface DBCounts {
   routingLvOps: number | null
   capRates: number | null
   coilMachines: number | null
+  planSnapshots: number | null
+  openLoad: number | null
 }
 
 function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
   const { state } = useApp()
-  const [counts, setCounts] = useState<DBCounts>({ planOrders: null, coil: null, sapOps: null, sapMaterials: null, sapWCs: null, routingCrOps: null, routingCrGroups: null, routingHvOps: null, routingLvOps: null, capRates: null, coilMachines: null })
+  const [counts, setCounts] = useState<DBCounts>({ planOrders: null, coil: null, sapOps: null, sapMaterials: null, sapWCs: null, routingCrOps: null, routingCrGroups: null, routingHvOps: null, routingLvOps: null, capRates: null, coilMachines: null, planSnapshots: null, openLoad: null })
 
   useEffect(() => {
     apiFetch('/plan-orders').then((d: unknown[]) => setCounts(p => ({ ...p, planOrders: d.length }))).catch(() => setCounts(p => ({ ...p, planOrders: 0 })))
@@ -1288,6 +1435,8 @@ function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
     apiFetch('/routing-lv').then((d: unknown[]) => setCounts(p => ({ ...p, routingLvOps: d.length }))).catch(() => setCounts(p => ({ ...p, routingLvOps: 0 })))
     apiFetch('/cap-rates').then((d: unknown[]) => setCounts(p => ({ ...p, capRates: d.length }))).catch(() => setCounts(p => ({ ...p, capRates: 0 })))
     apiFetch('/coil-machines').then((d: unknown[]) => setCounts(p => ({ ...p, coilMachines: d.length }))).catch(() => setCounts(p => ({ ...p, coilMachines: 0 })))
+    apiFetch('/cutting-plan-snapshots').then((d: unknown[]) => setCounts(p => ({ ...p, planSnapshots: d.length }))).catch(() => setCounts(p => ({ ...p, planSnapshots: 0 })))
+    apiFetch('/config/openload').then((d: Record<string, number>) => setCounts(p => ({ ...p, openLoad: Object.keys(d).length }))).catch(() => setCounts(p => ({ ...p, openLoad: 0 })))
   }, [])
 
   const orders = state.orders ?? []
@@ -1315,6 +1464,8 @@ function Overview({ onNavigate }: { onNavigate: (t: SubTab) => void }) {
     { id: 'wc',         icon: '🏭', label: 'Work Centers',  count: wcs,                  sub: 'WC configured',                          color: 'var(--purple)' },
     { id: 'itemcodes',  icon: '🔑', label: 'Item Codes',    count: itemCodes,            sub: 'codes in catalog',                       color: '#3dc9b0'       },
     { id: 'orders',     icon: '📦', label: 'Products',      count: products,             sub: 'product types',                          color: 'var(--txt2)'   },
+    { id: 'snapshots',  icon: '📅', label: 'Plan Snapshots', count: counts.planSnapshots, sub: 'cutting week plans',                    color: 'var(--green)'  },
+    { id: 'openload',   icon: '⚖️', label: 'Open Load',     count: counts.openLoad,      sub: 'WCs with backlog',                       color: 'var(--amber)'  },
   ]
 
   return (
@@ -1468,6 +1619,8 @@ export default function DataTab() {
         {sub === 'cap'        && <CapRates />}
         {sub === 'wc'         && <WCConfig />}
         {sub === 'itemcodes'  && <ItemCodes />}
+        {sub === 'snapshots'  && <PlanSnapshots />}
+        {sub === 'openload'   && <OpenLoad />}
       </div>
     </div>
   )
