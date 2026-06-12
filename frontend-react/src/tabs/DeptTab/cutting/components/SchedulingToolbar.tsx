@@ -64,25 +64,29 @@ export default function SchedulingToolbar({
     { id: 'batch',     label: '🔗 Batch kVA' },
   ] as const
 
+  const lbl = { fontSize: 10, color: 'var(--txt3)', minWidth: 52, flexShrink: 0 } as const
+  const sep = <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 4px', flexShrink: 0 }} />
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginLeft: 12 }}>
-      {/* Row 1: View mode + OT policy */}
+      {/* Row 1: มุมมอง */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 10, color: 'var(--txt3)' }}>มุมมอง:</span>
+        <span style={lbl}>มุมมอง:</span>
         {(['cards', 'table', 'pipeline'] as const).map(v => (
           <button key={v} onClick={() => setViewMode(v)} style={{
-            fontSize: 10, padding: '3px 10px', borderRadius: 12, border: '1px solid var(--bord2)', cursor: 'pointer',
+            fontSize: 10, padding: '3px 10px', borderRadius: 8, border: '1px solid var(--bord2)', cursor: 'pointer',
             background: viewMode === v ? 'var(--blue)' : 'var(--bg3)',
             color: viewMode === v ? '#000' : 'var(--txt2)', fontWeight: viewMode === v ? 700 : 400,
           }}>
             {v === 'cards' ? '📋 รายวัน' : v === 'table' ? '📊 ตาราง' : '🔄 Pipeline'}
           </button>
         ))}
+        {sep}
         {([
-          { id: 'order',   label: '📦 ต่อออเดอร์',    col: 'var(--green)',  title: 'รวม segment, ซ่อนค้างจากเมื่อวาน' },
-          { id: 'carry',   label: '↩ ต่อเนื่อง',      col: 'var(--blue)',   title: 'รวม segment แต่แสดงค้างต่อเนื่อง' },
-          { id: 'segment', label: '📋 ต่อเซ็กเมนต์',  col: 'var(--amber)',  title: 'แสดงทุก segment รวมค้าง' },
-          { id: 'unit',    label: '🔩 ต่อหน่วย',      col: 'var(--purple)', title: 'แต่ละ transformer แยกแถว' },
+          { id: 'order',   label: '📦 ต่อออเดอร์',   col: 'var(--green)',  title: 'รวม segment, ซ่อนค้างจากเมื่อวาน' },
+          { id: 'carry',   label: '↩ ต่อเนื่อง',     col: 'var(--blue)',   title: 'รวม segment แต่แสดงค้างต่อเนื่อง' },
+          { id: 'segment', label: '📋 ต่อเซ็กเมนต์', col: 'var(--amber)',  title: 'แสดงทุก segment รวมค้าง' },
+          { id: 'unit',    label: '🔩 ต่อหน่วย',     col: 'var(--purple)', title: 'แต่ละ transformer แยกแถว' },
         ] as const).map(w => (
           <button key={w.id} onClick={() => setWorkDisplay(w.id)} title={w.title}
             style={{ fontSize: 10, padding: '3px 10px', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
@@ -94,8 +98,11 @@ export default function SchedulingToolbar({
             {w.label}
           </button>
         ))}
-        <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 6px', flexShrink: 0 }} />
-        <span style={{ fontSize: 10, color: 'var(--txt3)' }}>OT:</span>
+      </div>
+
+      {/* Row 2: OT */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+        <span style={lbl}>OT:</span>
         {otOptions.map(ot => (
           <button key={ot.id} onClick={() => setBalanceMode(`${schedKey}_${ot.id}` as BalanceMode)} style={{
             fontSize: 10, padding: '3px 10px', borderRadius: 8,
@@ -107,10 +114,10 @@ export default function SchedulingToolbar({
             {ot.label}
           </button>
         ))}
-        <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 2px', flexShrink: 0 }} />
+        {sep}
         {([
           { v: true,  label: '🌅 ท้ายสัปดาห์', title: 'OT ท้ายสัปดาห์ — เต็มวันปกติก่อน ค่อยเพิ่ม OT เมื่อจำเป็น' },
-          { v: false, label: '⚡ ต้นสัปดาห์',   title: 'OT ทันที — เพิ่ม OT ตั้งแต่วันแรกถ้า queue เกิน reg' },
+          { v: false, label: '⚡ ต้นสัปดาห์',  title: 'OT ทันที — เพิ่ม OT ตั้งแต่วันแรกถ้า queue เกิน reg' },
         ] as const).map(({ v, label, title }) => (
           <button key={String(v)} title={title} onClick={() => setLazyOT(v)} style={{
             fontSize: 10, padding: '3px 10px', borderRadius: 8,
@@ -124,9 +131,9 @@ export default function SchedulingToolbar({
         ))}
       </div>
 
-      {/* Row 2: Schedule mode */}
+      {/* Row 3: แผน */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 10, color: 'var(--txt3)', minWidth: 40 }}>แผน:</span>
+        <span style={lbl}>แผน:</span>
         {schedOptions.map(s => (
           <button key={s.id} onClick={() => setBalanceMode(`${s.id}_${otPol}` as BalanceMode)} style={{
             fontSize: 10, padding: '3px 10px', borderRadius: 8,
@@ -141,15 +148,12 @@ export default function SchedulingToolbar({
         {schedKey === 'interweek' && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--txt3)', marginLeft: 4 }}>
             threshold:
-            <input
-              type="number" min={0.1} max={5} step={0.1}
-              value={interweekThreshold}
+            <input type="number" min={0.1} max={5} step={0.1} value={interweekThreshold}
               onChange={e => setInterweekThreshold(Math.max(0.01, parseFloat(e.target.value) || 0.5))}
-              style={{ width: 48, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--txt1)', textAlign: 'center' }}
-            />
+              style={{ width: 48, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--txt1)', textAlign: 'center' }} />
           </label>
         )}
-        <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 4px', flexShrink: 0 }} />
+        {sep}
         <button
           onClick={() => setUseNearestKva(v => !v)}
           title={useNearestKva ? 'KVA ใกล้เคียง: ใช้ค่าที่ใกล้ที่สุดเมื่อไม่มีค่าตรง' : 'KVA ตรงเท่านั้น: ใช้ hrs_per_unit เมื่อไม่มีค่าตรง'}
@@ -162,9 +166,9 @@ export default function SchedulingToolbar({
         </button>
       </div>
 
-      {/* Row 3: Shift mode */}
+      {/* Row 4: กะ */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 10, color: 'var(--txt3)', minWidth: 40 }}>กะ:</span>
+        <span style={lbl}>กะ:</span>
         {([
           { id: 'none',   label: '❌ ไม่มีกะ',   col: 'var(--txt3)',   title: 'ไม่ใช้กะกลางคืน' },
           { id: 'smart',  label: '⚠ Smart',      col: 'var(--amber)',  title: 'เปิดกะเมื่องานล้น reg+OT' },
@@ -191,7 +195,7 @@ export default function SchedulingToolbar({
               style={{ width: 44, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--txt1)', textAlign: 'center' }} />
           </label>
         )}
-        <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 4px', flexShrink: 0 }} />
+        {sep}
         <button
           onClick={() => setManualOtMode(!manualOtMode)}
           title="กำหนด OT ต่อเครื่องต่อวันด้วยตัวเอง — เมื่อเปิดใช้ OT จะเกิดเฉพาะวันที่เลือก"
@@ -205,7 +209,7 @@ export default function SchedulingToolbar({
         </button>
         {shiftMode !== 'none' && (
           <>
-            <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 4px', flexShrink: 0 }} />
+            {sep}
             <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--txt3)' }}
               title="ชั่วโมงกะ/คืน (default ถ้าไม่ได้ตั้งค่า per-machine)">
               🌙 ชม:
