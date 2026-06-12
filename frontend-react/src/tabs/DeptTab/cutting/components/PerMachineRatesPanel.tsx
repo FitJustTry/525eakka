@@ -10,11 +10,12 @@ export interface PerMachineRatesPanelProps {
   machines: CuttingMachine[]
   machineRateTab: number | null
   setMachineRateTab: (v: number | null) => void
-  machineRateSubTab: 'cut' | 'tmc'
-  setMachineRateSubTab: (v: 'cut' | 'tmc') => void
+  machineRateSubTab: 'cut' | 'tmc' | 'tr'
+  setMachineRateSubTab: (v: 'cut' | 'tmc' | 'tr') => void
   shiftHrsDefault: number
   saveMachineRates: (machineId: number, rates: CuttingRate[]) => void
   saveMachineTmcRates: (machineId: number, rates: CuttingRate[]) => void
+  saveMachineTrPowerRates: (machineId: number, rates: CuttingRate[]) => void
   // globalRates needed for "copy from standard" button
   globalRates: CuttingRate[]
 }
@@ -29,6 +30,7 @@ export default function PerMachineRatesPanel({
   setMachineRateSubTab,
   saveMachineRates,
   saveMachineTmcRates,
+  saveMachineTrPowerRates,
   globalRates,
 }: PerMachineRatesPanelProps) {
   return (
@@ -49,7 +51,8 @@ export default function PerMachineRatesPanel({
           {machines.map(m => {
             const hasCut = (m.rates ?? []).length > 0
             const hasTmc = (m.tmc_rates ?? []).length > 0
-            const hasAny = hasCut || hasTmc
+            const hasTr = (m.tr_power_rates ?? []).length > 0
+            const hasAny = hasCut || hasTmc || hasTr
             const isActive = machineRateTab === m.id
             return (
               <button key={m.id}
@@ -61,7 +64,7 @@ export default function PerMachineRatesPanel({
                 }}>
                 {mLabel(m)}
                 {hasAny && <span style={{ fontSize: 9, marginLeft: 5, opacity: 0.8 }}>
-                  {[hasCut && `✂${(m.rates ?? []).length}`, hasTmc && `T${(m.tmc_rates ?? []).length}`].filter(Boolean).join(' ')}
+                  {[hasCut && `✂${(m.rates ?? []).length}`, hasTmc && `T${(m.tmc_rates ?? []).length}`, hasTr && `⚡${(m.tr_power_rates ?? []).length}`].filter(Boolean).join(' ')}
                 </span>}
               </button>
             )
@@ -73,14 +76,16 @@ export default function PerMachineRatesPanel({
           if (!m) return null
           const mRates  = [...(m.rates ?? [])].sort((a, b) => a.kva - b.kva)
           const tmcRates = [...(m.tmc_rates ?? [])].sort((a, b) => a.kva - b.kva)
+          const trRates = [...(m.tr_power_rates ?? [])].sort((a, b) => a.kva - b.kva)
           const isCut = machineRateSubTab === 'cut'
+          const isTr = machineRateSubTab === 'tr'
           return (
             <div>
               {/* Machine info */}
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, padding: '7px 12px', background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bord)', flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--txt)' }}>{mLabel(m)}</span>
                 <code style={{ fontSize: 11, color: 'var(--amber)', background: 'var(--bg3)', padding: '2px 8px', borderRadius: 4 }}>
-                  เวลา = base × {m.time_mul ?? 1} + {m.tmc_hrs ?? 0}h TMC
+                  เวลา = base × {m.time_mul ?? 1} + {m.tmc_hrs ?? 0}h TMC + {m.tr_power_hrs ?? 0}h TR
                 </code>
                 <span style={{ fontSize: 9, color: 'var(--txt3)' }}>แก้ไข ×Rate / TMC ได้ในตารางเครื่องด้านบน</span>
               </div>
@@ -95,15 +100,78 @@ export default function PerMachineRatesPanel({
                   ✂ เวลาตัด{mRates.length > 0 ? ` (${mRates.length})` : ''}
                 </button>
                 <button onClick={() => setMachineRateSubTab('tmc')}
-                  style={{ fontSize: 11, padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: !isCut ? 700 : 400,
-                    border: `1px solid ${!isCut ? 'var(--purple)' : 'var(--bord2)'}`,
-                    background: !isCut ? 'rgba(203,166,247,.15)' : 'transparent',
-                    color: !isCut ? 'var(--purple)' : 'var(--txt3)' }}>
+                  style={{ fontSize: 11, padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: machineRateSubTab === 'tmc' ? 700 : 400,
+                    border: `1px solid ${machineRateSubTab === 'tmc' ? 'var(--purple)' : 'var(--bord2)'}`,
+                    background: machineRateSubTab === 'tmc' ? 'rgba(203,166,247,.15)' : 'transparent',
+                    color: machineRateSubTab === 'tmc' ? 'var(--purple)' : 'var(--txt3)' }}>
                   ⚗ TMC Cast Resin{tmcRates.length > 0 ? ` (${tmcRates.length})` : ''}
+                </button>
+                <button onClick={() => setMachineRateSubTab('tr')}
+                  style={{ fontSize: 11, padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: isTr ? 700 : 400,
+                    border: `1px solid ${isTr ? 'var(--red)' : 'var(--bord2)'}`,
+                    background: isTr ? 'rgba(243,139,168,.15)' : 'transparent',
+                    color: isTr ? 'var(--red)' : 'var(--txt3)' }}>
+                  ⚡ TR Power{trRates.length > 0 ? ` (${trRates.length})` : ''}
                 </button>
               </div>
 
-              {isCut ? (
+              {isTr ? (
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--txt3)', marginBottom: 8 }}>
+                    TR Power · fallback: {(m.tr_power_hrs ?? 0) > 0 ? `${m.tr_power_hrs}h` : 'ไม่ได้ตั้ง'}
+                  </div>
+                  <div className={styles.tableWrap}>
+                    <table className={styles.table}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: 'right', width: 110 }}>ขนาด (kVA)</th>
+                          <th style={{ textAlign: 'right', width: 160, color: 'var(--red)' }}>TR Power (h)</th>
+                          <th style={{ width: 40 }} />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {trRates.length === 0 && (
+                          <tr><td colSpan={3} className={styles.empty}>ยังไม่มี — ใช้ TR Power (h) = {m.tr_power_hrs ?? 0}h สำหรับทุกขนาด</td></tr>
+                        )}
+                        {trRates.map((r, ri) => (
+                          <tr key={ri}>
+                            <td style={{ textAlign: 'right' }}>
+                              <input type="number" min={0} placeholder="kVA" value={r.kva || ''}
+                                onChange={e => saveMachineTrPowerRates(m.id, trRates.map((x, i) => i === ri ? { ...x, kva: parseFloat(e.target.value) || 0 } : x))}
+                                className={styles.inputNum} style={{ width: 80, color: 'var(--blue)', fontWeight: 700 }} />
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                <input type="number" min={0} step={0.1} placeholder="h" value={r.hrs || ''}
+                                  onChange={e => saveMachineTrPowerRates(m.id, trRates.map((x, i) => i === ri ? { ...x, hrs: parseFloat(e.target.value) || 0 } : x))}
+                                  className={styles.inputNum} style={{ width: 64, color: 'var(--red)' }} />
+                                <button className={styles.btnGhost} onClick={() => saveMachineTrPowerRates(m.id, trRates.map((x, i) => i === ri ? { ...x, hrs: +(x.hrs + 10).toFixed(2) } : x))}
+                                  style={{ fontSize: 10, padding: '1px 5px', color: 'var(--red)', borderColor: 'rgba(243,139,168,.4)' }}>+10</button>
+                                <button className={styles.btnGhost} onClick={() => saveMachineTrPowerRates(m.id, trRates.map((x, i) => i === ri ? { ...x, hrs: +(x.hrs + 20).toFixed(2) } : x))}
+                                  style={{ fontSize: 10, padding: '1px 5px', color: 'var(--red)', borderColor: 'rgba(243,139,168,.4)' }}>+20</button>
+                              </div>
+                            </td>
+                            <td>
+                              <button className={styles.delBtn} onClick={() => saveMachineTrPowerRates(m.id, trRates.filter((_, i) => i !== ri))}>✕</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '8px 14px' }}>
+                    <button className={styles.btnGhost} onClick={() => saveMachineTrPowerRates(m.id, [...trRates, { kva: 0, hrs: m.tr_power_hrs ?? 0 }])}
+                      style={{ color: 'var(--red)', borderColor: 'rgba(243,139,168,.4)' }}>
+                      + เพิ่มขนาด TR Power
+                    </button>
+                    {trRates.length > 0 && (
+                      <button className={styles.btnGhost} onClick={() => saveMachineTrPowerRates(m.id, [])} style={{ color: 'var(--red)', borderColor: 'rgba(224,90,78,.3)' }}>
+                        ล้าง TR Power
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : isCut ? (
                 <div>
                   <div className={styles.tableWrap}>
                     <table className={styles.table}>

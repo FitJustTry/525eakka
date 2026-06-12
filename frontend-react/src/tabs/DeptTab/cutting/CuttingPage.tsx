@@ -24,7 +24,7 @@ import WeekCompletionSummary from './components/WeekCompletionSummary'
 import { assignOrders, scheduleFastest, scheduleMode } from './scheduling/engine'
 import type { ShiftMode } from './scheduling/engine'
 import { computeWeekData } from './scheduling/weekData'
-import { buildRoutingCrRates, getRoutingOps, DEFAULT_CUTTING_WCS } from './scheduling/routingRates'
+import { buildRoutingCrRates, buildTrPowerRates, getRoutingOps, DEFAULT_CUTTING_WCS } from './scheduling/routingRates'
 import {
   exportPlanCSV as _exportCSV,
   exportTXT as _exportTXT,
@@ -60,9 +60,10 @@ export default function CuttingMachines() {
   const [viewMode, setViewMode] = useState<'table' | 'cards' | 'pipeline'>('table')
   const [globalRates, setGlobalRates] = useState<CuttingRate[]>([])
   const [globalTmcRates, setGlobalTmcRates] = useState<CuttingRate[]>([])
-  const [globalRateSubTab, setGlobalRateSubTab] = useState<'cut' | 'tmc'>('cut')
+  const [globalTrPowerRates, setGlobalTrPowerRates] = useState<CuttingRate[]>([])
+  const [globalRateSubTab, setGlobalRateSubTab] = useState<'cut' | 'tmc' | 'tr'>('cut')
   const [machineRateTab, setMachineRateTab] = useState<number | null>(null)
-  const [machineRateSubTab, setMachineRateSubTab] = useState<'cut' | 'tmc'>('cut')
+  const [machineRateSubTab, setMachineRateSubTab] = useState<'cut' | 'tmc' | 'tr'>('cut')
   const [strictWire, setStrictWire] = useState(true)
   const [requireDrill, setRequireDrill] = useState(true)
   const [stickyOrders, setStickyOrders] = useState(true)
@@ -100,11 +101,18 @@ export default function CuttingMachines() {
     [routingCrData, routingWcFilter.join(',')]
   )
 
-  const effectiveGlobalRates    = useRoutingCr && routingNormalRates.length > 0 ? routingNormalRates : globalRates
-  const effectiveGlobalTmcRates = useRoutingCr && routingCrRates.length    > 0 ? routingCrRates    : globalTmcRates
+  const routingTrPowerRates = useMemo(
+    () => buildTrPowerRates(routingCrData, routingWcFilter),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [routingCrData, routingWcFilter.join(',')]
+  )
+
+  const effectiveGlobalRates       = useRoutingCr && routingNormalRates.length    > 0 ? routingNormalRates    : globalRates
+  const effectiveGlobalTmcRates    = useRoutingCr && routingCrRates.length        > 0 ? routingCrRates        : globalTmcRates
+  const effectiveGlobalTrPowerRates = useRoutingCr && routingTrPowerRates.length  > 0 ? routingTrPowerRates   : globalTrPowerRates
 
   // ── Hooks ────────────────────────────────────────────────────
-  const { handleAdd, handleDelete, handleChange, toggleOffDay, handleToggle, saveMachineRates, saveMachineTmcRates } =
+  const { handleAdd, handleDelete, handleChange, toggleOffDay, handleToggle, saveMachineRates, saveMachineTmcRates, saveMachineTrPowerRates } =
     useCuttingActions(saving, setSaving)
 
   const { planSaving, planSaveMsg, snapshots, showSnapshots, setShowSnapshots, viewSnap, setViewSnap, savePlan, loadSnapshots, viewSnapshot, deleteSnapshot } =
@@ -114,6 +122,7 @@ export default function CuttingMachines() {
   useEffect(() => {
     fetch('/api/cutting-rates').then(r => r.json()).then(setGlobalRates).catch(() => {})
     fetch('/api/cutting-tmc-rates').then(r => r.json()).then(setGlobalTmcRates).catch(() => {})
+    fetch('/api/cutting-tr-power-rates').then(r => r.json()).then(setGlobalTrPowerRates).catch(() => {})
     import('../../../api').then(({ api }) => api.routingCr.list().then(rows => setRoutingCrData(rows as RoutingCrRow[])).catch(() => {}))
   }, [])
 
@@ -125,6 +134,11 @@ export default function CuttingMachines() {
   async function saveGlobalTmcRates(rates: CuttingRate[]) {
     setGlobalTmcRates(rates)
     await fetch('/api/cutting-tmc-rates', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rates) })
+  }
+
+  async function saveGlobalTrPowerRates(rates: CuttingRate[]) {
+    setGlobalTrPowerRates(rates)
+    await fetch('/api/cutting-tr-power-rates', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rates) })
   }
 
   function toggleManualShift(machineId: number, dStr: string) {
@@ -579,6 +593,9 @@ export default function CuttingMachines() {
         routingRatesOpen={routingRatesOpen} setRoutingRatesOpen={setRoutingRatesOpen}
         expandedRoutingRow={expandedRoutingRow} setExpandedRoutingRow={setExpandedRoutingRow}
         saveGlobalRates={saveGlobalRates} saveGlobalTmcRates={saveGlobalTmcRates}
+        globalTrPowerRates={globalTrPowerRates} saveGlobalTrPowerRates={saveGlobalTrPowerRates}
+        effectiveGlobalTrPowerRates={effectiveGlobalTrPowerRates}
+        routingTrPowerRates={routingTrPowerRates}
         globalRateSubTab={globalRateSubTab} setGlobalRateSubTab={setGlobalRateSubTab}
       />
       <PerMachineRatesPanel
@@ -587,6 +604,7 @@ export default function CuttingMachines() {
         setMachineRateTab={setMachineRateTab} machineRateSubTab={machineRateSubTab}
         setMachineRateSubTab={setMachineRateSubTab} shiftHrsDefault={shiftHrsDefault}
         saveMachineRates={saveMachineRates} saveMachineTmcRates={saveMachineTmcRates}
+        saveMachineTrPowerRates={saveMachineTrPowerRates}
         globalRates={globalRates}
       />
     </div>

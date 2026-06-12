@@ -88,6 +88,8 @@ function rowToCuttingMachine(row) {
     time_mul: toNumber(row.time_mul, 1),
     tmc_hrs: toNumber(row.tmc_hrs, 0),
     tmc_rates: Array.isArray(row.tmc_rates) ? row.tmc_rates : [],
+    tr_power_hrs: toNumber(row.tr_power_hrs, 0),
+    tr_power_rates: Array.isArray(row.tr_power_rates) ? row.tr_power_rates : [],
   };
 }
 

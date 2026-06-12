@@ -1,13 +1,13 @@
-import { api } from '../../../api'
-import { useApp } from '../../../context/AppContext'
-import type { CuttingMachine, CuttingRate } from '../../../types'
+import { api } from '../../../../api'
+import { useApp } from '../../../../context/AppContext'
+import type { CuttingMachine, CuttingRate } from '../../../../types'
 
 export function useCuttingActions(saving: number | null, setSaving: (id: number | null) => void) {
   const { state, dispatch } = useApp()
   const machines = state.cuttingMachines
 
   async function handleAdd() {
-    const m = { name: 'เครื่องตัด', count: 1, min_kva: 160, max_kva: 2500, hrs_per_unit: 2.5, laser: false, m4: false, min_face_mm: 1, max_face_mm: 9999, drill_8mm: false, drill_22mm: false, notes: '', reg_hrs: 8, ot_hrs: 4, time_mul: 1, tmc_hrs: 0 }
+    const m = { name: 'เครื่องตัด', count: 1, min_kva: 160, max_kva: 2500, hrs_per_unit: 2.5, laser: false, m4: false, min_face_mm: 1, max_face_mm: 9999, drill_8mm: false, drill_22mm: false, notes: '', reg_hrs: 8, ot_hrs: 4, time_mul: 1, tmc_hrs: 0, tr_power_hrs: 0 }
     const saved = await api.cuttingMachines.create(m)
     dispatch({ type: 'SET_CUTTING_MACHINES', machines: [...machines, saved] })
   }
@@ -30,6 +30,7 @@ export function useCuttingActions(saving: number | null, setSaving: (id: number 
       if (field === 'ot_hrs')       next.ot_hrs       = Math.max(0,   parseFloat(raw) || 0)
       if (field === 'time_mul')     next.time_mul     = Math.max(0.1, parseFloat(raw) || 1)
       if (field === 'tmc_hrs')      next.tmc_hrs      = Math.max(0,   parseFloat(raw) || 0)
+      if (field === 'tr_power_hrs') next.tr_power_hrs = Math.max(0,   parseFloat(raw) || 0)
       if (field === 'min_face_mm')  next.min_face_mm  = Math.max(1, parseInt(raw) || 1)
       if (field === 'max_face_mm')  next.max_face_mm  = Math.max(1, parseInt(raw) || 9999)
       if (field === 'notes')        next.notes        = raw
@@ -77,5 +78,12 @@ export function useCuttingActions(saving: number | null, setSaving: (id: number 
     await api.cuttingMachines.update(machineId, machine)
   }
 
-  return { handleAdd, handleDelete, handleChange, toggleOffDay, handleToggle, saveMachineRates, saveMachineTmcRates }
+  async function saveMachineTrPowerRates(machineId: number, tr_power_rates: CuttingRate[]) {
+    const updated = machines.map(m => m.id === machineId ? { ...m, tr_power_rates } : m)
+    dispatch({ type: 'SET_CUTTING_MACHINES', machines: updated })
+    const machine = updated.find(m => m.id === machineId)!
+    await api.cuttingMachines.update(machineId, machine)
+  }
+
+  return { handleAdd, handleDelete, handleChange, toggleOffDay, handleToggle, saveMachineRates, saveMachineTmcRates, saveMachineTrPowerRates }
 }
