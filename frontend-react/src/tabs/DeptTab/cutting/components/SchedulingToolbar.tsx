@@ -68,7 +68,7 @@ export default function SchedulingToolbar({
   const sep = <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 4px', flexShrink: 0 }} />
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginLeft: 12 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginLeft: 0 }}>
       {/* Row 1: มุมมอง */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
         <span style={lbl}>มุมมอง:</span>
