@@ -7,6 +7,7 @@ interface Props {
   viewSnapshot: (id: number) => void
   deleteSnapshot: (id: number) => void
   updateStatus: (id: number, status: PlanStatus) => Promise<SnapMeta>
+  onCloseWeek: (snap: SnapMeta) => void
 }
 
 const STATUS_LABEL: Record<PlanStatus, string> = {
@@ -48,10 +49,11 @@ const TRANSITIONS: Partial<Record<PlanStatus, { status: PlanStatus; label: strin
 
 const CANCEL_ALLOWED: PlanStatus[] = ['draft', 'approved', 'in_production']
 
-export default function SnapshotPanel({ snapshots, setShowSnapshots, viewSnapshot, deleteSnapshot, updateStatus }: Props) {
+export default function SnapshotPanel({ snapshots, setShowSnapshots, viewSnapshot, deleteSnapshot, updateStatus, onCloseWeek }: Props) {
   const [transitioning, setTransitioning] = useState<number | null>(null)
 
-  async function doTransition(id: number, status: PlanStatus) {
+  async function doTransition(id: number, status: PlanStatus, snap: SnapMeta) {
+    if (status === 'completed') { onCloseWeek(snap); return }
     setTransitioning(id)
     try { await updateStatus(id, status) } catch (e) { alert(String(e)) }
     setTransitioning(null)
@@ -92,13 +94,13 @@ export default function SnapshotPanel({ snapshots, setShowSnapshots, viewSnapsho
                 {!isLocked && (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingLeft: 2 }}>
                     {(TRANSITIONS[st] ?? []).map(t => (
-                      <button key={t.status} disabled={busy} onClick={() => doTransition(s.id, t.status)}
+                      <button key={t.status} disabled={busy} onClick={() => doTransition(s.id, t.status, s)}
                         style={{ fontSize: 10, padding: '2px 10px', borderRadius: 6, border: `1px solid ${t.color}44`, background: `${t.color}18`, color: t.color, cursor: busy ? 'wait' : 'pointer', fontWeight: 700, opacity: busy ? 0.6 : 1 }}>
                         {busy ? '...' : t.label}
                       </button>
                     ))}
                     {CANCEL_ALLOWED.includes(st) && (
-                      <button disabled={busy} onClick={() => doTransition(s.id, 'cancelled')}
+                      <button disabled={busy} onClick={() => doTransition(s.id, 'cancelled', s)}
                         style={{ fontSize: 10, padding: '2px 10px', borderRadius: 6, border: '1px solid rgba(224,90,78,.3)', background: 'rgba(224,90,78,.08)', color: 'var(--red)', cursor: busy ? 'wait' : 'pointer', opacity: busy ? 0.6 : 1 }}>
                         ❌ ยกเลิก
                       </button>

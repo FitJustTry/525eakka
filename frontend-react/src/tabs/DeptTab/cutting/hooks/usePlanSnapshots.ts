@@ -6,6 +6,18 @@ import type { MachineDaySched } from '../scheduling/constants'
 
 export type PlanStatus = 'draft' | 'approved' | 'in_production' | 'completed' | 'cancelled' | 'archived'
 
+export type ResultSummary = {
+  planned_count: number
+  completed_count: number
+  partial_count: number
+  not_started_count: number
+  completion_rate: number
+  carry_count: number
+  carry_orders: { key: string; sap_so: string; reason: string; remaining_qty: number }[]
+  best_machine: string
+  bottleneck_machine: string
+}
+
 export type SnapMeta = {
   id: number
   week_start: string
@@ -16,6 +28,7 @@ export type SnapMeta = {
   confirmed_at: string | null
   started_at: string | null
   completed_at: string | null
+  result_summary: ResultSummary | null
 }
 
 interface SavePlanCtx {
@@ -144,5 +157,16 @@ export function usePlanSnapshots() {
     return updated as SnapMeta
   }
 
-  return { planSaving, planSaveMsg, snapshots, showSnapshots, setShowSnapshots, viewSnap, setViewSnap, savePlan, loadSnapshots, viewSnapshot, deleteSnapshot, updateStatus }
+  async function closeWeek(id: number, summary: ResultSummary) {
+    const res = await fetch(`/api/cutting-plan-snapshots/${id}/status`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'completed', result_summary: summary })
+    })
+    if (!res.ok) throw new Error(await res.text())
+    const updated = await res.json()
+    setSnapshots(prev => prev.map(s => s.id === id ? { ...s, ...updated } : s))
+    return updated as SnapMeta
+  }
+
+  return { planSaving, planSaveMsg, snapshots, showSnapshots, setShowSnapshots, viewSnap, setViewSnap, savePlan, loadSnapshots, viewSnapshot, deleteSnapshot, updateStatus, closeWeek }
 }

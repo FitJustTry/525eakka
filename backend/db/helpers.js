@@ -69,6 +69,7 @@ function rowToOrder(row) {
     lv: row.lv || '',
     hv: row.hv || '',
     done_qty: toInt(row.done_qty, 0),
+    done_at: row.done_at ? row.done_at.toISOString() : null,
     created_at: row.created_at,
   };
 }

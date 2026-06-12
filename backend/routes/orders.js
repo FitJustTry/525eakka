@@ -48,6 +48,16 @@ function orderRoutes(app) {
     const sets = entries.map(([key], index) => `${key} = $${index + 2}`);
     sets.push('updated_at = now()');
     const values = entries.map(([, value]) => value);
+
+    // Set done_at the first time done_qty reaches qty
+    const doneQtyVal = entries.find(([k]) => k === 'done_qty')?.[1];
+    if (doneQtyVal != null) {
+      const cur = await pool.query('SELECT qty, done_at FROM accepted_orders WHERE id=$1', [req.params.id]);
+      if (cur.rows.length && parseInt(doneQtyVal) >= cur.rows[0].qty && !cur.rows[0].done_at) {
+        sets.push('done_at = now()');
+      }
+    }
+
     const result = await pool.query(
       `UPDATE accepted_orders SET ${sets.join(', ')} WHERE id = $1 RETURNING *`,
       [req.params.id, ...values]

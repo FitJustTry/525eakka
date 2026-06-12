@@ -22,6 +22,7 @@ import CustomShiftOtGrid from './components/CustomShiftOtGrid'
 import SchedulingToolbar from './components/SchedulingToolbar'
 import SnapshotPanel from './components/SnapshotPanel'
 import SnapshotViewer from './components/SnapshotViewer'
+import CloseWeekWizard from './components/CloseWeekWizard'
 import WeekCompletionSummary from './components/WeekCompletionSummary'
 import CapacityGapPanel from './components/CapacityGapPanel'
 import { assignOrders, scheduleFastest, scheduleMode } from './scheduling/engine'
@@ -148,8 +149,9 @@ export default function CuttingMachines() {
   const { handleAdd, handleDelete, handleChange, toggleOffDay, handleToggle, saveMachineRates, saveMachineTmcRates, saveMachineTrPowerRates, saveMachineClassHRates } =
     useCuttingActions(saving, setSaving)
 
-  const { planSaving, planSaveMsg, snapshots, showSnapshots, setShowSnapshots, viewSnap, setViewSnap, savePlan, loadSnapshots, viewSnapshot, deleteSnapshot, updateStatus } =
+  const { planSaving, planSaveMsg, snapshots, showSnapshots, setShowSnapshots, viewSnap, setViewSnap, savePlan, loadSnapshots, viewSnapshot, deleteSnapshot, updateStatus, closeWeek } =
     usePlanSnapshots()
+  const [closeWizardSnap, setCloseWizardSnap] = useState<import('./hooks/usePlanSnapshots').SnapMeta | null>(null)
 
   // ── Data loading ─────────────────────────────────────────────
   useEffect(() => {
@@ -565,7 +567,7 @@ export default function CuttingMachines() {
           <SnapshotPanel
             snapshots={snapshots} setShowSnapshots={setShowSnapshots}
             viewSnapshot={viewSnapshot} deleteSnapshot={deleteSnapshot}
-            updateStatus={updateStatus}
+            updateStatus={updateStatus} onCloseWeek={setCloseWizardSnap}
           />
         )}
 
@@ -713,6 +715,13 @@ export default function CuttingMachines() {
         saveMachineClassHRates={saveMachineClassHRates}
         globalRates={globalRates}
       />
+      {closeWizardSnap && (
+        <CloseWeekWizard
+          snap={closeWizardSnap} orders={orders} origId={origId}
+          onClose={() => setCloseWizardSnap(null)}
+          onConfirm={async summary => { await closeWeek(closeWizardSnap.id, summary); setCloseWizardSnap(null) }}
+        />
+      )}
     </div>
   )
 }

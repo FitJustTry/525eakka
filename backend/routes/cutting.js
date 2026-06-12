@@ -107,7 +107,7 @@ function cuttingRoutes(app) {
 
   app.get('/api/cutting-plan-snapshots', asyncRoute(async (req, res) => {
     const result = await pool.query(
-      `SELECT id, week_start, week_end, label, status, saved_at, confirmed_at, started_at, completed_at
+      `SELECT id, week_start, week_end, label, status, saved_at, confirmed_at, started_at, completed_at, result_summary
        FROM cutting_plan_snapshots ORDER BY saved_at DESC LIMIT 50`
     );
     res.json(result.rows);
@@ -142,18 +142,22 @@ function cuttingRoutes(app) {
     archived:      [],
   };
   app.patch('/api/cutting-plan-snapshots/:id/status', asyncRoute(async (req, res) => {
-    const { status } = req.body;
+    const { status, result_summary } = req.body;
     const cur = await pool.query('SELECT status FROM cutting_plan_snapshots WHERE id=$1', [req.params.id]);
     if (!cur.rows.length) return res.status(404).json({ error: 'Not found' });
     const current = cur.rows[0].status || 'draft';
     const allowed = VALID_TRANSITIONS[current] ?? [];
     if (!allowed.includes(status)) return res.status(400).json({ error: `Cannot transition ${current} → ${status}` });
     const tsField = status === 'approved' ? 'confirmed_at' : status === 'in_production' ? 'started_at' : status === 'completed' ? 'completed_at' : null;
-    const tsClause = tsField ? `, ${tsField} = now()` : '';
+    const sets = ['status=$1'];
+    const vals = [status];
+    if (tsField) sets.push(`${tsField} = now()`);
+    if (status === 'completed' && result_summary) { sets.push(`result_summary = $${vals.length + 1}`); vals.push(JSON.stringify(result_summary)); }
+    vals.push(req.params.id);
     const result = await pool.query(
-      `UPDATE cutting_plan_snapshots SET status=$1${tsClause} WHERE id=$2
-       RETURNING id, week_start, week_end, label, status, saved_at, confirmed_at, started_at, completed_at`,
-      [status, req.params.id]
+      `UPDATE cutting_plan_snapshots SET ${sets.join(', ')} WHERE id=$${vals.length}
+       RETURNING id, week_start, week_end, label, status, saved_at, confirmed_at, started_at, completed_at, result_summary`,
+      vals
     );
     res.json(result.rows[0]);
   }));
