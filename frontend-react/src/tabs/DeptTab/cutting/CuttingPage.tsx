@@ -17,6 +17,7 @@ import GlobalRatesPanel from './components/GlobalRatesPanel'
 import PerMachineRatesPanel from './components/PerMachineRatesPanel'
 import ControlBar from './components/ControlBar'
 import ManualShiftGrid from './components/ManualShiftGrid'
+import ManualOtGrid from './components/ManualOtGrid'
 import CustomShiftOtGrid from './components/CustomShiftOtGrid'
 import SchedulingToolbar from './components/SchedulingToolbar'
 import SnapshotPanel from './components/SnapshotPanel'
@@ -78,6 +79,7 @@ export default function CuttingMachines() {
   const [shiftHrsDefault, setShiftHrsDefault] = useState(9)
   const [manualShiftDays, setManualShiftDays] = useState<Map<number, Set<string>>>(new Map())
   const [manualOtDays, setManualOtDays] = useState<Map<number, Set<string>>>(new Map())
+  const [manualOtMode, setManualOtMode] = useState(false)
   const [customShiftHrs, setCustomShiftHrs] = useState<Map<number, Map<string, number>>>(new Map())
   const [customOtHrs, setCustomOtHrs] = useState<Map<number, Map<string, number>>>(new Map())
   const [machineTableOpen, setMachineTableOpen] = useState(false)
@@ -476,6 +478,7 @@ export default function CuttingMachines() {
             shiftDays={shiftDays} totalShift={weekData.totalShift}
             lateOrdersSize={lateOrders.size} baselineLateCount={baselineLateCount}
             days={days}
+            manualOtMode={manualOtMode} setManualOtMode={setManualOtMode}
           />
 
           {/* Week navigation */}
@@ -506,11 +509,20 @@ export default function CuttingMachines() {
             machines={machines} days={days}
             manualShiftDays={manualShiftDays} toggleManualShift={toggleManualShift}
             setManualShiftDays={setManualShiftDays} shiftHrsDefault={shiftHrsDefault}
-            manualOtDays={manualOtDays} toggleManualOt={toggleManualOt}
-            setManualOtDays={setManualOtDays}
             weekSchedule={weekSchedule} wcConfig={wcConfig} mTotals={mTotals}
             totalShift={weekData.totalShift} lateOrdersSize={lateOrders.size}
             baselineLateCount={baselineLateCount}
+          />
+        )}
+
+        {/* Manual OT grid */}
+        {manualOtMode && (
+          <ManualOtGrid
+            machines={machines} days={days}
+            manualOtDays={manualOtDays} toggleManualOt={toggleManualOt}
+            setManualOtDays={setManualOtDays}
+            weekSchedule={weekSchedule} wcConfig={wcConfig} mTotals={mTotals}
+            lateOrdersSize={lateOrders.size} baselineLateCount={baselineLateCount}
           />
         )}
 

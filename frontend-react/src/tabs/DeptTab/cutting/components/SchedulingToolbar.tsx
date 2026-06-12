@@ -35,13 +35,15 @@ interface Props {
   lateOrdersSize: number
   baselineLateCount: number
   days: Date[]
+  manualOtMode: boolean
+  setManualOtMode: (v: boolean) => void
 }
 
 export default function SchedulingToolbar({
   balanceMode, setBalanceMode, viewMode, setViewMode, workDisplay, setWorkDisplay,
   lazyOT, setLazyOT, interweekThreshold, setInterweekThreshold, useNearestKva, setUseNearestKva,
   shiftMode, setShiftMode, shiftNDays, setShiftNDays, shiftHrsDefault, setShiftHrsDefault,
-  shiftDays, totalShift, lateOrdersSize, baselineLateCount, days,
+  shiftDays, totalShift, lateOrdersSize, baselineLateCount, days, manualOtMode, setManualOtMode,
 }: Props) {
   const otPol = balanceMode.endsWith('_no_ot') ? 'no_ot' : balanceMode.endsWith('_smart') ? 'smart' : 'full'
   const schedKey = balanceMode.replace(/_(?:no_ot|smart|full)$/, '')
@@ -189,6 +191,18 @@ export default function SchedulingToolbar({
               style={{ width: 44, fontSize: 10, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--bord2)', background: 'var(--bg2)', color: 'var(--txt1)', textAlign: 'center' }} />
           </label>
         )}
+        <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 4px', flexShrink: 0 }} />
+        <button
+          onClick={() => setManualOtMode(!manualOtMode)}
+          title="กำหนด OT ต่อเครื่องต่อวันด้วยตัวเอง — เมื่อเปิดใช้ OT จะเกิดเฉพาะวันที่เลือก"
+          style={{ fontSize: 10, padding: '3px 10px', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
+            border: `1px solid ${manualOtMode ? 'var(--amber)' : 'var(--bord2)'}`,
+            background: manualOtMode ? 'rgba(249,226,175,.2)' : 'var(--bg3)',
+            color: manualOtMode ? 'var(--amber)' : 'var(--txt2)',
+            fontWeight: manualOtMode ? 700 : 400,
+          }}>
+          ⚡ OT กำหนดเอง
+        </button>
         {shiftMode !== 'none' && (
           <>
             <span style={{ width: 1, height: 16, background: 'var(--bord2)', margin: '0 4px', flexShrink: 0 }} />
