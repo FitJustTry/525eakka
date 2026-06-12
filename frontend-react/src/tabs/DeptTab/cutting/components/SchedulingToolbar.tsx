@@ -173,7 +173,7 @@ export default function SchedulingToolbar({
           { id: 'manual', label: '🗓 กำหนดเอง',  col: 'var(--green)',  title: 'เลือกเครื่อง+วันที่ต้องการกะด้วยตัวเอง' },
           { id: 'custom', label: '✏ Custom',     col: 'var(--purple)', title: 'กำหนดชั่วโมงกะ+OT ต่อเครื่องต่อวันแบบกำหนดเอง' },
         ] as const).map(s => (
-          <button key={s.id} onClick={() => setShiftMode(s.id)} title={s.title} style={{
+          <button key={s.id} onClick={() => setShiftMode(s.id)} onDoubleClick={e => { e.stopPropagation(); if (shiftMode === s.id) setShiftMode('none') }} title={s.title} style={{
             fontSize: 10, padding: '3px 10px', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
             border: `1px solid ${shiftMode === s.id ? s.col : 'var(--bord2)'}`,
             background: shiftMode === s.id ? s.col + '22' : 'var(--bg3)',
