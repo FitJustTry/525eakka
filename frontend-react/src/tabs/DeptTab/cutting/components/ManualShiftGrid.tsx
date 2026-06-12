@@ -11,6 +11,9 @@ interface Props {
   manualShiftDays: Map<number, Set<string>>
   toggleManualShift: (machineId: number, dStr: string) => void
   setManualShiftDays: React.Dispatch<React.SetStateAction<Map<number, Set<string>>>>
+  manualOtDays: Map<number, Set<string>>
+  toggleManualOt: (machineId: number, dStr: string) => void
+  setManualOtDays: React.Dispatch<React.SetStateAction<Map<number, Set<string>>>>
   shiftHrsDefault: number
   weekSchedule: Map<number, Map<string, MachineDaySched>>
   wcConfig: Record<string, { hrs: number; ot: number; sat_hrs: number; sat_ot: number }>
@@ -22,16 +25,22 @@ interface Props {
 
 export default function ManualShiftGrid({
   machines, days, manualShiftDays, toggleManualShift, setManualShiftDays,
+  manualOtDays, toggleManualOt, setManualOtDays,
   shiftHrsDefault, weekSchedule, wcConfig, mTotals, totalShift, lateOrdersSize, baselineLateCount
 }: Props) {
   return (
     <div style={{ padding: '8px 16px', background: 'rgba(166,227,161,.04)', borderBottom: '1px solid var(--bord)', overflowX: 'auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--green)' }}>🗓 เลือกเครื่อง + วันที่เปิดกะกลางคืน</span>
-        <span style={{ fontSize: 10, color: 'var(--txt3)' }}>คลิก checkbox เพื่อเพิ่ม/ลบกะในเครื่องและวันนั้น</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--green)' }}>🗓 เลือกเครื่อง + วันที่เปิดกะกลางคืน / OT</span>
+        <span style={{ fontSize: 10, color: 'var(--txt3)' }}>🌙 กะ · ⚡ OT — คลิก checkbox เพื่อเปิด/ปิดต่อเครื่องต่อวัน</span>
         {totalShift >= 0.05 && (
           <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--blue)', background: 'rgba(137,180,250,.12)', padding: '2px 8px', borderRadius: 8 }}>
             +{totalShift.toFixed(1)}h/สัปดาห์
+          </span>
+        )}
+        {manualOtDays.size > 0 && (
+          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--amber)', background: 'rgba(249,226,175,.15)', padding: '2px 8px', borderRadius: 8 }}>
+            ⚡ OT {[...manualOtDays.values()].reduce((s, v) => s + v.size, 0)} วัน
           </span>
         )}
         {lateOrdersSize !== baselineLateCount && (
@@ -41,7 +50,7 @@ export default function ManualShiftGrid({
           </span>
         )}
         <button
-          onClick={() => setManualShiftDays(new Map())}
+          onClick={() => { setManualShiftDays(new Map()); setManualOtDays(new Map()) }}
           style={{ fontSize: 10, padding: '3px 10px', borderRadius: 6, border: '1px solid var(--bord2)', background: 'var(--bg3)', color: 'var(--txt3)', cursor: 'pointer', marginLeft: 'auto' }}>
           ล้างทั้งหมด
         </button>
@@ -63,8 +72,10 @@ export default function ManualShiftGrid({
           {machines.map((m, mi2) => {
             const machShiftHrs = resolveShift(m, shiftHrsDefault)
             const machShiftSet = manualShiftDays.get(m.id)
-            const selectedDays = days.filter(d => machShiftSet?.has(fmtISO(d)) && isMachineOn(m, d.getDay()))
-            const totalAddedH = selectedDays.length * machShiftHrs * (m.count || 1)
+            const machOtSet = manualOtDays.get(m.id)
+            const selectedShiftDays = days.filter(d => machShiftSet?.has(fmtISO(d)) && isMachineOn(m, d.getDay()))
+            const totalAddedH = selectedShiftDays.length * machShiftHrs * (m.count || 1)
+            const hasOtOverride = manualOtDays.size > 0
             const t = mTotals[mi2]
             return (
               <tr key={m.id} style={{ background: mi2 % 2 === 0 ? 'transparent' : 'rgba(127,127,127,.03)' }}>
@@ -77,18 +88,29 @@ export default function ManualShiftGrid({
                   const dStr = fmtISO(d)
                   const machOff = !isMachineOn(m, d.getDay())
                   const shiftOff = !(m.shift_enabled ?? true)
-                  const checked = machShiftSet?.has(dStr) ?? false
+                  const shiftChecked = machShiftSet?.has(dStr) ?? false
+                  const otChecked = machOtSet?.has(dStr) ?? false
                   const dayWall = weekSchedule.get(m.id)?.get(dStr)
                   const wallH = dayWall ? (dayWall.regHrs + dayWall.otHrs) : 0
                   const capH = resolveShift(m, shiftHrsDefault) > 0 ? (dayWall?.regHrs ?? 0) : 0
                   return (
                     <td key={dStr} style={{ padding: '4px 6px', textAlign: 'center', borderBottom: '0.5px solid var(--bord)', borderLeft: '0.5px solid var(--bord)' }}>
-                      {machOff || shiftOff ? (
-                        <span title={machOff ? 'เครื่องปิดวันนี้' : 'กะปิด'} style={{ color: 'var(--txt3)', fontSize: 8, opacity: 0.5 }}>—</span>
+                      {machOff ? (
+                        <span title="เครื่องปิดวันนี้" style={{ color: 'var(--txt3)', fontSize: 8, opacity: 0.5 }}>—</span>
                       ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                          <input type="checkbox" checked={checked} onChange={() => toggleManualShift(m.id, dStr)}
-                            style={{ cursor: 'pointer', accentColor: 'var(--green)', width: 14, height: 14 }} />
+                          {!shiftOff && (
+                            <label title="กะกลางคืน" style={{ display: 'flex', alignItems: 'center', gap: 2, cursor: 'pointer' }}>
+                              <input type="checkbox" checked={shiftChecked} onChange={() => toggleManualShift(m.id, dStr)}
+                                style={{ cursor: 'pointer', accentColor: 'var(--green)', width: 12, height: 12 }} />
+                              <span style={{ fontSize: 7, color: 'var(--green)' }}>🌙</span>
+                            </label>
+                          )}
+                          <label title={hasOtOverride ? 'OT (เปิดใช้ = มี OT วันนี้)' : 'OT (คลิกเพื่อเปิด manual OT)'} style={{ display: 'flex', alignItems: 'center', gap: 2, cursor: 'pointer' }}>
+                            <input type="checkbox" checked={otChecked} onChange={() => toggleManualOt(m.id, dStr)}
+                              style={{ cursor: 'pointer', accentColor: 'var(--amber)', width: 12, height: 12 }} />
+                            <span style={{ fontSize: 7, color: 'var(--amber)' }}>⚡</span>
+                          </label>
                           {wallH > 0 && (
                             <div title={`งาน ${wallH.toFixed(1)}h`} style={{ fontSize: 7, fontFamily: 'var(--mono)', color: wallH > capH ? 'var(--amber)' : 'var(--txt3)' }}>
                               {wallH.toFixed(1)}h

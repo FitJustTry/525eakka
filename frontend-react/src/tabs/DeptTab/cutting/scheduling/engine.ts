@@ -135,6 +135,7 @@ export function scheduleFastest(
   shiftHrsDefault = 9,
   manualShiftDays: Map<number, Set<string>> = new Map(),
   routingRates = false,
+  manualOtDays: Map<number, Set<string>> = new Map(),
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
   if (!machines.length || !weekOrders.length) return result
@@ -319,6 +320,8 @@ export function scheduleFastest(
         effectiveOtCap = Math.min(otCap, Math.max(0, rem + queueHrs - regLeft - otLeft))
       }
 
+      if (manualOtDays.size > 0 && !(manualOtDays.get(m.id)?.has(dStr) ?? false)) effectiveOtCap = 0
+
       // ── NEW: Shift tier — entirely independent from OT logic ──
       const shiftCap = resolveShift(m, shiftHrsDefault) * (m.count || 1)
       let effectiveShiftCap = 0
@@ -474,6 +477,7 @@ export function scheduleMode(
   shiftHrsDefault = 9,
   manualShiftDays: Map<number, Set<string>> = new Map(),
   routingRates = false,
+  manualOtDays: Map<number, Set<string>> = new Map(),
 ): Map<number, Map<string, MachineDaySched>> {
   const result = new Map<number, Map<string, MachineDaySched>>()
 
@@ -566,6 +570,8 @@ export function scheduleMode(
           const queueHrs = queue.slice(qi).reduce((s, item) => s + item.remainingHrs, 0)
           effectiveOtCap = Math.min(otCap, Math.max(0, curRem + queueHrs - regLeft - otLeft))
         }
+
+        if (manualOtDays.size > 0 && !(manualOtDays.get(m.id)?.has(dStr) ?? false)) effectiveOtCap = 0
 
         // ── NEW: Shift tier ──────────────────────────────────────
         const shiftCap = resolveShift(m, shiftHrsDefault) * (m.count || 1)
