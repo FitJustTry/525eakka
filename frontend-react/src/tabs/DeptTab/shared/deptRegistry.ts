@@ -37,7 +37,19 @@ export interface DeptRegistryEntry {
   getRates: (rows: RoutingCrRow[]) => CuttingRate[]
   /** Fallback hours/unit when no rate exists for a kVA */
   fallbackHrs: number
+  /**
+   * Fraction of orders that actually flow through this department (default 1).
+   * Used when one physical choice splits orders across parallel lines — e.g. an
+   * LV coil is EITHER foil OR wire, so the foil/wire lines carry the historical
+   * mix (~0.84 / 0.16) rather than each counting every order (double-counting).
+   */
+  demandWeight?: number
 }
+
+/** Coil winding workcenters (sap_routing scheme; matches wcConfig). */
+export const COIL_HV_WCS = ['EE3201']      // HV winding (LAYER/DISC)
+export const COIL_FOIL_WCS = ['EE3203']    // LV foil winding
+export const COIL_WIRE_WCS = ['EE3202']    // LV wire / wound layer / Class-H
 
 /** Workcenters that make up each assembly department (see Factory Forecast). */
 export const INTERNAL_ASSEMBLY_WCS = ['EE3301', 'EE3302', 'EE3303', 'EE3401', 'EE3403']
@@ -103,6 +115,45 @@ export const DEPT_REGISTRY: DeptRegistryEntry[] = [
     source: 'routing_cr',
     getRates: rows => buildDeptRates(rows, ['0110'], 'EE3107'),
     fallbackHrs: 0.25,
+  },
+  // ── Coil winding (capacity/forecast only — runs parallel to the core line) ──
+  // Three lines per the CAP model. Every transformer has an HV coil; its LV coil
+  // is EITHER foil OR wire, so the two LV lines carry the historical mix
+  // (foil ≈ 84%, wire ≈ 16% of LV materials in sap_routing) to avoid double-count.
+  {
+    id: 'coil-hv',
+    label: 'พันคอยล์ HV',
+    icon: '🌀',
+    color: '#f5c2e7',
+    workflowStage: null,
+    workcenters: COIL_HV_WCS,
+    source: 'sap_routing',
+    getRates: () => buildSapDeptRates(COIL_HV_WCS),
+    fallbackHrs: 4.0,
+  },
+  {
+    id: 'coil-foil',
+    label: 'พันคอยล์ LV-Foil',
+    icon: '🎞',
+    color: '#f2cdcd',
+    workflowStage: null,
+    workcenters: COIL_FOIL_WCS,
+    source: 'sap_routing',
+    getRates: () => buildSapDeptRates(COIL_FOIL_WCS),
+    fallbackHrs: 1.5,
+    demandWeight: 0.84,
+  },
+  {
+    id: 'coil-wire',
+    label: 'พันคอยล์ LV-Wire',
+    icon: '🧵',
+    color: '#eba0ac',
+    workflowStage: null,
+    workcenters: COIL_WIRE_WCS,
+    source: 'sap_routing',
+    getRates: () => buildSapDeptRates(COIL_WIRE_WCS),
+    fallbackHrs: 3.0,
+    demandWeight: 0.16,
   },
   // ── Assembly departments (capacity/forecast only — not workflow-tracked) ──
   // Hours come from the SAP routing export, summed across each department's
@@ -176,10 +227,11 @@ export function weekDemandByDept(
   const out = new Map<string, number>()
   for (const { dept, rates } of deptRates) {
     let hrs = 0
+    const weight = dept.demandWeight ?? 1
     for (const o of orders) {
       if (!o.plan_date || o.plan_date < monStr || o.plan_date > satStr) continue
       if (!orderCountsForDept(o, dept)) continue
-      hrs += (o.qty ?? 1) * lookupHrs(rates, o.kva ?? 0, dept.fallbackHrs)
+      hrs += (o.qty ?? 1) * lookupHrs(rates, o.kva ?? 0, dept.fallbackHrs) * weight
     }
     out.set(dept.id, hrs)
   }
@@ -208,7 +260,7 @@ export function ordersForDepts(
     let hrs = 0
     for (const dept of depts) {
       if (!orderCountsForDept(o, dept)) continue
-      hrs += (o.qty ?? 1) * lookupHrs(rateOf.get(dept.id) ?? [], o.kva ?? 0, dept.fallbackHrs)
+      hrs += (o.qty ?? 1) * lookupHrs(rateOf.get(dept.id) ?? [], o.kva ?? 0, dept.fallbackHrs) * (dept.demandWeight ?? 1)
     }
     if (hrs > 0) out.push({ order: o, hrs })
   }

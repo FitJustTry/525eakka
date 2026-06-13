@@ -447,8 +447,9 @@ export default function FactoryForecastPage() {
       <div style={{ fontSize: 9, color: 'var(--txt3)', lineHeight: 1.6 }}>
         🟢 อยู่ในชั่วโมงปกติ · 🟠 ต้องใช้ OT · 🔴 เกินกำลังแม้รวม OT &nbsp;|&nbsp;
         EE3105 ใช้ร่วมกันระหว่างเขย่า + เรียงเหล็ก จึงรวมโหลดทั้งสองแผนก &nbsp;|&nbsp;
-        <span style={{ color: 'var(--blue)', fontWeight: 700 }}>SAP</span> = ชั่วโมงจาก SAP routing (ประกอบภายใน/ภายนอก รวมทุก WC) ·
-        แผนกประกอบนับงานที่วางแผนทั้งหมดที่ยังไม่ DONE (ยังไม่เชื่อม workflow)
+        <span style={{ color: 'var(--blue)', fontWeight: 700 }}>SAP</span> = ชั่วโมงจาก SAP routing (พันคอยล์/ประกอบ รวมทุก WC) ·
+        แผนกพันคอยล์+ประกอบนับงานที่วางแผนทั้งหมดที่ยังไม่ DONE (ยังไม่เชื่อม workflow) ·
+        LV-Foil/Wire ถ่วงน้ำหนักตามสัดส่วนจริง (~84% foil / 16% wire) ไม่นับซ้ำ
       </div>
     </div>
   )
