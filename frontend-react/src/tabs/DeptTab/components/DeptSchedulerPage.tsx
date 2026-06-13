@@ -26,6 +26,7 @@ import { computeWeekData, type WeekData, type MachineCell } from '../cutting/sch
 import { DAY_SHORT } from '../cutting/scheduling/constants'
 import type { MachineDaySched } from '../cutting/scheduling/constants'
 import { buildDeptRates } from '../shared/routingRates'
+import { buildSapDeptRates } from '../shared/sapRates'
 import { useDeptSnapshots } from '../shared/useDeptSnapshots'
 import type { DeptConfig } from '../shared/types'
 import { WORKFLOW_NEXT } from '../shared/types'
@@ -52,7 +53,7 @@ function makeDefaultStation(id: number, config: DeptConfig): CuttingMachine {
   return {
     id,
     name: `${config.defaultStationName} ${id}`,
-    count: 1,
+    count: config.defaultStationCount ?? 1,
     min_kva: 0, max_kva: 999999,
     hrs_per_unit: config.defaultHrsPerUnit,
     laser: false, m4: false,
@@ -347,15 +348,17 @@ export default function DeptSchedulerPage({ config }: { config: DeptConfig }) {
   const weekLabel = `${fmtD(mon)} – ${fmtD(sat)} (${fmtISO(mon).slice(0, 7)})`
 
   const rates = useMemo(
-    () => buildDeptRates(routingRows, config.routingOps, config.workcenter),
-    [routingRows, config.routingOps, config.workcenter]
+    () => config.rateSource === 'sap_routing'
+      ? buildSapDeptRates(config.sapWorkcenters ?? [config.workcenter])
+      : buildDeptRates(routingRows, config.routingOps, config.workcenter),
+    [routingRows, config.rateSource, config.sapWorkcenters, config.routingOps, config.workcenter]
   )
 
   const weekOrders = useMemo(() => {
     const monStr = fmtISO(mon), satStr = fmtISO(sat)
     return orders.filter(o => {
       if (!o.plan_date || o.plan_date < monStr || o.plan_date > satStr) return false
-      if (wfFilter === 'stage' && o.workflow_status !== config.workflowStage) return false
+      if (wfFilter === 'stage' && config.workflowStage && o.workflow_status !== config.workflowStage) return false
       if (config.orderFilter && !config.orderFilter(o)) return false
       return true
     })
@@ -420,7 +423,7 @@ export default function DeptSchedulerPage({ config }: { config: DeptConfig }) {
   }, [])
 
   const handleCloseWeek = useCallback(async () => {
-    if (!weekData) return
+    if (!weekData || !config.workflowStage) return
     const nextStage = WORKFLOW_NEXT[config.workflowStage]
     if (!nextStage) { setCloseMsg('⚠ ไม่มีขั้นตอนถัดไป'); return }
     const doneIds = weekData.weekDoneOrders
@@ -537,9 +540,9 @@ export default function DeptSchedulerPage({ config }: { config: DeptConfig }) {
           </div>
         )}
 
-        {/* Workflow filter */}
+        {/* Workflow filter (only when the dept is a tracked workflow stage) */}
         <div style={{ display: 'flex', gap: 4 }}>
-          {(['all', 'stage'] as const).map(f => (
+          {(config.workflowStage ? (['all', 'stage'] as const) : (['all'] as const)).map(f => (
             <button key={f} onClick={() => setWfFilter(f)}
               style={{
                 fontSize: 10, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
@@ -568,7 +571,7 @@ export default function DeptSchedulerPage({ config }: { config: DeptConfig }) {
             style={{ ...btnSm, border: snap.showSnapshots ? '1px solid var(--green)' : '1px solid var(--bord)', color: snap.showSnapshots ? 'var(--green)' : 'var(--txt2)' }}>
             📋 แผนที่บันทึก
           </button>
-          {WORKFLOW_NEXT[config.workflowStage] && (
+          {config.workflowStage && WORKFLOW_NEXT[config.workflowStage] && (
             <button onClick={handleCloseWeek} disabled={closingWeek || !weekData}
               style={{ ...btnSm, background: 'rgba(166,227,161,.15)', color: 'var(--green)', border: '1px solid var(--green)' }}>
               {closingWeek ? '…' : `✅ ปิดสัปดาห์ → ${WORKFLOW_NEXT[config.workflowStage]}`}

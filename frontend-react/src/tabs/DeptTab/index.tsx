@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useApp } from '../../context/AppContext'
 import CuttingMachines from './cutting/CuttingPage'
-import CoilMachines from './winding/WindingPage'
+import CoilPage from './coil/CoilPage'
 import SteelStackPage from './steelStack/SteelStackPage'
 import SteelShakePage from './steelShake/SteelShakePage'
 import ClampAssemblyPage from './clampAssembly/ClampAssemblyPage'
@@ -93,7 +93,7 @@ export default function DeptTab() {
             ))}
           </div>
         )}
-        {/* แผนกพันคอยล์ → show coil machines */}
+        {/* แผนกพันคอยล์ → planning hub vs WC config table */}
         {dept === 'coil' && (
           <button onClick={() => setShowCoil(v => !v)}
             style={{
@@ -103,7 +103,7 @@ export default function DeptTab() {
               color: showCoil ? 'var(--green)' : 'var(--txt3)',
               cursor: 'pointer',
             }}>
-            🌀 เครื่องพันคอยล์
+            {showCoil ? '🌀 วางแผนพันคอยล์' : '📋 ตาราง WC'}
           </button>
         )}
       </div>
@@ -116,7 +116,7 @@ export default function DeptTab() {
       : dept === 'core' && coreView === 'noload'     ? <NoLoadPage />
       : dept === 'core' && coreView === 'wip'        ? <WipBoardPage />
       : dept === 'core' && coreView === 'forecast'   ? <FactoryForecastPage />
-      : dept === 'coil' && showCoil                  ? <CoilMachines />
+      : dept === 'coil' && !showCoil                 ? <CoilPage />
       : <DeptContent dept={current} />
       }
     </div>

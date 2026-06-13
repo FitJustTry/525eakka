@@ -46,16 +46,33 @@ export interface DeptConfig {
   workcenter: string
 
   /**
-   * Routing operation codes to sum for hours-per-unit.
+   * Routing operation codes to sum for hours-per-unit (routing_cr source).
    * e.g. ['0070', '0080'] → 0.50 + 4.50 = 5.00 hr/unit for Steel Stack
    */
   routingOps: string[]
 
-  /** The workflow stage this department represents */
-  workflowStage: WorkflowStatus
+  /**
+   * Where hours-per-unit come from (default 'routing_cr'):
+   *  - 'routing_cr'  → buildDeptRates(rows, routingOps, workcenter)
+   *  - 'sap_routing' → buildSapDeptRates(sapWorkcenters) — for coil/assembly lines
+   */
+  rateSource?: 'routing_cr' | 'sap_routing'
+
+  /** Workcenters whose SAP routing ops are summed (rateSource='sap_routing'). */
+  sapWorkcenters?: string[]
+
+  /**
+   * The workflow stage this department represents, or null for lines that are
+   * NOT workflow-tracked (coil winding) — those hide the stage filter and the
+   * Close-Week handoff but keep the full scheduler + plan snapshots.
+   */
+  workflowStage: WorkflowStatus | null
 
   /** Prefix for auto-generated station names, e.g. 'เรียงเหล็ก' */
   defaultStationName: string
+
+  /** Default number of stations/teams to seed (default 1). */
+  defaultStationCount?: number
 
   /** Fallback hours/unit when routing data has no entry for this kVA */
   defaultHrsPerUnit: number
