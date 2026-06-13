@@ -20,6 +20,7 @@ export interface Order {
   done_qty?: number   // units actually completed (manual/SAP); remaining = qty − done_qty
   done_at?: string | null   // ISO timestamp when done_qty first reached qty
   priority?: 'rush' | 'high' | 'normal'
+  workflow_status?: 'CUTTING' | 'SHAKE' | 'STACK' | 'CLAMP' | 'NOLOAD' | 'DONE'
 }
 
 export interface MachineDowntime {

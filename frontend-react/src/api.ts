@@ -91,6 +91,38 @@ export const api = {
     list: () => request<object[]>('/cap-rates'),
   },
 
+  /** Generic factory — creates station CRUD for any dept path, e.g. '/steel-stack-stations' */
+  deptStations: (pathBase: string) => ({
+    list: () => request<CuttingMachine[]>(pathBase),
+    create: (m: Omit<CuttingMachine, 'id'>) =>
+      request<CuttingMachine>(pathBase, { method: 'POST', body: JSON.stringify(m) }),
+    update: (id: number, m: Partial<Omit<CuttingMachine, 'id'>>) =>
+      request<CuttingMachine>(`${pathBase}/${id}`, { method: 'PUT', body: JSON.stringify(m) }),
+    delete: (id: number) =>
+      request<void>(`${pathBase}/${id}`, { method: 'DELETE' }),
+  }),
+
+  steelStackStations: {
+    list: () => request<CuttingMachine[]>('/steel-stack-stations'),
+    create: (m: Omit<CuttingMachine, 'id'>) =>
+      request<CuttingMachine>('/steel-stack-stations', { method: 'POST', body: JSON.stringify(m) }),
+    update: (id: number, m: Partial<Omit<CuttingMachine, 'id'>>) =>
+      request<CuttingMachine>(`/steel-stack-stations/${id}`, { method: 'PUT', body: JSON.stringify(m) }),
+    delete: (id: number) =>
+      request<void>(`/steel-stack-stations/${id}`, { method: 'DELETE' }),
+  },
+
+  steelStackSnapshots: {
+    list: () => request<object[]>('/steel-stack-snapshots'),
+    get: (id: number) => request<Record<string, unknown>>(`/steel-stack-snapshots/${id}`),
+    create: (data: object) => request<object>('/steel-stack-snapshots', { method: 'POST', body: JSON.stringify(data) }),
+    updateStatus: (id: number, status: string, result_summary?: object) =>
+      request<object>(`/steel-stack-snapshots/${id}/status`, {
+        method: 'PATCH', body: JSON.stringify({ status, result_summary }),
+      }),
+    delete: (id: number) => request<void>(`/steel-stack-snapshots/${id}`, { method: 'DELETE' }),
+  },
+
   downtime: {
     list: (machineId?: number) =>
       request<MachineDowntime[]>('/machine-downtime' + (machineId ? `?machine_id=${machineId}` : '')),

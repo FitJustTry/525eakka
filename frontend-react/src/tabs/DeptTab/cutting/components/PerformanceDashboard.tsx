@@ -253,7 +253,6 @@ export default function PerformanceDashboard({ snapshots, downtimes = [], machin
               })}
             </div>
           )}
-        </div>
 
           {/* Tab: Downtime */}
           {tab === 'downtime' && (

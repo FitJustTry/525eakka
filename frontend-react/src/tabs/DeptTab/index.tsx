@@ -2,8 +2,13 @@ import { useState } from 'react'
 import { useApp } from '../../context/AppContext'
 import CuttingMachines from './cutting/CuttingPage'
 import CoilMachines from './winding/WindingPage'
+import SteelStackPage from './steelStack/SteelStackPage'
+import SteelShakePage from './steelShake/SteelShakePage'
+import ClampAssemblyPage from './clampAssembly/ClampAssemblyPage'
+import NoLoadPage from './noLoad/NoLoadPage'
 
 type DeptId = 'core' | 'coil' | 'inner' | 'outer'
+type CoreView = 'dept' | 'cutting' | 'steelshake' | 'steelstack' | 'clamp' | 'noload'
 
 const DEPTS: { id: DeptId; label: string; color: string; wcs: string[] }[] = [
   {
@@ -34,10 +39,11 @@ const DEPTS: { id: DeptId; label: string; color: string; wcs: string[] }[] = [
 
 export default function DeptTab() {
   const [dept, setDept] = useState<DeptId>('core')
-  const [showCutting, setShowCutting] = useState(false)
+  const [coreView, setCoreView] = useState<CoreView>('dept')
   const [showCoil, setShowCoil] = useState(false)
 
   const current = DEPTS.find(d => d.id === dept)!
+  const showCutting = coreView === 'cutting'
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
@@ -45,7 +51,7 @@ export default function DeptTab() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 15, fontWeight: 600, marginRight: 4 }}>🏭 แผนก</div>
         {DEPTS.map(d => (
-          <button key={d.id} onClick={() => { setDept(d.id); setShowCutting(false); setShowCoil(false) }}
+          <button key={d.id} onClick={() => { setDept(d.id); setCoreView('dept'); setShowCoil(false) }}
             style={{
               fontSize: 12, padding: '6px 18px', borderRadius: 20,
               border: `1.5px solid ${dept === d.id ? d.color : 'var(--bord)'}`,
@@ -57,18 +63,28 @@ export default function DeptTab() {
             {d.label}
           </button>
         ))}
-        {/* แผนกเหล็กแกน → show cutting machines */}
+        {/* แผนกเหล็กแกน → sub-view switcher */}
         {dept === 'core' && (
-          <button onClick={() => setShowCutting(v => !v)}
-            style={{
-              marginLeft: 'auto', fontSize: 11, padding: '5px 12px', borderRadius: 20,
-              border: `1px solid ${showCutting ? 'var(--amber)' : 'var(--bord)'}`,
-              background: showCutting ? 'rgba(224,156,42,.12)' : 'var(--bg3)',
-              color: showCutting ? 'var(--amber)' : 'var(--txt3)',
-              cursor: 'pointer',
-            }}>
-            🔧 เครื่องตัดโลหะ
-          </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {([
+              { view: 'cutting',    label: '🔧 ตัดโลหะ',    col: 'var(--amber)', bg: 'rgba(249,226,175,.12)' },
+              { view: 'steelshake', label: '🌀 เขย่าเหล็ก', col: '#cba6f7',      bg: 'rgba(203,166,247,.12)' },
+              { view: 'steelstack', label: '🔩 เรียงเหล็ก', col: 'var(--blue)',  bg: 'rgba(137,180,250,.12)' },
+              { view: 'clamp',      label: '🔨 แคลมป์',     col: '#fab387',      bg: 'rgba(250,179,135,.12)' },
+              { view: 'noload',     label: '⚡ No Load',     col: 'var(--green)', bg: 'rgba(166,227,161,.12)' },
+            ] as const).map(({ view, label, col, bg }) => (
+              <button key={view}
+                onClick={() => setCoreView(v => v === view ? 'dept' : view)}
+                style={{
+                  fontSize: 11, padding: '5px 12px', borderRadius: 20, cursor: 'pointer',
+                  border: `1px solid ${coreView === view ? col : 'var(--bord)'}`,
+                  background: coreView === view ? bg : 'var(--bg3)',
+                  color: coreView === view ? col : 'var(--txt3)',
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
         )}
         {/* แผนกพันคอยล์ → show coil machines */}
         {dept === 'coil' && (
@@ -85,11 +101,13 @@ export default function DeptTab() {
         )}
       </div>
 
-      {dept === 'core' && showCutting
-        ? <CuttingMachines />
-        : dept === 'coil' && showCoil
-          ? <CoilMachines />
-          : <DeptContent dept={current} />
+      {dept === 'core' && coreView === 'cutting'    ? <CuttingMachines />
+      : dept === 'core' && coreView === 'steelshake' ? <SteelShakePage />
+      : dept === 'core' && coreView === 'steelstack' ? <SteelStackPage />
+      : dept === 'core' && coreView === 'clamp'      ? <ClampAssemblyPage />
+      : dept === 'core' && coreView === 'noload'     ? <NoLoadPage />
+      : dept === 'coil' && showCoil                  ? <CoilMachines />
+      : <DeptContent dept={current} />
       }
     </div>
   )
