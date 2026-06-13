@@ -333,6 +333,9 @@ export default function FactoryForecastPage() {
                     <td style={{ ...labCol, fontWeight: 600 }}>
                       <span style={{ marginRight: 5 }}>{d.icon}</span>
                       <span style={{ color: d.color }}>{d.label}</span>
+                      {d.source === 'sap_routing' && (
+                        <span style={{ marginLeft: 6, fontSize: 7, padding: '1px 4px', borderRadius: 3, background: 'rgba(137,180,250,.12)', color: 'var(--blue)', fontWeight: 700, verticalAlign: 'middle' }}>SAP</span>
+                      )}
                     </td>
                     {row.map((h, wi) => (
                       <td key={wi} style={{ padding: '5px 8px', textAlign: 'center', borderBottom: '0.5px solid var(--bord)', borderLeft: '0.5px solid var(--bord)' }}>
@@ -356,7 +359,9 @@ export default function FactoryForecastPage() {
 
       <div style={{ fontSize: 9, color: 'var(--txt3)', lineHeight: 1.6 }}>
         🟢 อยู่ในชั่วโมงปกติ · 🟠 ต้องใช้ OT · 🔴 เกินกำลังแม้รวม OT &nbsp;|&nbsp;
-        EE3105 ใช้ร่วมกันระหว่างเขย่า + เรียงเหล็ก จึงรวมโหลดทั้งสองแผนก
+        EE3105 ใช้ร่วมกันระหว่างเขย่า + เรียงเหล็ก จึงรวมโหลดทั้งสองแผนก &nbsp;|&nbsp;
+        <span style={{ color: 'var(--blue)', fontWeight: 700 }}>SAP</span> = ชั่วโมงจาก SAP routing (ประกอบภายใน/ภายนอก รวมทุก WC) ·
+        แผนกประกอบนับงานที่วางแผนทั้งหมดที่ยังไม่ DONE (ยังไม่เชื่อม workflow)
       </div>
     </div>
   )
