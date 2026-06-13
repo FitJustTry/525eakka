@@ -11,6 +11,7 @@ import { useApp } from '../../../context/AppContext'
 import { api } from '../../../api'
 import type { RoutingCrRow } from '../../../types'
 import { makeHorizonWeeks, buildDeptRates, computeHorizon } from '../shared/engines/forecastEngine'
+import { computeCalibration, poolFactor, type SnapSample } from '../shared/engines/calibrationEngine'
 import { riskLevel, RISK_META, summarize, bottleneckForWeek, carryRiskOrders } from '../shared/engines/riskEngine'
 import { recommendations } from '../shared/engines/recommendationEngine'
 import { runScenarios } from '../shared/engines/simulationEngine'
@@ -28,14 +29,40 @@ export default function CapacityRiskPage() {
   const [startOffset, setStartOffset] = useState(0)
   const [atpKva, setAtpKva] = useState(250)
   const [atpQty, setAtpQty] = useState(1)
+  const [calSamples, setCalSamples] = useState<SnapSample[]>([])
+  const [calibrated, setCalibrated] = useState(false)
 
   useEffect(() => {
     api.routingCr.list().then(r => setRoutingRows(r as RoutingCrRow[])).catch(() => {})
   }, [])
 
+  // Closed-week history → plan-attainment calibration (graceful when empty)
+  useEffect(() => {
+    Promise.all([
+      api.deptSnapshotsAll().catch(() => []),
+      api.cuttingSnapshots().catch(() => []),
+    ]).then(([dept, cutting]) => {
+      const deptS = (dept as Record<string, unknown>[]).map(r => ({ dept_id: String(r.dept_id), week_start: String(r.week_start), result_summary: r.result_summary as SnapSample['result_summary'] }))
+      const cutS = (cutting as Record<string, unknown>[])
+        .filter(r => r.status === 'completed')
+        .map(r => ({ dept_id: 'cutting', week_start: String(r.week_start), result_summary: r.result_summary as SnapSample['result_summary'] }))
+      setCalSamples([...deptS, ...cutS])
+    }).catch(() => {})
+  }, [])
+
+  const cal = useMemo(() => computeCalibration(calSamples), [calSamples])
+
   const weeks = useMemo(() => makeHorizonWeeks(startOffset, horizon), [startOffset, horizon])
   const deptRates = useMemo(() => buildDeptRates(routingRows), [routingRows])
-  const base = useMemo(() => computeHorizon(orders, deptRates, wcConfig, weeks), [orders, deptRates, wcConfig, weeks])
+  const base = useMemo(() => {
+    const capFn = calibrated
+      ? (pool: { depts: { id: string }[]; cap: { reg: number; ot: number } }) => {
+          const f = poolFactor(cal, pool.depts.map(d => d.id))
+          return { reg: pool.cap.reg * f, ot: pool.cap.ot * f }
+        }
+      : undefined
+    return computeHorizon(orders, deptRates, wcConfig, weeks, capFn)
+  }, [orders, deptRates, wcConfig, weeks, calibrated, cal])
 
   const summary = useMemo(() => summarize(base), [base])
   const recs = useMemo(() => recommendations(base), [base])
@@ -72,6 +99,29 @@ export default function CapacityRiskPage() {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* Calibration (closed-loop) */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 10, color: 'var(--txt3)' }}>
+        <button onClick={() => setCalibrated(v => !v)} disabled={cal.totalSamples === 0}
+          style={{ ...btn, cursor: cal.totalSamples ? 'pointer' : 'not-allowed', opacity: cal.totalSamples ? 1 : 0.5,
+            border: `1px solid ${calibrated ? 'var(--green)' : 'var(--bord)'}`, color: calibrated ? 'var(--green)' : 'var(--txt2)', background: calibrated ? 'rgba(166,227,161,.12)' : 'var(--bg3)' }}>
+          🎯 ปรับด้วยค่าจริง {calibrated ? '(เปิด)' : ''}
+        </button>
+        {cal.totalSamples > 0 ? (
+          <>
+            <span>Plan attainment เฉลี่ย <strong style={{ color: cal.attainment! >= 90 ? 'var(--green)' : cal.attainment! >= 75 ? 'var(--amber)' : 'var(--red)' }}>{Math.round(cal.attainment ?? 0)}%</strong> จาก {cal.totalSamples} สัปดาห์ที่ปิด</span>
+            {calibrated && (
+              <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}>
+                {[...cal.byDept.entries()].slice(0, 8).map(([id, c]) => (
+                  <span key={id} style={{ fontFamily: 'var(--mono)', color: c.factor < 0.9 ? 'var(--amber)' : 'var(--txt3)' }}>{id}:{Math.round(c.factor * 100)}%</span>
+                ))}
+              </span>
+            )}
+          </>
+        ) : (
+          <span>ยังไม่มีสัปดาห์ที่ปิด — ใช้กำลังมาตรฐาน (calibration จะทำงานเมื่อมีการ Close Week)</span>
+        )}
       </div>
 
       {/* Summary KPIs */}

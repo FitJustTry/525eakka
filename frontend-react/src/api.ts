@@ -93,6 +93,10 @@ export const api = {
     list: () => request<object[]>('/cap-rates'),
   },
 
+  /** Completed plan snapshots across all departments (calibration source). */
+  deptSnapshotsAll: () => request<Record<string, unknown>[]>('/dept-plan-snapshots'),
+  cuttingSnapshots: () => request<Record<string, unknown>[]>('/cutting-plan-snapshots'),
+
   /** Generic factory — creates station CRUD for any dept path, e.g. '/steel-stack-stations' */
   deptStations: (pathBase: string) => ({
     list: () => request<CuttingMachine[]>(pathBase),

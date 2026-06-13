@@ -54,6 +54,15 @@ function deptRoutes(app) {
   }));
 
   // ─── Snapshots ──────────────────────────────────────────────────────────────
+  // Completed snapshots across ALL departments — feeds the calibration engine.
+  app.get('/api/dept-plan-snapshots', asyncRoute(async (req, res) => {
+    const result = await pool.query(
+      `SELECT id, dept_id, week_start, week_end, label, status, completed_at, result_summary
+       FROM dept_plan_snapshots WHERE status='completed' ORDER BY week_start DESC LIMIT 400`
+    );
+    res.json(result.rows);
+  }));
+
   app.get('/api/dept-plan-snapshots/:dept', asyncRoute(async (req, res) => {
     const result = await pool.query(
       `SELECT id, dept_id, week_start, week_end, label, status, saved_at,
