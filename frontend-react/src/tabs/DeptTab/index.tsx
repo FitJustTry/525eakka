@@ -12,9 +12,10 @@ import OverviewPage from './overview/OverviewPage'
 import CapacityRiskPage from './risk/CapacityRiskPage'
 import MaterialReadinessPage from './material/MaterialReadinessPage'
 import ManagementKpiPage from './kpi/ManagementKpiPage'
+import OrderFlowPage from './flow/OrderFlowPage'
 
 type DeptId = 'core' | 'coil' | 'inner' | 'outer'
-type CoreView = 'dept' | 'overview' | 'cutting' | 'steelshake' | 'steelstack' | 'clamp' | 'noload' | 'wip' | 'forecast' | 'risk' | 'material' | 'kpi'
+type CoreView = 'dept' | 'overview' | 'cutting' | 'steelshake' | 'steelstack' | 'clamp' | 'noload' | 'wip' | 'forecast' | 'risk' | 'material' | 'kpi' | 'flow'
 
 const DEPTS: { id: DeptId; label: string; color: string; wcs: string[] }[] = [
   {
@@ -84,6 +85,7 @@ export default function DeptTab() {
               { view: 'risk',       label: '⚠ Risk',         col: 'var(--red)',   bg: 'rgba(243,139,168,.12)' },
               { view: 'material',   label: '🧱 วัตถุดิบ',     col: '#fab387',      bg: 'rgba(250,179,135,.12)' },
               { view: 'kpi',        label: '📊 KPI',         col: 'var(--green)', bg: 'rgba(166,227,161,.12)' },
+              { view: 'flow',       label: '🗓 Flow',        col: '#89dceb',      bg: 'rgba(137,220,235,.12)' },
               { view: 'dept',       label: '📋 สถานีงาน',    col: 'var(--txt2)',  bg: 'rgba(166,173,200,.12)' },
             ] as const).map(({ view, label, col, bg }) => (
               <button key={view}
@@ -125,6 +127,7 @@ export default function DeptTab() {
       : dept === 'core' && coreView === 'risk'       ? <CapacityRiskPage />
       : dept === 'core' && coreView === 'material'   ? <MaterialReadinessPage />
       : dept === 'core' && coreView === 'kpi'        ? <ManagementKpiPage />
+      : dept === 'core' && coreView === 'flow'       ? <OrderFlowPage />
       : dept === 'coil' && !showCoil                 ? <CoilPage />
       : <DeptContent dept={current} />
       }
