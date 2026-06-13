@@ -16,6 +16,7 @@ import { WORKFLOW_SEQUENCE } from './types'
 import { buildDeptRates } from './routingRates'
 import { buildRoutingCrRates } from '../cutting/scheduling/routingRates'
 import { buildSapDeptRates } from './sapRates'
+import { isFoilOrder, isWireOrder } from './lvType'
 
 export interface DeptRegistryEntry {
   id: string
@@ -38,12 +39,17 @@ export interface DeptRegistryEntry {
   /** Fallback hours/unit when no rate exists for a kVA */
   fallbackHrs: number
   /**
-   * Fraction of orders that actually flow through this department (default 1).
-   * Used when one physical choice splits orders across parallel lines — e.g. an
-   * LV coil is EITHER foil OR wire, so the foil/wire lines carry the historical
-   * mix (~0.84 / 0.16) rather than each counting every order (double-counting).
+   * Fraction of orders that flow through this department (default 1). Legacy
+   * statistical split lever — superseded by orderFilter for coil LV lines.
    */
   demandWeight?: number
+
+  /**
+   * Optional per-order membership predicate. When set, only matching orders
+   * count toward this department's demand — used to split the LV coil pool into
+   * the Foil and Wire lines by derived LV type (one order → exactly one line).
+   */
+  orderFilter?: (o: Order) => boolean
 }
 
 /** Coil winding workcenters (sap_routing scheme; matches wcConfig). */
@@ -141,7 +147,7 @@ export const DEPT_REGISTRY: DeptRegistryEntry[] = [
     source: 'sap_routing',
     getRates: () => buildSapDeptRates(COIL_FOIL_WCS),
     fallbackHrs: 1.5,
-    demandWeight: 0.84,
+    orderFilter: isFoilOrder,
   },
   {
     id: 'coil-wire',
@@ -153,7 +159,7 @@ export const DEPT_REGISTRY: DeptRegistryEntry[] = [
     source: 'sap_routing',
     getRates: () => buildSapDeptRates(COIL_WIRE_WCS),
     fallbackHrs: 3.0,
-    demandWeight: 0.16,
+    orderFilter: isWireOrder,
   },
   // ── Assembly departments (capacity/forecast only — not workflow-tracked) ──
   // Hours come from the SAP routing export, summed across each department's
@@ -231,6 +237,7 @@ export function weekDemandByDept(
     for (const o of orders) {
       if (!o.plan_date || o.plan_date < monStr || o.plan_date > satStr) continue
       if (!orderCountsForDept(o, dept)) continue
+      if (dept.orderFilter && !dept.orderFilter(o)) continue
       hrs += (o.qty ?? 1) * lookupHrs(rates, o.kva ?? 0, dept.fallbackHrs) * weight
     }
     out.set(dept.id, hrs)
@@ -260,6 +267,7 @@ export function ordersForDepts(
     let hrs = 0
     for (const dept of depts) {
       if (!orderCountsForDept(o, dept)) continue
+      if (dept.orderFilter && !dept.orderFilter(o)) continue
       hrs += (o.qty ?? 1) * lookupHrs(rateOf.get(dept.id) ?? [], o.kva ?? 0, dept.fallbackHrs) * (dept.demandWeight ?? 1)
     }
     if (hrs > 0) out.push({ order: o, hrs })

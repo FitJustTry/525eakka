@@ -449,7 +449,7 @@ export default function FactoryForecastPage() {
         EE3105 ใช้ร่วมกันระหว่างเขย่า + เรียงเหล็ก จึงรวมโหลดทั้งสองแผนก &nbsp;|&nbsp;
         <span style={{ color: 'var(--blue)', fontWeight: 700 }}>SAP</span> = ชั่วโมงจาก SAP routing (พันคอยล์/ประกอบ รวมทุก WC) ·
         แผนกพันคอยล์+ประกอบนับงานที่วางแผนทั้งหมดที่ยังไม่ DONE (ยังไม่เชื่อม workflow) ·
-        LV-Foil/Wire ถ่วงน้ำหนักตามสัดส่วนจริง (~84% foil / 16% wire) ไม่นับซ้ำ
+        LV-Foil/Wire แยกตามชนิดจริงจากรหัสสินค้า (item code) — แต่ละออเดอร์เข้าสายเดียว ไม่นับซ้ำ
       </div>
     </div>
   )

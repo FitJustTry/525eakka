@@ -18,6 +18,7 @@ import WindingMachines from '../winding/WindingPage'
 import { COIL_LINES } from './configs'
 import { getWeekRange, fmtISO } from '../cutting/scheduling/utils'
 import { buildAllDeptRates, weekDemandByDept, getCapacityPools } from '../shared/deptRegistry'
+import { isLvUnclassified } from '../shared/lvType'
 
 const COIL_IDS = COIL_LINES.map(l => l.deptId)
 
@@ -44,6 +45,12 @@ export default function CoilPage() {
   }, [orders, wcConfig])
 
   const worst = lineKpis.reduce((a, b) => (b.util > (a?.util ?? -1) ? b : a), lineKpis[0])
+
+  // Orders whose LV type couldn't be derived from item code (defaulted to Foil)
+  const unclassified = useMemo(
+    () => orders.filter(o => o.workflow_status !== 'DONE' && isLvUnclassified(o)).length,
+    [orders]
+  )
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -126,8 +133,11 @@ export default function CoilPage() {
       }
 
       <div style={{ fontSize: 9, color: 'var(--txt3)' }}>
-        หมายเหตุ: LV-Foil และ LV-Wire ใช้ออเดอร์ชุดเดียวกัน (ยังไม่มีข้อมูลแยกชนิด LV ต่อออเดอร์) —
-        Factory Forecast ถ่วงน้ำหนักตามสัดส่วนจริง (~84% foil / 16% wire) เพื่อไม่นับซ้ำ
+        LV-Foil / LV-Wire แยกตามชนิดจริงจากรหัสสินค้า (item code ตำแหน่งที่ 9: A/E/I=Foil, C/F/J=Wire) —
+        แต่ละออเดอร์เข้าสายเดียว
+        {unclassified > 0 && (
+          <span style={{ color: 'var(--amber)' }}> · {unclassified} ออเดอร์ระบุชนิด LV ไม่ได้ → จัดเข้า Foil (ค่าเริ่มต้น)</span>
+        )}
       </div>
     </div>
   )

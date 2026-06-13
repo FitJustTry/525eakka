@@ -11,13 +11,13 @@
  * can adjust them under ⚙ สถานี. WC capacity (hrs/day, OT, eff) is read from
  * wcConfig via each station's wc_id.
  *
- * NOTE (LV-type data gap): an order's LV coil is either foil OR wire, but orders
- * carry no lv_type field yet, so the Foil and Wire schedulers both run over the
- * full order pool. Forecast handles this statistically (84/16 weighting); true
- * per-order LV splitting needs an lv_type field (Phase 2).
+ * LV type is DERIVED from the item-code characteristic (see shared/lvType):
+ * the Foil line schedules foil + indeterminate orders, the Wire line schedules
+ * only clear-wire orders — so each order lands on exactly one LV line.
  */
 
 import type { DeptConfig } from '../shared/types'
+import { isFoilOrder, isWireOrder } from '../shared/lvType'
 
 export const coilHvConfig: DeptConfig = {
   id: 'coil-hv',
@@ -53,6 +53,7 @@ export const coilFoilConfig: DeptConfig = {
   snapshotsPath: '/dept-plan-snapshots/coil-foil',
   supportsOT: true,
   supportsShift: true,
+  orderFilter: isFoilOrder,
 }
 
 export const coilWireConfig: DeptConfig = {
@@ -71,6 +72,7 @@ export const coilWireConfig: DeptConfig = {
   snapshotsPath: '/dept-plan-snapshots/coil-wire',
   supportsOT: true,
   supportsShift: true,
+  orderFilter: isWireOrder,
 }
 
 export const COIL_LINES: { key: string; label: string; icon: string; color: string; deptId: string; config: DeptConfig }[] = [
