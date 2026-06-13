@@ -97,7 +97,7 @@ export default function OverviewPage() {
   // ── This-week bottleneck ──
   const bottleneck = useMemo(() => {
     const deptRates = buildAllDeptRates(routingRows)
-    const demand = weekDemandByDept(orders, deptRates, monStr, satStr)
+    const demand = weekDemandByDept(orders, deptRates, 0)
     const pools = getCapacityPools(wcConfig)
     let worst: { label: string; util: number; demand: number; reg: number; ot: number } | null = null
     for (const pool of pools) {
@@ -110,7 +110,7 @@ export default function OverviewPage() {
       }
     }
     return worst
-  }, [routingRows, orders, wcConfig, monStr, satStr])
+  }, [routingRows, orders, wcConfig])
 
   // ── Delivery-risk orders ──
   const riskRows = useMemo((): RiskRow[] => {

@@ -14,6 +14,8 @@ import { makeHorizonWeeks, buildDeptRates, computeHorizon } from '../shared/engi
 import { riskLevel, RISK_META, summarize, bottleneckForWeek, carryRiskOrders } from '../shared/engines/riskEngine'
 import { recommendations } from '../shared/engines/recommendationEngine'
 import { runScenarios } from '../shared/engines/simulationEngine'
+import { earliestShip } from '../shared/engines/promiseEngine'
+import { getWeekRange, fmtD } from '../cutting/scheduling/utils'
 
 const HORIZONS = [4, 8]
 const pct = (u: number) => `${Math.round(u * 100)}%`
@@ -24,6 +26,8 @@ export default function CapacityRiskPage() {
   const [routingRows, setRoutingRows] = useState<RoutingCrRow[]>([])
   const [horizon, setHorizon] = useState(8)
   const [startOffset, setStartOffset] = useState(0)
+  const [atpKva, setAtpKva] = useState(250)
+  const [atpQty, setAtpQty] = useState(1)
 
   useEffect(() => {
     api.routingCr.list().then(r => setRoutingRows(r as RoutingCrRow[])).catch(() => {})
@@ -38,6 +42,9 @@ export default function CapacityRiskPage() {
   const scenarios = useMemo(() => runScenarios(base, orders, deptRates, weeks), [base, orders, deptRates, weeks])
   const carryNow = useMemo(() => carryRiskOrders(orders, deptRates, base, weeks, 'reg').size, [orders, deptRates, base, weeks])
   const weekBottlenecks = useMemo(() => weeks.map((_, wi) => bottleneckForWeek(base, wi)), [base, weeks])
+
+  const atp = useMemo(() => earliestShip(atpKva, atpQty, base, deptRates, weeks), [atpKva, atpQty, base, deptRates, weeks])
+  const atpShip = useMemo(() => { const { mon } = getWeekRange(startOffset + atp.shipWeekIndex); return fmtD(mon) }, [atp, startOffset])
 
   const scenCurrent = scenarios.find(s => s.scenario.id === 'current')
   const scenOt = scenarios.find(s => s.scenario.id === 'ot')
@@ -84,6 +91,49 @@ export default function CapacityRiskPage() {
           </div>
         )}
       </div>
+
+      {/* Available-to-Promise calculator */}
+      <Panel title="Order Promise (ATP) — “รับออเดอร์นี้แล้วส่งได้เมื่อไหร่?”">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 11, color: 'var(--txt2)', display: 'flex', alignItems: 'center', gap: 5 }}>
+            kVA
+            <input type="number" min={1} value={atpKva} onChange={e => setAtpKva(Number(e.target.value) || 0)}
+              style={{ width: 80, fontSize: 11, padding: '3px 6px', borderRadius: 5, border: '1px solid var(--bord)', background: 'var(--bg)', color: 'var(--txt)' }} />
+          </label>
+          <label style={{ fontSize: 11, color: 'var(--txt2)', display: 'flex', alignItems: 'center', gap: 5 }}>
+            จำนวน
+            <input type="number" min={1} value={atpQty} onChange={e => setAtpQty(Number(e.target.value) || 1)}
+              style={{ width: 60, fontSize: 11, padding: '3px 6px', borderRadius: 5, border: '1px solid var(--bord)', background: 'var(--bg)', color: 'var(--txt)' }} />
+          </label>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <span style={{ fontSize: 10, color: 'var(--txt3)' }}>ส่งได้เร็วสุด</span>
+            <span style={{ fontSize: 20, fontWeight: 800, fontFamily: 'var(--mono)', color: atp.feasible ? 'var(--green)' : 'var(--red)' }}>
+              {atpShip}
+            </span>
+            <span style={{ fontSize: 10, color: 'var(--txt3)' }}>
+              {atp.feasible ? `(เริ่มสัปดาห์ ${weeks[atp.startWeekIndex]?.label})` : '⚠ เกินกำลังในช่วงนี้ — ต้องเลื่อน/เพิ่มกำลัง'}
+            </span>
+          </div>
+        </div>
+        {atp.binding && (
+          <div style={{ fontSize: 10, color: 'var(--txt3)', marginTop: 6 }}>
+            ขั้นที่กำหนดวันส่ง: <strong style={{ color: 'var(--txt2)' }}>{atp.binding.icon} {atp.binding.label}</strong> —
+            ต้องการ {Math.round(atp.binding.requiredHrs)}h, ว่าง {Math.round(atp.binding.freeHrs)}h (สัปดาห์ {weeks[atp.binding.weekIndex]?.label})
+          </div>
+        )}
+        {/* Stage timeline */}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+          {atp.stages.map((s, i) => {
+            const fits = s.freeHrs >= s.requiredHrs
+            return (
+              <span key={s.poolKey} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 9, padding: '3px 8px', borderRadius: 6, background: fits ? 'rgba(166,227,161,.10)' : 'rgba(243,139,168,.12)', border: `1px solid ${fits ? 'var(--green)' : 'var(--red)'}33`, color: fits ? 'var(--green)' : 'var(--red)' }}>
+                {i > 0 && <span style={{ color: 'var(--txt3)' }}>→</span>}
+                {s.icon} {s.label.split(' + ')[0]} · {weeks[s.weekIndex]?.label ?? `+${s.weekIndex}`} · {Math.round(s.requiredHrs)}h
+              </span>
+            )
+          })}
+        </div>
+      </Panel>
 
       {/* 6A — Risk heatmap (pools × weeks) */}
       <Panel title="ความเสี่ยงกำลังการผลิต — รายสาย × สัปดาห์ (util % ของชั่วโมงปกติ)">

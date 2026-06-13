@@ -16,7 +16,6 @@ import { useApp } from '../../../context/AppContext'
 import DeptSchedulerPage from '../components/DeptSchedulerPage'
 import WindingMachines from '../winding/WindingPage'
 import { COIL_LINES } from './configs'
-import { getWeekRange, fmtISO } from '../cutting/scheduling/utils'
 import { buildAllDeptRates, weekDemandByDept, getCapacityPools } from '../shared/deptRegistry'
 import { isLvUnclassified } from '../shared/lvType'
 
@@ -29,9 +28,8 @@ export default function CoilPage() {
 
   // Current-week utilisation per coil line (shared forecast helpers → consistent)
   const lineKpis = useMemo(() => {
-    const { mon, sat } = getWeekRange(0)
     const deptRates = buildAllDeptRates([]).filter(dr => COIL_IDS.includes(dr.dept.id))
-    const demand = weekDemandByDept(orders, deptRates, fmtISO(mon), fmtISO(sat))
+    const demand = weekDemandByDept(orders, deptRates, 0)
     const capByDept = new Map<string, { reg: number; ot: number }>()
     for (const pool of getCapacityPools(wcConfig)) {
       for (const d of pool.depts) if (COIL_IDS.includes(d.id)) capByDept.set(d.id, pool.cap)

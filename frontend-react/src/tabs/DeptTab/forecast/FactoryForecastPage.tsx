@@ -104,7 +104,7 @@ export default function FactoryForecastPage() {
     const map = new Map<string, number[]>()
     DEPT_REGISTRY.forEach(d => map.set(d.id, weeks.map(() => 0)))
     weeks.forEach((w, wi) => {
-      const wk = weekDemandByDept(orders, deptRates, w.monStr, w.satStr)
+      const wk = weekDemandByDept(orders, deptRates, w.offset)
       wk.forEach((hrs, deptId) => { map.get(deptId)![wi] = hrs })
     })
     return map
@@ -142,7 +142,7 @@ export default function FactoryForecastPage() {
     const pool = pools.find(p => p.key === drill.poolKey)
     const w = weeks[drill.wi]
     if (!pool || !w) return null
-    const contributions = ordersForDepts(orders, deptRates, pool.depts, w.monStr, w.satStr)
+    const contributions = ordersForDepts(orders, deptRates, pool.depts, w.offset)
     return { pool, w, contributions, totalCap: pool.cap.reg + pool.cap.ot }
   }, [drill, pools, weeks, orders, deptRates])
 

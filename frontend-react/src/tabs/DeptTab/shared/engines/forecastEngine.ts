@@ -86,7 +86,7 @@ export function computeHorizon(
   const demand = new Map<string, number[]>()
   deptRates.forEach(({ dept }) => demand.set(dept.id, weeks.map(() => 0)))
   weeks.forEach((w, wi) => {
-    const wk = weekDemandByDept(orders, deptRates, w.monStr, w.satStr)
+    const wk = weekDemandByDept(orders, deptRates, w.offset)
     wk.forEach((hrs, deptId) => { const row = demand.get(deptId); if (row) row[wi] = hrs })
   })
 
@@ -115,5 +115,5 @@ export function poolWeekOrders(
   pool: PoolHorizon,
   week: HorizonWeek,
 ): OrderContribution[] {
-  return ordersForDepts(orders, deptRates, pool.depts, week.monStr, week.satStr)
+  return ordersForDepts(orders, deptRates, pool.depts, week.offset)
 }

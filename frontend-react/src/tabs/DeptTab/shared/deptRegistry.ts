@@ -17,6 +17,7 @@ import { buildDeptRates } from './routingRates'
 import { buildRoutingCrRates } from '../cutting/scheduling/routingRates'
 import { buildSapDeptRates } from './sapRates'
 import { isFoilOrder, isWireOrder } from './lvType'
+import { getWeekRange, fmtISO } from '../cutting/scheduling/utils'
 
 export interface DeptRegistryEntry {
   id: string
@@ -50,6 +51,15 @@ export interface DeptRegistryEntry {
    * the Foil and Wire lines by derived LV type (one order → exactly one line).
    */
   orderFilter?: (o: Order) => boolean
+
+  /**
+   * Weeks AFTER an order's plan_date that this department's work actually
+   * occurs (default 0). plan_date schedules the core line, so core + coil are
+   * lead 0, while assembly happens weeks later. Demand for this dept in display
+   * week W is drawn from the plan-week (W − leadWeeks) — so the multi-week
+   * forecast places downstream load when it really lands, not all up front.
+   */
+  leadWeeks?: number
 }
 
 /** Coil winding workcenters (sap_routing scheme; matches wcConfig). */
@@ -175,6 +185,7 @@ export const DEPT_REGISTRY: DeptRegistryEntry[] = [
     source: 'sap_routing',
     getRates: () => buildSapDeptRates(INTERNAL_ASSEMBLY_WCS),
     fallbackHrs: 13.7,
+    leadWeeks: 1,
   },
   {
     id: 'external-assembly',
@@ -186,6 +197,7 @@ export const DEPT_REGISTRY: DeptRegistryEntry[] = [
     source: 'sap_routing',
     getRates: () => buildSapDeptRates(EXTERNAL_ASSEMBLY_WCS),
     fallbackHrs: 10.3,
+    leadWeeks: 2,
   },
 ]
 
@@ -224,16 +236,30 @@ export function orderCountsForDept(order: Order, dept: DeptRegistryEntry): boole
   return stageIdx(st) <= stageIdx(dept.workflowStage)
 }
 
+/**
+ * Plan-date window a department draws from for a given display-week offset,
+ * shifted back by the department's lead time (downstream work for display week
+ * W comes from orders planned in week W − leadWeeks).
+ */
+export function deptWindow(displayOffset: number, dept: DeptRegistryEntry): { monStr: string; satStr: string } {
+  const { mon, sat } = getWeekRange(displayOffset - (dept.leadWeeks ?? 0))
+  return { monStr: fmtISO(mon), satStr: fmtISO(sat) }
+}
+
+/**
+ * Hours each department needs in the display week at `displayOffset` (0 = current).
+ * Each department reads from its own lead-shifted plan-week (see deptWindow).
+ */
 export function weekDemandByDept(
   orders: Order[],
   deptRates: { dept: DeptRegistryEntry; rates: CuttingRate[] }[],
-  monStr: string,
-  satStr: string,
+  displayOffset: number,
 ): Map<string, number> {
   const out = new Map<string, number>()
   for (const { dept, rates } of deptRates) {
-    let hrs = 0
+    const { monStr, satStr } = deptWindow(displayOffset, dept)
     const weight = dept.demandWeight ?? 1
+    let hrs = 0
     for (const o of orders) {
       if (!o.plan_date || o.plan_date < monStr || o.plan_date > satStr) continue
       if (!orderCountsForDept(o, dept)) continue
@@ -257,15 +283,16 @@ export function ordersForDepts(
   orders: Order[],
   deptRates: { dept: DeptRegistryEntry; rates: CuttingRate[] }[],
   depts: DeptRegistryEntry[],
-  monStr: string,
-  satStr: string,
+  displayOffset: number,
 ): OrderContribution[] {
   const rateOf = new Map(deptRates.map(dr => [dr.dept.id, dr.rates]))
+  const winOf = new Map(depts.map(d => [d.id, deptWindow(displayOffset, d)]))
   const out: OrderContribution[] = []
   for (const o of orders) {
-    if (!o.plan_date || o.plan_date < monStr || o.plan_date > satStr) continue
     let hrs = 0
     for (const dept of depts) {
+      const win = winOf.get(dept.id)!
+      if (!o.plan_date || o.plan_date < win.monStr || o.plan_date > win.satStr) continue
       if (!orderCountsForDept(o, dept)) continue
       if (dept.orderFilter && !dept.orderFilter(o)) continue
       hrs += (o.qty ?? 1) * lookupHrs(rateOf.get(dept.id) ?? [], o.kva ?? 0, dept.fallbackHrs) * (dept.demandWeight ?? 1)
