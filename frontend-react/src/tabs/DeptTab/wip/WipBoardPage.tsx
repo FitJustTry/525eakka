@@ -5,11 +5,14 @@
  *   CUTTING → SHAKE → STACK → CLAMP → NOLOAD → DONE
  *
  * Each column shows: count of orders, total kVA, and order cards.
- * The "Close Week" action in each DeptSchedulerPage moves orders here.
+ * Cards can be moved one stage back/forward with ◀ ▶ — the change is persisted
+ * via the workflow-status endpoint and reflected instantly in app state.
+ * The "Close Week" action in each DeptSchedulerPage also moves orders here.
  */
 
 import { useMemo, useState } from 'react'
 import { useApp } from '../../../context/AppContext'
+import { api } from '../../../api'
 import { WORKFLOW_SEQUENCE, WORKFLOW_LABELS } from '../shared/types'
 import type { WorkflowStatus } from '../shared/types'
 import type { Order } from '../../../types'
@@ -32,6 +35,8 @@ const STAGE_BG: Record<WorkflowStatus, string> = {
   DONE:    'rgba(108,112,134,.06)',
 }
 
+const idxOf = (s: WorkflowStatus) => WORKFLOW_SEQUENCE.indexOf(s)
+
 function PriorityBadge({ priority }: { priority?: string }) {
   if (!priority || priority === 'normal') return null
   const cfg = priority === 'rush'
@@ -44,19 +49,46 @@ function PriorityBadge({ priority }: { priority?: string }) {
   )
 }
 
-function OrderCard({ order }: { order: Order }) {
+function OrderCard({ order, onMove, busy }: {
+  order: Order
+  onMove: (order: Order, dir: -1 | 1) => void
+  busy: boolean
+}) {
   const overdue = order.deadline && order.deadline < new Date().toISOString().slice(0, 10)
+  const stage: WorkflowStatus = (order.workflow_status as WorkflowStatus) || 'CUTTING'
+  const i = idxOf(stage)
+  const canBack = i > 0
+  const canFwd = i < WORKFLOW_SEQUENCE.length - 1
   return (
     <div style={{
       background: 'var(--bg)', border: '1px solid var(--bord)', borderRadius: 7,
       padding: '7px 9px', marginBottom: 5,
       borderLeft: overdue ? '3px solid var(--red)' : '3px solid transparent',
+      opacity: busy ? 0.5 : 1, transition: 'opacity .15s',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
         <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 10, color: 'var(--amber)' }}>
           {order.sap_so || order.id.slice(-8)}
         </span>
         <PriorityBadge priority={order.priority} />
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 2 }}>
+          <button
+            disabled={!canBack || busy}
+            onClick={() => onMove(order, -1)}
+            title="ย้อนกลับขั้นก่อนหน้า"
+            style={{
+              fontSize: 9, lineHeight: 1, padding: '2px 5px', borderRadius: 4, cursor: canBack && !busy ? 'pointer' : 'not-allowed',
+              border: '1px solid var(--bord)', background: 'var(--bg3)', color: canBack ? 'var(--txt2)' : 'var(--txt3)', opacity: canBack ? 1 : 0.35,
+            }}>◀</button>
+          <button
+            disabled={!canFwd || busy}
+            onClick={() => onMove(order, 1)}
+            title="ส่งต่อขั้นถัดไป"
+            style={{
+              fontSize: 9, lineHeight: 1, padding: '2px 5px', borderRadius: 4, cursor: canFwd && !busy ? 'pointer' : 'not-allowed',
+              border: '1px solid var(--bord)', background: 'var(--bg3)', color: canFwd ? 'var(--green)' : 'var(--txt3)', opacity: canFwd ? 1 : 0.35,
+            }}>▶</button>
+        </span>
       </div>
       <div style={{ display: 'flex', gap: 6, fontSize: 9, color: 'var(--txt3)' }}>
         <span style={{ color: 'var(--blue)', fontWeight: 600 }}>{order.kva} kVA</span>
@@ -72,11 +104,13 @@ function OrderCard({ order }: { order: Order }) {
   )
 }
 
-function StageColumn({ stage, orders, collapsed, onToggle }: {
+function StageColumn({ stage, orders, collapsed, onToggle, onMove, busyIds }: {
   stage: WorkflowStatus
   orders: Order[]
   collapsed: boolean
   onToggle: () => void
+  onMove: (order: Order, dir: -1 | 1) => void
+  busyIds: Set<string>
 }) {
   const col = STAGE_COLORS[stage]
   const bg = STAGE_BG[stage]
@@ -145,7 +179,7 @@ function StageColumn({ stage, orders, collapsed, onToggle }: {
               ว่าง
             </div>
           )}
-          {orders.map(o => <OrderCard key={o.id} order={o} />)}
+          {orders.map(o => <OrderCard key={o.id} order={o} onMove={onMove} busy={busyIds.has(o.id)} />)}
         </div>
       )}
     </div>
@@ -153,10 +187,30 @@ function StageColumn({ stage, orders, collapsed, onToggle }: {
 }
 
 export default function WipBoardPage() {
-  const { state } = useApp()
+  const { state, dispatch } = useApp()
   const { orders } = state
   const [showDone, setShowDone] = useState(false)
   const [collapsed, setCollapsed] = useState<Set<WorkflowStatus>>(new Set(['DONE']))
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set())
+  const [moveMsg, setMoveMsg] = useState<string | null>(null)
+
+  const handleMove = async (order: Order, dir: -1 | 1) => {
+    const cur = (order.workflow_status as WorkflowStatus) || 'CUTTING'
+    const targetIdx = idxOf(cur) + dir
+    if (targetIdx < 0 || targetIdx >= WORKFLOW_SEQUENCE.length) return
+    const target = WORKFLOW_SEQUENCE[targetIdx]
+    setBusyIds(prev => new Set(prev).add(order.id))
+    try {
+      const updated = await api.orders.batchWorkflowStatus([order.id], target)
+      dispatch({ type: 'PATCH_ORDERS', patches: updated })
+      setMoveMsg(`${order.sap_so || order.id.slice(-6)} → ${target}`)
+      setTimeout(() => setMoveMsg(null), 2000)
+    } catch (e) {
+      setMoveMsg(`❌ ${e instanceof Error ? e.message : String(e)}`)
+      setTimeout(() => setMoveMsg(null), 4000)
+    }
+    setBusyIds(prev => { const n = new Set(prev); n.delete(order.id); return n })
+  }
 
   const grouped = useMemo(() => {
     const map = new Map<WorkflowStatus, Order[]>()
@@ -165,7 +219,6 @@ export default function WipBoardPage() {
       const stage: WorkflowStatus = (o.workflow_status as WorkflowStatus) || 'CUTTING'
       map.get(stage)?.push(o)
     }
-    // Sort each column by priority then deadline
     const priorityOrder = { rush: 0, high: 1, normal: 2 }
     map.forEach((list) => {
       list.sort((a, b) => {
@@ -200,6 +253,11 @@ export default function WipBoardPage() {
         {rushOrders.length > 0 && (
           <span style={{ fontSize: 10, background: 'rgba(243,139,168,.12)', border: '1px solid var(--red)44', padding: '2px 8px', borderRadius: 6, color: 'var(--red)', fontWeight: 700 }}>
             🔴 {rushOrders.length} Rush
+          </span>
+        )}
+        {moveMsg && (
+          <span style={{ fontSize: 10, color: moveMsg.startsWith('❌') ? 'var(--red)' : 'var(--green)', fontFamily: 'var(--mono)' }}>
+            {moveMsg.startsWith('❌') ? moveMsg : `✓ ${moveMsg}`}
           </span>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
@@ -242,8 +300,14 @@ export default function WipBoardPage() {
               next.has(stage) ? next.delete(stage) : next.add(stage)
               return next
             })}
+            onMove={handleMove}
+            busyIds={busyIds}
           />
         ))}
+      </div>
+
+      <div style={{ fontSize: 9, color: 'var(--txt3)' }}>
+        ◀ ▶ บนการ์ดเพื่อย้ายงานไป-กลับระหว่างขั้นตอน · คลิกหัวคอลัมน์เพื่อย่อ/ขยาย
       </div>
 
     </div>

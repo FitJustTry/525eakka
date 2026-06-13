@@ -7,9 +7,10 @@ import SteelShakePage from './steelShake/SteelShakePage'
 import ClampAssemblyPage from './clampAssembly/ClampAssemblyPage'
 import NoLoadPage from './noLoad/NoLoadPage'
 import WipBoardPage from './wip/WipBoardPage'
+import FactoryForecastPage from './forecast/FactoryForecastPage'
 
 type DeptId = 'core' | 'coil' | 'inner' | 'outer'
-type CoreView = 'dept' | 'cutting' | 'steelshake' | 'steelstack' | 'clamp' | 'noload' | 'wip'
+type CoreView = 'dept' | 'cutting' | 'steelshake' | 'steelstack' | 'clamp' | 'noload' | 'wip' | 'forecast'
 
 const DEPTS: { id: DeptId; label: string; color: string; wcs: string[] }[] = [
   {
@@ -74,6 +75,7 @@ export default function DeptTab() {
               { view: 'clamp',      label: '🔨 แคลมป์',     col: '#fab387',      bg: 'rgba(250,179,135,.12)' },
               { view: 'noload',     label: '⚡ No Load',     col: 'var(--green)', bg: 'rgba(166,227,161,.12)' },
               { view: 'wip',        label: '🗂 WIP Board',   col: 'var(--txt2)',  bg: 'rgba(166,173,200,.12)' },
+              { view: 'forecast',   label: '📈 Forecast',    col: 'var(--blue)',  bg: 'rgba(137,180,250,.12)' },
             ] as const).map(({ view, label, col, bg }) => (
               <button key={view}
                 onClick={() => setCoreView(v => v === view ? 'dept' : view)}
@@ -109,6 +111,7 @@ export default function DeptTab() {
       : dept === 'core' && coreView === 'clamp'      ? <ClampAssemblyPage />
       : dept === 'core' && coreView === 'noload'     ? <NoLoadPage />
       : dept === 'core' && coreView === 'wip'        ? <WipBoardPage />
+      : dept === 'core' && coreView === 'forecast'   ? <FactoryForecastPage />
       : dept === 'coil' && showCoil                  ? <CoilMachines />
       : <DeptContent dept={current} />
       }
