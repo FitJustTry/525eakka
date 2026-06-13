@@ -16,7 +16,7 @@
  * Pure, page-free.
  */
 
-import type { Order } from '../../../types'
+import type { Order } from '../../../../types'
 
 export interface ComponentDef { key: string; label: string; field: keyof Order }
 

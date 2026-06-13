@@ -7,7 +7,7 @@
  * when there's no completed-order history yet.
  */
 
-import type { Order } from '../../../types'
+import type { Order } from '../../../../types'
 
 export interface MonthKpi {
   month: string        // YYYY-MM

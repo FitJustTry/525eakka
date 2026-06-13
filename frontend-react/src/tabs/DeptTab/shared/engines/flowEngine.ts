@@ -10,7 +10,7 @@
  * Pure, page-free.
  */
 
-import type { Order } from '../../../types'
+import type { Order } from '../../../../types'
 import { getWeekRange, fmtISO, fmtD } from '../../cutting/scheduling/utils'
 import type { HorizonWeek } from './forecastEngine'
 

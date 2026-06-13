@@ -15,7 +15,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { useApp } from '../../../context/AppContext'
 import { api } from '../../../api'
-import type { CuttingMachine, CuttingRate, Order } from '../../../types'
+import type { CuttingMachine, Order } from '../../../types'
 import type { RoutingCrRow } from '../cutting/scheduling/routingRates'
 import { getWeekRange, fmtISO, fmtD } from '../cutting/scheduling/utils'
 import {

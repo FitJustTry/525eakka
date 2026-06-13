@@ -50,7 +50,6 @@ export default function DeptTab() {
   const [showCoil, setShowCoil] = useState(false)
 
   const current = DEPTS.find(d => d.id === dept)!
-  const showCutting = coreView === 'cutting'
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
