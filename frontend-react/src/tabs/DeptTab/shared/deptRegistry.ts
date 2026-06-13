@@ -10,8 +10,9 @@
  * used by aggregate screens.
  */
 
-import type { CuttingRate, RoutingCrRow } from '../../../types'
+import type { CuttingRate, RoutingCrRow, WCConfig, Order } from '../../../types'
 import type { WorkflowStatus } from './types'
+import { WORKFLOW_SEQUENCE } from './types'
 import { buildDeptRates } from './routingRates'
 import { buildRoutingCrRates } from '../cutting/scheduling/routingRates'
 
@@ -91,4 +92,75 @@ export function lookupHrs(rates: CuttingRate[], kva: number, fallback: number): 
     Math.abs(r.kva - kva) < Math.abs(best.kva - kva) ? r : best
   )
   return nearest.hrs
+}
+
+export const stageIdx = (s: WorkflowStatus) => WORKFLOW_SEQUENCE.indexOf(s)
+
+/** Pre-compute each department's rate table from raw routing rows. */
+export function buildAllDeptRates(rows: RoutingCrRow[]): { dept: DeptRegistryEntry; rates: CuttingRate[] }[] {
+  return DEPT_REGISTRY.map(d => ({ dept: d, rates: d.getRates(rows) }))
+}
+
+/**
+ * Hours of work each department needs for orders planned in [monStr, satStr].
+ * An order only counts toward a department it has NOT yet passed, so advancing
+ * an order's workflow_status removes its load from upstream stages.
+ */
+export function weekDemandByDept(
+  orders: Order[],
+  deptRates: { dept: DeptRegistryEntry; rates: CuttingRate[] }[],
+  monStr: string,
+  satStr: string,
+): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const { dept, rates } of deptRates) {
+    let hrs = 0
+    for (const o of orders) {
+      if (!o.plan_date || o.plan_date < monStr || o.plan_date > satStr) continue
+      const st = (o.workflow_status as WorkflowStatus) || 'CUTTING'
+      if (stageIdx(st) > stageIdx(dept.workflowStage)) continue
+      hrs += (o.qty ?? 1) * lookupHrs(rates, o.kva ?? 0, dept.fallbackHrs)
+    }
+    out.set(dept.id, hrs)
+  }
+  return out
+}
+
+export interface CapacityPool {
+  key: string
+  wcs: string[]
+  depts: DeptRegistryEntry[]
+  cap: { reg: number; ot: number }
+}
+
+function wcWeeklyCapacity(wc: WCConfig | undefined): { reg: number; ot: number } {
+  if (!wc) return { reg: 0, ot: 0 }
+  const eff = (wc.eff ?? 90) / 100
+  return {
+    reg: wc.workers * (wc.hrs * 5 + (wc.sat_hrs ?? 0)) * eff,
+    ot:  wc.workers * ((wc.ot ?? 0) * 5 + (wc.sat_ot ?? 0)) * eff,
+  }
+}
+
+/**
+ * Group departments into capacity pools by shared workcenter signature
+ * (EE3105 is shared by Shake + Stack) and compute each pool's weekly capacity.
+ */
+export function getCapacityPools(wcConfig: Record<string, WCConfig>): CapacityPool[] {
+  const byKey = new Map<string, { key: string; wcs: string[]; depts: DeptRegistryEntry[] }>()
+  for (const d of DEPT_REGISTRY) {
+    const key = d.workcenters.join('+')
+    if (!byKey.has(key)) byKey.set(key, { key, wcs: d.workcenters, depts: [] })
+    byKey.get(key)!.depts.push(d)
+  }
+  return [...byKey.values()].map(pool => ({
+    ...pool,
+    cap: pool.wcs.reduce(
+      (acc, wc) => {
+        const c = wcWeeklyCapacity(wcConfig[wc])
+        return { reg: acc.reg + c.reg, ot: acc.ot + c.ot }
+      },
+      { reg: 0, ot: 0 },
+    ),
+  }))
 }

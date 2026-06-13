@@ -8,9 +8,10 @@ import ClampAssemblyPage from './clampAssembly/ClampAssemblyPage'
 import NoLoadPage from './noLoad/NoLoadPage'
 import WipBoardPage from './wip/WipBoardPage'
 import FactoryForecastPage from './forecast/FactoryForecastPage'
+import OverviewPage from './overview/OverviewPage'
 
 type DeptId = 'core' | 'coil' | 'inner' | 'outer'
-type CoreView = 'dept' | 'cutting' | 'steelshake' | 'steelstack' | 'clamp' | 'noload' | 'wip' | 'forecast'
+type CoreView = 'dept' | 'overview' | 'cutting' | 'steelshake' | 'steelstack' | 'clamp' | 'noload' | 'wip' | 'forecast'
 
 const DEPTS: { id: DeptId; label: string; color: string; wcs: string[] }[] = [
   {
@@ -41,7 +42,7 @@ const DEPTS: { id: DeptId; label: string; color: string; wcs: string[] }[] = [
 
 export default function DeptTab() {
   const [dept, setDept] = useState<DeptId>('core')
-  const [coreView, setCoreView] = useState<CoreView>('dept')
+  const [coreView, setCoreView] = useState<CoreView>('overview')
   const [showCoil, setShowCoil] = useState(false)
 
   const current = DEPTS.find(d => d.id === dept)!
@@ -53,7 +54,7 @@ export default function DeptTab() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 15, fontWeight: 600, marginRight: 4 }}>🏭 แผนก</div>
         {DEPTS.map(d => (
-          <button key={d.id} onClick={() => { setDept(d.id); setCoreView('dept'); setShowCoil(false) }}
+          <button key={d.id} onClick={() => { setDept(d.id); setCoreView(d.id === 'core' ? 'overview' : 'dept'); setShowCoil(false) }}
             style={{
               fontSize: 12, padding: '6px 18px', borderRadius: 20,
               border: `1.5px solid ${dept === d.id ? d.color : 'var(--bord)'}`,
@@ -69,6 +70,7 @@ export default function DeptTab() {
         {dept === 'core' && (
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {([
+              { view: 'overview',   label: '🏭 ภาพรวม',     col: 'var(--blue)',  bg: 'rgba(137,180,250,.12)' },
               { view: 'cutting',    label: '🔧 ตัดโลหะ',    col: 'var(--amber)', bg: 'rgba(249,226,175,.12)' },
               { view: 'steelshake', label: '🌀 เขย่าเหล็ก', col: '#cba6f7',      bg: 'rgba(203,166,247,.12)' },
               { view: 'steelstack', label: '🔩 เรียงเหล็ก', col: 'var(--blue)',  bg: 'rgba(137,180,250,.12)' },
@@ -76,6 +78,7 @@ export default function DeptTab() {
               { view: 'noload',     label: '⚡ No Load',     col: 'var(--green)', bg: 'rgba(166,227,161,.12)' },
               { view: 'wip',        label: '🗂 WIP Board',   col: 'var(--txt2)',  bg: 'rgba(166,173,200,.12)' },
               { view: 'forecast',   label: '📈 Forecast',    col: 'var(--blue)',  bg: 'rgba(137,180,250,.12)' },
+              { view: 'dept',       label: '📋 สถานีงาน',    col: 'var(--txt2)',  bg: 'rgba(166,173,200,.12)' },
             ] as const).map(({ view, label, col, bg }) => (
               <button key={view}
                 onClick={() => setCoreView(v => v === view ? 'dept' : view)}
@@ -105,7 +108,8 @@ export default function DeptTab() {
         )}
       </div>
 
-      {dept === 'core' && coreView === 'cutting'    ? <CuttingMachines />
+      {dept === 'core' && coreView === 'overview'   ? <OverviewPage />
+      : dept === 'core' && coreView === 'cutting'    ? <CuttingMachines />
       : dept === 'core' && coreView === 'steelshake' ? <SteelShakePage />
       : dept === 'core' && coreView === 'steelstack' ? <SteelStackPage />
       : dept === 'core' && coreView === 'clamp'      ? <ClampAssemblyPage />

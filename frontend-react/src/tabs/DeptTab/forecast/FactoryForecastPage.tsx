@@ -25,26 +25,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useApp } from '../../../context/AppContext'
 import { api } from '../../../api'
-import type { RoutingCrRow, WCConfig, Order } from '../../../types'
+import type { RoutingCrRow } from '../../../types'
 import { getWeekRange, fmtISO, fmtD } from '../cutting/scheduling/utils'
-import { DEPT_REGISTRY, lookupHrs } from '../shared/deptRegistry'
-import type { DeptRegistryEntry } from '../shared/deptRegistry'
-import { WORKFLOW_SEQUENCE } from '../shared/types'
-import type { WorkflowStatus } from '../shared/types'
+import {
+  DEPT_REGISTRY, buildAllDeptRates, weekDemandByDept, getCapacityPools,
+} from '../shared/deptRegistry'
 
 const HORIZON_OPTIONS = [4, 6, 8, 12]
 
 interface WeekCol { offset: number; mon: Date; sat: Date; monStr: string; satStr: string; label: string }
-
-function weeklyCapacity(wc: WCConfig | undefined): { reg: number; ot: number } {
-  if (!wc) return { reg: 0, ot: 0 }
-  const eff = (wc.eff ?? 90) / 100
-  const reg = wc.workers * (wc.hrs * 5 + (wc.sat_hrs ?? 0)) * eff
-  const ot = wc.workers * ((wc.ot ?? 0) * 5 + (wc.sat_ot ?? 0)) * eff
-  return { reg, ot }
-}
-
-const stageIdx = (s: WorkflowStatus) => WORKFLOW_SEQUENCE.indexOf(s)
 
 export default function FactoryForecastPage() {
   const { state } = useApp()
@@ -68,51 +57,27 @@ export default function FactoryForecastPage() {
     })
   }, [horizon, startOffset])
 
-  // Pre-compute each department's rate table once
-  const deptRates = useMemo(
-    () => DEPT_REGISTRY.map(d => ({ dept: d, rates: d.getRates(routingRows) })),
-    [routingRows]
-  )
+  const deptRates = useMemo(() => buildAllDeptRates(routingRows), [routingRows])
 
   // demand[deptId][weekIndex] = hours
   const demand = useMemo(() => {
     const map = new Map<string, number[]>()
-    for (const { dept, rates } of deptRates) {
-      const row = weeks.map(w => {
-        let hrs = 0
-        for (const o of orders) {
-          if (!o.plan_date || o.plan_date < w.monStr || o.plan_date > w.satStr) continue
-          // Skip orders that have already passed this stage
-          const st = (o.workflow_status as WorkflowStatus) || 'CUTTING'
-          if (stageIdx(st) > stageIdx(dept.workflowStage)) continue
-          const kva = o.kva ?? 0
-          hrs += (o.qty ?? 1) * lookupHrs(rates, kva, dept.fallbackHrs)
-        }
-        return hrs
-      })
-      map.set(dept.id, row)
-    }
+    DEPT_REGISTRY.forEach(d => map.set(d.id, weeks.map(() => 0)))
+    weeks.forEach((w, wi) => {
+      const wk = weekDemandByDept(orders, deptRates, w.monStr, w.satStr)
+      wk.forEach((hrs, deptId) => { map.get(deptId)![wi] = hrs })
+    })
     return map
   }, [deptRates, weeks, orders])
 
-  // Capacity pools — group departments sharing the same workcenter signature
+  // Capacity pools (shared helper) + per-week demand rollup
   const pools = useMemo(() => {
-    const byKey = new Map<string, { key: string; wcs: string[]; depts: DeptRegistryEntry[] }>()
-    for (const d of DEPT_REGISTRY) {
-      const key = d.workcenters.join('+')
-      if (!byKey.has(key)) byKey.set(key, { key, wcs: d.workcenters, depts: [] })
-      byKey.get(key)!.depts.push(d)
-    }
-    return [...byKey.values()].map(pool => {
-      const cap = pool.wcs.reduce((acc, wc) => {
-        const c = weeklyCapacity(wcConfig[wc])
-        return { reg: acc.reg + c.reg, ot: acc.ot + c.ot }
-      }, { reg: 0, ot: 0 })
-      const demandWeeks = weeks.map((_, wi) =>
+    return getCapacityPools(wcConfig).map(pool => ({
+      ...pool,
+      demandWeeks: weeks.map((_, wi) =>
         pool.depts.reduce((s, d) => s + (demand.get(d.id)?.[wi] ?? 0), 0)
-      )
-      return { ...pool, cap, demandWeeks }
-    })
+      ),
+    }))
   }, [demand, weeks, wcConfig])
 
   // Worst bottleneck across the horizon
