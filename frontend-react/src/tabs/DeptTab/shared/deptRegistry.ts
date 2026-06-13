@@ -160,6 +160,13 @@ export function buildAllDeptRates(rows: RoutingCrRow[]): { dept: DeptRegistryEnt
  * planned order that is not yet DONE counts, since every order eventually needs
  * assembly. (We model this purely as forecasted load — no handoff exists yet.)
  */
+/** Whether an order's work still counts toward a department (see weekDemandByDept). */
+export function orderCountsForDept(order: Order, dept: DeptRegistryEntry): boolean {
+  const st = (order.workflow_status as WorkflowStatus) || 'CUTTING'
+  if (dept.workflowStage === null) return st !== 'DONE'
+  return stageIdx(st) <= stageIdx(dept.workflowStage)
+}
+
 export function weekDemandByDept(
   orders: Order[],
   deptRates: { dept: DeptRegistryEntry; rates: CuttingRate[] }[],
@@ -171,17 +178,41 @@ export function weekDemandByDept(
     let hrs = 0
     for (const o of orders) {
       if (!o.plan_date || o.plan_date < monStr || o.plan_date > satStr) continue
-      const st = (o.workflow_status as WorkflowStatus) || 'CUTTING'
-      if (dept.workflowStage === null) {
-        if (st === 'DONE') continue
-      } else if (stageIdx(st) > stageIdx(dept.workflowStage)) {
-        continue
-      }
+      if (!orderCountsForDept(o, dept)) continue
       hrs += (o.qty ?? 1) * lookupHrs(rates, o.kva ?? 0, dept.fallbackHrs)
     }
     out.set(dept.id, hrs)
   }
   return out
+}
+
+export interface OrderContribution { order: Order; hrs: number }
+
+/**
+ * The orders driving a set of departments' load in [monStr, satStr], each with
+ * the hours it contributes (summed across the departments it still counts for),
+ * sorted biggest-first. Used by the Forecast bottleneck drill-down — guaranteed
+ * consistent with weekDemandByDept because it shares orderCountsForDept().
+ */
+export function ordersForDepts(
+  orders: Order[],
+  deptRates: { dept: DeptRegistryEntry; rates: CuttingRate[] }[],
+  depts: DeptRegistryEntry[],
+  monStr: string,
+  satStr: string,
+): OrderContribution[] {
+  const rateOf = new Map(deptRates.map(dr => [dr.dept.id, dr.rates]))
+  const out: OrderContribution[] = []
+  for (const o of orders) {
+    if (!o.plan_date || o.plan_date < monStr || o.plan_date > satStr) continue
+    let hrs = 0
+    for (const dept of depts) {
+      if (!orderCountsForDept(o, dept)) continue
+      hrs += (o.qty ?? 1) * lookupHrs(rateOf.get(dept.id) ?? [], o.kva ?? 0, dept.fallbackHrs)
+    }
+    if (hrs > 0) out.push({ order: o, hrs })
+  }
+  return out.sort((a, b) => b.hrs - a.hrs)
 }
 
 export interface CapacityPool {

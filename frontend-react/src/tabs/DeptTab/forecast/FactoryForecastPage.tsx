@@ -28,8 +28,10 @@ import { api } from '../../../api'
 import type { RoutingCrRow, WCConfig } from '../../../types'
 import { getWeekRange, fmtISO, fmtD } from '../cutting/scheduling/utils'
 import {
-  DEPT_REGISTRY, buildAllDeptRates, weekDemandByDept, getCapacityPools,
+  DEPT_REGISTRY, buildAllDeptRates, weekDemandByDept, getCapacityPools, ordersForDepts,
 } from '../shared/deptRegistry'
+import { WORKFLOW_LABELS } from '../shared/types'
+import type { WorkflowStatus } from '../shared/types'
 
 const HORIZON_OPTIONS = [4, 6, 8, 12]
 
@@ -63,6 +65,7 @@ export default function FactoryForecastPage() {
   const [startOffset, setStartOffset] = useState(0)
   const [showWhatIf, setShowWhatIf] = useState(false)
   const [capOverrides, setCapOverrides] = useState<Record<string, Partial<WCConfig>>>({})
+  const [drill, setDrill] = useState<{ poolKey: string; wi: number } | null>(null)
 
   useEffect(() => {
     api.routingCr.list()
@@ -132,6 +135,16 @@ export default function FactoryForecastPage() {
     }
     return best as { poolKey: string; label: string; wi: number; util: number } | null
   }, [pools])
+
+  // Orders driving the currently-drilled pool×week cell
+  const drillData = useMemo(() => {
+    if (!drill) return null
+    const pool = pools.find(p => p.key === drill.poolKey)
+    const w = weeks[drill.wi]
+    if (!pool || !w) return null
+    const contributions = ordersForDepts(orders, deptRates, pool.depts, w.monStr, w.satStr)
+    return { pool, w, contributions, totalCap: pool.cap.reg + pool.cap.ot }
+  }, [drill, pools, weeks, orders, deptRates])
 
   const cellColor = (demandH: number, regCap: number, otCap: number) => {
     if (regCap <= 0) return { bg: 'var(--bg3)', col: 'var(--txt3)', tag: '' }
@@ -260,6 +273,7 @@ export default function FactoryForecastPage() {
       <div style={{ background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 10, overflow: 'hidden' }}>
         <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--bord)', fontSize: 11, fontWeight: 700, color: 'var(--txt2)' }}>
           โหลด vs กำลังการผลิต (% ของชั่วโมงปกติ)
+          <span style={{ fontWeight: 400, fontSize: 9, color: 'var(--txt3)', marginLeft: 8 }}>— คลิกช่องเพื่อดูงานที่ทำให้โหลดสูง</span>
         </div>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 10 }}>
@@ -291,8 +305,17 @@ export default function FactoryForecastPage() {
                   {pool.demandWeeks.map((d, wi) => {
                     const { bg, col, tag } = cellColor(d, pool.cap.reg, pool.cap.ot)
                     const pct = pool.cap.reg > 0 ? Math.round(d / pool.cap.reg * 100) : 0
+                    const isOpen = drill?.poolKey === pool.key && drill?.wi === wi
                     return (
-                      <td key={wi} style={{ padding: '6px 8px', textAlign: 'center', background: bg, borderBottom: '0.5px solid var(--bord)', borderLeft: '0.5px solid var(--bord)' }}>
+                      <td key={wi}
+                        onClick={() => d > 0 && setDrill(isOpen ? null : { poolKey: pool.key, wi })}
+                        title={d > 0 ? 'คลิกดูงานที่ทำให้โหลดสูง' : ''}
+                        style={{
+                          padding: '6px 8px', textAlign: 'center', background: bg,
+                          borderBottom: '0.5px solid var(--bord)', borderLeft: '0.5px solid var(--bord)',
+                          cursor: d > 0 ? 'pointer' : 'default',
+                          outline: isOpen ? `2px solid ${col}` : 'none', outlineOffset: -2,
+                        }}>
                         <div style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: col, fontSize: 11 }}>
                           {d > 0 ? `${pct}%` : '—'}
                         </div>
@@ -309,6 +332,70 @@ export default function FactoryForecastPage() {
             </tbody>
           </table>
         </div>
+        {/* Drill-down: orders driving the selected cell */}
+        {drillData && (
+          <div style={{ borderTop: '1px solid var(--bord2)', background: 'var(--bg)' }}>
+            <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt2)' }}>
+                🔍 งานที่ทำให้โหลดสูง — {drillData.pool.depts.map(d => d.label).join(' + ')} · สัปดาห์ {drillData.w.label}
+              </span>
+              <span style={{ fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--txt3)' }}>
+                {drillData.contributions.length} งาน ·{' '}
+                {Math.round(drillData.contributions.reduce((s, c) => s + c.hrs, 0))}h /{' '}
+                {Math.round(drillData.totalCap)}h
+              </span>
+              <button onClick={() => setDrill(null)} style={{ ...btnSm, marginLeft: 'auto' }}>ปิด</button>
+            </div>
+            {drillData.contributions.length === 0 ? (
+              <div style={{ padding: '0 12px 12px', fontSize: 10, color: 'var(--txt3)' }}>ไม่มีงานในสัปดาห์นี้</div>
+            ) : (
+              <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+                <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 10 }}>
+                  <thead style={{ position: 'sticky', top: 0, background: 'var(--bg3)' }}>
+                    <tr>
+                      {['SAP SO', 'ลูกค้า', 'kVA × จำนวน', 'ชม.', '% ของโหลด', 'ขั้นปัจจุบัน', 'Deadline'].map(h => (
+                        <th key={h} style={{ padding: '5px 9px', textAlign: 'left', fontSize: 9, fontWeight: 600, color: 'var(--txt3)', whiteSpace: 'nowrap', borderBottom: '0.5px solid var(--bord)' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {drillData.contributions.map(({ order: o, hrs }) => {
+                      const stage = (o.workflow_status as WorkflowStatus) || 'CUTTING'
+                      const totalDemand = drillData.contributions.reduce((s, c) => s + c.hrs, 0)
+                      const share = totalDemand > 0 ? Math.round(hrs / totalDemand * 100) : 0
+                      const overdue = o.deadline && o.deadline < new Date().toISOString().slice(0, 10)
+                      return (
+                        <tr key={o.id} style={{ borderBottom: '0.5px solid var(--bord)' }}>
+                          <td style={{ padding: '4px 9px', fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--amber)' }}>
+                            {o.priority === 'rush' && <span style={{ marginRight: 3 }}>🔴</span>}
+                            {o.sap_so || o.id.slice(-8)}
+                          </td>
+                          <td style={{ padding: '4px 9px', color: 'var(--txt2)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.customer || '—'}</td>
+                          <td style={{ padding: '4px 9px', fontFamily: 'var(--mono)', color: 'var(--blue)' }}>{o.kva}×{o.qty}</td>
+                          <td style={{ padding: '4px 9px', fontFamily: 'var(--mono)', textAlign: 'right', fontWeight: 700, color: 'var(--txt2)' }}>{Math.round(hrs)}</td>
+                          <td style={{ padding: '4px 9px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                              <div style={{ flex: 1, minWidth: 40, height: 4, background: 'var(--bg3)', borderRadius: 2 }}>
+                                <div style={{ width: `${share}%`, height: '100%', background: drillData.pool.depts[0]?.color ?? 'var(--blue)', borderRadius: 2 }} />
+                              </div>
+                              <span style={{ fontFamily: 'var(--mono)', color: 'var(--txt3)', fontSize: 9 }}>{share}%</span>
+                            </div>
+                          </td>
+                          <td style={{ padding: '4px 9px' }}>
+                            <span style={{ fontSize: 9, color: 'var(--txt3)' }}>{WORKFLOW_LABELS[stage]}</span>
+                          </td>
+                          <td style={{ padding: '4px 9px', fontFamily: 'var(--mono)', fontSize: 9, color: overdue ? 'var(--red)' : 'var(--txt3)' }}>
+                            {o.deadline || '—'}{overdue ? ' ⚠' : ''}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Department demand (hours) ────────────────────────────────────── */}
