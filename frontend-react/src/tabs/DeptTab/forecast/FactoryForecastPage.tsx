@@ -25,7 +25,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useApp } from '../../../context/AppContext'
 import { api } from '../../../api'
-import type { RoutingCrRow } from '../../../types'
+import type { RoutingCrRow, WCConfig } from '../../../types'
 import { getWeekRange, fmtISO, fmtD } from '../cutting/scheduling/utils'
 import {
   DEPT_REGISTRY, buildAllDeptRates, weekDemandByDept, getCapacityPools,
@@ -35,6 +35,25 @@ const HORIZON_OPTIONS = [4, 6, 8, 12]
 
 interface WeekCol { offset: number; mon: Date; sat: Date; monStr: string; satStr: string; label: string }
 
+/** Workcenters used by the pipeline, each with the departments it serves (for labels). */
+const FORECAST_WCS: { wc: string; depts: string[] }[] = (() => {
+  const m = new Map<string, string[]>()
+  for (const d of DEPT_REGISTRY) for (const wc of d.workcenters) {
+    if (!m.has(wc)) m.set(wc, [])
+    m.get(wc)!.push(d.label)
+  }
+  return [...m.entries()].map(([wc, depts]) => ({ wc, depts }))
+})()
+
+type CapField = 'workers' | 'hrs' | 'ot' | 'sat_hrs' | 'eff'
+const CAP_FIELDS: { key: CapField; label: string; max: number }[] = [
+  { key: 'workers', label: 'คน', max: 99 },
+  { key: 'hrs', label: 'ชม./วัน', max: 24 },
+  { key: 'ot', label: 'OT/วัน', max: 12 },
+  { key: 'sat_hrs', label: 'เสาร์', max: 24 },
+  { key: 'eff', label: 'Eff%', max: 100 },
+]
+
 export default function FactoryForecastPage() {
   const { state } = useApp()
   const { orders, wcConfig } = state
@@ -42,12 +61,30 @@ export default function FactoryForecastPage() {
   const [routingRows, setRoutingRows] = useState<RoutingCrRow[]>([])
   const [horizon, setHorizon] = useState(6)
   const [startOffset, setStartOffset] = useState(0)
+  const [showWhatIf, setShowWhatIf] = useState(false)
+  const [capOverrides, setCapOverrides] = useState<Record<string, Partial<WCConfig>>>({})
 
   useEffect(() => {
     api.routingCr.list()
       .then(rows => setRoutingRows(rows as RoutingCrRow[]))
       .catch(() => {})
   }, [])
+
+  // wcConfig with what-if overrides merged on top (non-destructive — never saved)
+  const effectiveWc = useMemo(() => {
+    if (!Object.keys(capOverrides).length) return wcConfig
+    const merged: Record<string, WCConfig> = { ...wcConfig }
+    for (const [wc, ov] of Object.entries(capOverrides)) {
+      if (merged[wc]) merged[wc] = { ...merged[wc], ...ov }
+    }
+    return merged
+  }, [wcConfig, capOverrides])
+
+  const simActive = Object.keys(capOverrides).length > 0
+  const capValue = (wc: string, f: CapField): number =>
+    (capOverrides[wc]?.[f] as number | undefined) ?? (wcConfig[wc]?.[f] as number | undefined) ?? 0
+  const setCap = (wc: string, f: CapField, v: number) =>
+    setCapOverrides(prev => ({ ...prev, [wc]: { ...prev[wc], [f]: v } }))
 
   const weeks = useMemo((): WeekCol[] => {
     return Array.from({ length: horizon }, (_, i) => {
@@ -72,13 +109,13 @@ export default function FactoryForecastPage() {
 
   // Capacity pools (shared helper) + per-week demand rollup
   const pools = useMemo(() => {
-    return getCapacityPools(wcConfig).map(pool => ({
+    return getCapacityPools(effectiveWc).map(pool => ({
       ...pool,
       demandWeeks: weeks.map((_, wi) =>
         pool.depts.reduce((s, d) => s + (demand.get(d.id)?.[wi] ?? 0), 0)
       ),
     }))
-  }, [demand, weeks, wcConfig])
+  }, [demand, weeks, effectiveWc])
 
   // Worst bottleneck across the horizon
   const worst = useMemo(() => {
@@ -123,8 +160,17 @@ export default function FactoryForecastPage() {
             ⚠ ไม่มี routing — ใช้ค่า fallback hrs/unit
           </span>
         )}
+        {simActive && (
+          <span style={{ fontSize: 10, color: 'var(--mauve, #cba6f7)', background: 'rgba(203,166,247,.14)', padding: '1px 7px', borderRadius: 4, fontWeight: 700 }}>
+            🎛 กำลังจำลอง
+          </span>
+        )}
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button onClick={() => setShowWhatIf(v => !v)}
+            style={{ ...btnSm, border: `1px solid ${showWhatIf || simActive ? '#cba6f7' : 'var(--bord)'}`, color: showWhatIf || simActive ? '#cba6f7' : 'var(--txt2)', background: showWhatIf ? 'rgba(203,166,247,.12)' : 'var(--bg3)' }}>
+            🎛 What-if
+          </button>
           <button onClick={() => setStartOffset(v => v - 1)} style={btnSm}>‹</button>
           {startOffset !== 0 && <button onClick={() => setStartOffset(0)} style={{ ...btnSm, color: 'var(--blue)' }}>วันนี้</button>}
           <button onClick={() => setStartOffset(v => v + 1)} style={btnSm}>›</button>
@@ -143,6 +189,57 @@ export default function FactoryForecastPage() {
           </div>
         </div>
       </div>
+
+      {/* What-if capacity simulator */}
+      {showWhatIf && (
+        <div style={{ background: 'var(--bg2)', border: '1px solid #cba6f733', borderRadius: 10, padding: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#cba6f7' }}>🎛 จำลองกำลังการผลิต (What-if)</span>
+            <span style={{ fontSize: 9, color: 'var(--txt3)' }}>ปรับชั่วคราว — ไม่บันทึกทับค่าจริง</span>
+            {simActive && (
+              <button onClick={() => setCapOverrides({})} style={{ ...btnSm, marginLeft: 'auto', color: 'var(--red)', border: '1px solid var(--red)44' }}>
+                ↺ รีเซ็ต
+              </button>
+            )}
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ borderCollapse: 'collapse', fontSize: 10 }}>
+              <thead>
+                <tr style={{ color: 'var(--txt3)' }}>
+                  <th style={{ textAlign: 'left', padding: '3px 8px', fontWeight: 600 }}>Workcenter</th>
+                  {CAP_FIELDS.map(f => <th key={f.key} style={{ padding: '3px 8px', fontWeight: 600 }}>{f.label}</th>)}
+                  <th style={{ padding: '3px 8px', fontWeight: 600 }}>= ชม./สัปดาห์</th>
+                </tr>
+              </thead>
+              <tbody>
+                {FORECAST_WCS.map(({ wc, depts }) => {
+                  const eff = (capValue(wc, 'eff') || 90) / 100
+                  const weekHrs = capValue(wc, 'workers') * (capValue(wc, 'hrs') * 5 + capValue(wc, 'sat_hrs')) * eff
+                  const dirty = !!capOverrides[wc]
+                  return (
+                    <tr key={wc} style={{ borderTop: '0.5px solid var(--bord)' }}>
+                      <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontFamily: 'var(--mono)', color: dirty ? '#cba6f7' : 'var(--txt2)', fontWeight: 700 }}>{wc}</span>
+                        <span style={{ color: 'var(--txt3)', marginLeft: 6 }}>{depts.join(' + ')}</span>
+                      </td>
+                      {CAP_FIELDS.map(f => (
+                        <td key={f.key} style={{ padding: '3px 6px', textAlign: 'center' }}>
+                          <input type="number" min={0} max={f.max} value={capValue(wc, f.key)}
+                            onChange={e => setCap(wc, f.key, Number(e.target.value))}
+                            style={{ width: 46, fontSize: 10, textAlign: 'center', border: '1px solid var(--bord)', borderRadius: 4, padding: '2px 4px', background: 'var(--bg)', color: 'var(--txt)' }} />
+                        </td>
+                      ))}
+                      <td style={{ padding: '4px 10px', textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700, color: dirty ? '#cba6f7' : 'var(--txt2)' }}>
+                        {Math.round(weekHrs)}h
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Bottleneck callout */}
       {worst && worst.util > 0 && (
