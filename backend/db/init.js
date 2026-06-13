@@ -279,6 +279,45 @@ async function initDatabase() {
     await client.query(`ALTER TABLE cutting_plan_snapshots ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`);
     await client.query(`ALTER TABLE cutting_plan_snapshots ADD COLUMN IF NOT EXISTS result_summary JSONB`);
     await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE accepted_orders ADD COLUMN IF NOT EXISTS workflow_status TEXT NOT NULL DEFAULT 'CUTTING'`);
+    await client.query(`
+  CREATE TABLE IF NOT EXISTS dept_stations (
+    id SERIAL PRIMARY KEY,
+    dept_id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    count INTEGER NOT NULL DEFAULT 1,
+    reg_hrs NUMERIC NOT NULL DEFAULT 8,
+    ot_hrs NUMERIC NOT NULL DEFAULT 4,
+    shift_hrs NUMERIC NOT NULL DEFAULT 9,
+    shift_enabled BOOLEAN NOT NULL DEFAULT true,
+    hrs_per_unit NUMERIC NOT NULL DEFAULT 5.0,
+    wc_id TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )
+`);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_dept_stations_dept ON dept_stations(dept_id)');
+    await client.query(`
+  CREATE TABLE IF NOT EXISTS dept_plan_snapshots (
+    id SERIAL PRIMARY KEY,
+    dept_id TEXT NOT NULL,
+    week_start DATE NOT NULL,
+    week_end DATE NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    plan_data JSONB NOT NULL DEFAULT '{}',
+    planned_finish_dates JSONB NOT NULL DEFAULT '{}',
+    planned_hours JSONB NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'draft',
+    saved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    confirmed_at TIMESTAMPTZ,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    result_summary JSONB
+  )
+`);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_dept_snapshots_dept ON dept_plan_snapshots(dept_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_dept_snapshots_week ON dept_plan_snapshots(dept_id, week_start)');
     await client.query(`
       CREATE TABLE IF NOT EXISTS coil_machines (
         id SERIAL PRIMARY KEY,

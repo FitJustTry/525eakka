@@ -9,8 +9,8 @@ export const steelShakeConfig: DeptConfig = {
   workflowStage: 'SHAKE',
   defaultStationName: 'เขย่าเหล็ก',
   defaultHrsPerUnit: 2.0,
-  stationsPath: '/steel-shake-stations',
-  snapshotsPath: '/steel-shake-snapshots',
+  stationsPath: '/dept-stations/steel-shake',
+  snapshotsPath: '/dept-plan-snapshots/steel-shake',
   supportsOT: true,
   supportsShift: true,
 }

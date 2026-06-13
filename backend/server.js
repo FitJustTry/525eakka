@@ -14,6 +14,7 @@ const sapRoutingRoutes = require('./routes/sapRouting');
 const routingRoutes = require('./routes/routing');
 const capRatesRoutes = require('./routes/capRates');
 const downtimeRoutes = require('./routes/downtime');
+const deptRoutes = require('./routes/dept');
 
 const PORT = Number(process.env.PORT || 3000);
 const app = express();
@@ -36,6 +37,7 @@ sapRoutingRoutes(app);
 routingRoutes(app);
 capRatesRoutes(app);
 downtimeRoutes(app);
+deptRoutes(app);
 
 app.use((err, req, res, next) => {
   console.error(err);

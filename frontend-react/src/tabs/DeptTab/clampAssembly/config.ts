@@ -9,8 +9,8 @@ export const clampAssemblyConfig: DeptConfig = {
   workflowStage: 'CLAMP',
   defaultStationName: 'แคลมป์',
   defaultHrsPerUnit: 1.5,
-  stationsPath: '/clamp-assembly-stations',
-  snapshotsPath: '/clamp-assembly-snapshots',
+  stationsPath: '/dept-stations/clamp-assembly',
+  snapshotsPath: '/dept-plan-snapshots/clamp-assembly',
   supportsOT: true,
   supportsShift: true,
 }

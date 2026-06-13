@@ -28,6 +28,7 @@ import type { MachineDaySched } from '../cutting/scheduling/constants'
 import { buildDeptRates } from '../shared/routingRates'
 import { useDeptSnapshots } from '../shared/useDeptSnapshots'
 import type { DeptConfig } from '../shared/types'
+import { WORKFLOW_NEXT } from '../shared/types'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -304,7 +305,7 @@ const btnSm: React.CSSProperties = {
 // ─── Main exported component ─────────────────────────────────────────────────
 
 export default function DeptSchedulerPage({ config }: { config: DeptConfig }) {
-  const { state } = useApp()
+  const { state, dispatch } = useApp()
   const { orders, products, wcConfig } = state
 
   const [weekOffset, setWeekOffset] = useState(0)
@@ -316,6 +317,8 @@ export default function DeptSchedulerPage({ config }: { config: DeptConfig }) {
   const [routingRows, setRoutingRows] = useState<RoutingCrRow[]>([])
   const [planLabel, setPlanLabel] = useState('')
   const [wfFilter, setWfFilter] = useState<'all' | 'stage'>('all')
+  const [closingWeek, setClosingWeek] = useState(false)
+  const [closeMsg, setCloseMsg] = useState<string | null>(null)
 
   // These are intentionally empty — manual OT/Shift day selection can be added per-dept later
   const [manualOtDays] = useState(() => new Map<number, Set<string>>())
@@ -415,6 +418,28 @@ export default function DeptSchedulerPage({ config }: { config: DeptConfig }) {
     try { await stationsApi.update(id, { [field]: value }) } catch {}
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const handleCloseWeek = useCallback(async () => {
+    if (!weekData) return
+    const nextStage = WORKFLOW_NEXT[config.workflowStage]
+    if (!nextStage) { setCloseMsg('⚠ ไม่มีขั้นตอนถัดไป'); return }
+    const doneIds = weekData.weekDoneOrders
+      .filter(o => !o.workflow_status || o.workflow_status === config.workflowStage)
+      .map(o => o.id)
+    if (!doneIds.length) { setCloseMsg('⚠ ไม่มีงานเสร็จในสัปดาห์นี้ที่ต้องส่งต่อ'); setTimeout(() => setCloseMsg(null), 3000); return }
+    const ok = window.confirm(`ส่งต่อ ${doneIds.length} งานไปขั้น "${nextStage}"?`)
+    if (!ok) return
+    setClosingWeek(true); setCloseMsg(null)
+    try {
+      const updated = await api.orders.batchWorkflowStatus(doneIds, nextStage)
+      dispatch({ type: 'PATCH_ORDERS', patches: updated })
+      setCloseMsg(`✅ ส่งต่อ ${updated.length} งาน → ${nextStage}`)
+    } catch (e) {
+      setCloseMsg(`❌ ${e instanceof Error ? e.message : String(e)}`)
+    }
+    setClosingWeek(false)
+    setTimeout(() => setCloseMsg(null), 4000)
+  }, [weekData, config, dispatch])
 
   const handleSave = useCallback(async () => {
     if (!weekData) return
@@ -543,8 +568,26 @@ export default function DeptSchedulerPage({ config }: { config: DeptConfig }) {
             style={{ ...btnSm, border: snap.showSnapshots ? '1px solid var(--green)' : '1px solid var(--bord)', color: snap.showSnapshots ? 'var(--green)' : 'var(--txt2)' }}>
             📋 แผนที่บันทึก
           </button>
+          {WORKFLOW_NEXT[config.workflowStage] && (
+            <button onClick={handleCloseWeek} disabled={closingWeek || !weekData}
+              style={{ ...btnSm, background: 'rgba(166,227,161,.15)', color: 'var(--green)', border: '1px solid var(--green)' }}>
+              {closingWeek ? '…' : `✅ ปิดสัปดาห์ → ${WORKFLOW_NEXT[config.workflowStage]}`}
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Close-week message */}
+      {closeMsg && (
+        <div style={{
+          fontSize: 11, padding: '6px 12px', borderRadius: 6,
+          background: closeMsg.startsWith('✅') ? 'rgba(166,227,161,.15)' : 'rgba(224,90,78,.12)',
+          color: closeMsg.startsWith('✅') ? 'var(--green)' : closeMsg.startsWith('⚠') ? 'var(--amber)' : 'var(--red)',
+          border: `1px solid ${closeMsg.startsWith('✅') ? 'var(--green)' : closeMsg.startsWith('⚠') ? 'var(--amber)' : 'var(--red)'}44`,
+        }}>
+          {closeMsg}
+        </div>
+      )}
 
       {/* Save message */}
       {snap.saveMsg && (

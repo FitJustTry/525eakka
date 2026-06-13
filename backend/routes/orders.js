@@ -41,7 +41,7 @@ function orderRoutes(app) {
   app.put('/api/orders/:id', asyncRoute(async (req, res) => {
     const allowed = ['product','qty','deadline','customer','kva','category','sap_so','plan_date','comment','item_code',
       'week_start','seq','plant','electrical','total_kva','enter_test','cable_box','control',
-      'due_store','due_so','adjust_plan','due_clamp','due_box_ctrl','raw_mat','lv','hv','done_qty'];
+      'due_store','due_so','adjust_plan','due_clamp','due_box_ctrl','raw_mat','lv','hv','done_qty','workflow_status'];
     const entries = Object.entries(req.body).filter(([key]) => allowed.includes(key));
     if (!entries.length) return res.status(400).json({ error: 'No valid fields to update' });
 
@@ -64,6 +64,20 @@ function orderRoutes(app) {
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Order not found' });
     res.json(rowToOrder(result.rows[0]));
+  }));
+
+  // Batch workflow status update — called by dept schedulers when closing a week
+  app.patch('/api/orders/workflow-status', asyncRoute(async (req, res) => {
+    const { ids, workflow_status } = req.body;
+    const valid = ['CUTTING','SHAKE','STACK','CLAMP','NOLOAD','DONE'];
+    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids array required' });
+    if (!valid.includes(workflow_status)) return res.status(400).json({ error: `Invalid workflow_status: ${workflow_status}` });
+    const result = await pool.query(
+      `UPDATE accepted_orders SET workflow_status = $1, updated_at = now()
+       WHERE id = ANY($2::text[]) RETURNING *`,
+      [workflow_status, ids]
+    );
+    res.json(result.rows.map(rowToOrder));
   }));
 
   app.delete('/api/orders', asyncRoute(async (req, res) => {

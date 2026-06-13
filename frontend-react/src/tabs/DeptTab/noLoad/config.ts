@@ -9,8 +9,8 @@ export const noLoadConfig: DeptConfig = {
   workflowStage: 'NOLOAD',
   defaultStationName: 'No Load',
   defaultHrsPerUnit: 0.25,
-  stationsPath: '/no-load-stations',
-  snapshotsPath: '/no-load-snapshots',
+  stationsPath: '/dept-stations/no-load',
+  snapshotsPath: '/dept-plan-snapshots/no-load',
   supportsOT: false,
   supportsShift: false,
 }

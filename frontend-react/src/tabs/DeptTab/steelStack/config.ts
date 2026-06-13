@@ -9,8 +9,8 @@ export const steelStackConfig: DeptConfig = {
   workflowStage: 'STACK',
   defaultStationName: 'เรียงเหล็ก',
   defaultHrsPerUnit: 5.0,
-  stationsPath: '/steel-stack-stations',
-  snapshotsPath: '/steel-stack-snapshots',
+  stationsPath: '/dept-stations/steel-stack',
+  snapshotsPath: '/dept-plan-snapshots/steel-stack',
   supportsOT: true,
   supportsShift: true,
 }

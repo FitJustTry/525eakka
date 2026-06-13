@@ -25,6 +25,7 @@ type Action =
   | { type: 'BACKEND_DOWN' }
   | { type: 'SET_CUTTING_MACHINES'; machines: CuttingMachine[] }
   | { type: 'SET_ORDERS'; orders: Order[] }
+  | { type: 'PATCH_ORDERS'; patches: Partial<Order>[] }
   | { type: 'SET_WC_CONFIG'; wcConfig: Record<string, WCConfig> }
   | { type: 'SET_FACTORY_HOLIDAYS'; factoryHolidays: Record<string, string> }
   | { type: 'SET_ITEM_CODES'; itemCodes: Record<string, ItemCode> }
@@ -109,6 +110,10 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, cuttingMachines: action.machines }
     case 'SET_ORDERS':
       return { ...state, orders: action.orders }
+    case 'PATCH_ORDERS': {
+      const patchMap = new Map(action.patches.map(p => [p.id, p]))
+      return { ...state, orders: state.orders.map(o => patchMap.has(o.id) ? { ...o, ...patchMap.get(o.id) } : o) }
+    }
     case 'SET_WC_CONFIG':
       return { ...state, wcConfig: action.wcConfig }
     case 'SET_FACTORY_HOLIDAYS':

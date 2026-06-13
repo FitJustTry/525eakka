@@ -24,6 +24,8 @@ export const api = {
       request<Order>('/orders', { method: 'POST', body: JSON.stringify(order) }),
     update: (id: string, patch: Partial<Order>) =>
       request<Order>(`/orders/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) }),
+    batchWorkflowStatus: (ids: string[], workflow_status: string) =>
+      request<Order[]>('/orders/workflow-status', { method: 'PATCH', body: JSON.stringify({ ids, workflow_status }) }),
   },
 
   cuttingMachines: {

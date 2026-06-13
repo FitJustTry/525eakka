@@ -71,6 +71,7 @@ function rowToOrder(row) {
     done_qty: toInt(row.done_qty, 0),
     done_at: row.done_at ? row.done_at.toISOString() : null,
     created_at: row.created_at,
+    workflow_status: row.workflow_status || 'CUTTING',
   };
 }
 
@@ -97,6 +98,32 @@ function rowToCuttingMachine(row) {
   };
 }
 
+function rowToDeptStation(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    count: toInt(row.count, 1),
+    min_kva: 0,
+    max_kva: 999999,
+    hrs_per_unit: toNumber(row.hrs_per_unit, 5.0),
+    laser: false, m4: false,
+    min_face_mm: 0, max_face_mm: 999999,
+    drill_8mm: false, drill_22mm: false,
+    notes: row.notes || '',
+    rates: [],
+    reg_hrs: toNumber(row.reg_hrs, 8),
+    ot_hrs: toNumber(row.ot_hrs, 4),
+    wc_id: row.wc_id || '',
+    off_days: [],
+    time_mul: 1,
+    tmc_hrs: 0, tmc_rates: [],
+    tr_power_hrs: 0, tr_power_rates: [],
+    class_h_hrs: 0, class_h_rates: [],
+    shift_hrs: toNumber(row.shift_hrs, 9),
+    shift_enabled: row.shift_enabled !== false,
+  }
+}
+
 function rowToCoilMachine(row) {
   return {
     id: row.id, name: row.name, count: toInt(row.count, 1),
@@ -118,4 +145,5 @@ module.exports = {
   rowToOrder,
   rowToCuttingMachine,
   rowToCoilMachine,
+  rowToDeptStation,
 };
