@@ -10,9 +10,10 @@ import WipBoardPage from './wip/WipBoardPage'
 import FactoryForecastPage from './forecast/FactoryForecastPage'
 import OverviewPage from './overview/OverviewPage'
 import CapacityRiskPage from './risk/CapacityRiskPage'
+import MaterialReadinessPage from './material/MaterialReadinessPage'
 
 type DeptId = 'core' | 'coil' | 'inner' | 'outer'
-type CoreView = 'dept' | 'overview' | 'cutting' | 'steelshake' | 'steelstack' | 'clamp' | 'noload' | 'wip' | 'forecast' | 'risk'
+type CoreView = 'dept' | 'overview' | 'cutting' | 'steelshake' | 'steelstack' | 'clamp' | 'noload' | 'wip' | 'forecast' | 'risk' | 'material'
 
 const DEPTS: { id: DeptId; label: string; color: string; wcs: string[] }[] = [
   {
@@ -80,6 +81,7 @@ export default function DeptTab() {
               { view: 'wip',        label: '🗂 WIP Board',   col: 'var(--txt2)',  bg: 'rgba(166,173,200,.12)' },
               { view: 'forecast',   label: '📈 Forecast',    col: 'var(--blue)',  bg: 'rgba(137,180,250,.12)' },
               { view: 'risk',       label: '⚠ Risk',         col: 'var(--red)',   bg: 'rgba(243,139,168,.12)' },
+              { view: 'material',   label: '🧱 วัตถุดิบ',     col: '#fab387',      bg: 'rgba(250,179,135,.12)' },
               { view: 'dept',       label: '📋 สถานีงาน',    col: 'var(--txt2)',  bg: 'rgba(166,173,200,.12)' },
             ] as const).map(({ view, label, col, bg }) => (
               <button key={view}
@@ -119,6 +121,7 @@ export default function DeptTab() {
       : dept === 'core' && coreView === 'wip'        ? <WipBoardPage />
       : dept === 'core' && coreView === 'forecast'   ? <FactoryForecastPage />
       : dept === 'core' && coreView === 'risk'       ? <CapacityRiskPage />
+      : dept === 'core' && coreView === 'material'   ? <MaterialReadinessPage />
       : dept === 'coil' && !showCoil                 ? <CoilPage />
       : <DeptContent dept={current} />
       }
